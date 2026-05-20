@@ -103,14 +103,20 @@ impl Default for MatchConfig {
     }
 }
 
-/// Stable order so 1..=6 and F1..=F6 hotkeys map deterministically.
-pub const ALL_CLASSES: [ShipClass; 6] = [
+/// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
+/// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
+/// updating the README key table.
+pub const ALL_CLASSES: [ShipClass; 10] = [
     ShipClass::Earcr,
     ShipClass::Spael,
     ShipClass::Yehte,
     ShipClass::Chmav,
     ShipClass::Kzedr,
     ShipClass::Mycpo,
+    ShipClass::Shosc,
+    ShipClass::Arisk,
+    ShipClass::Pkufu,
+    ShipClass::Ilwav,
 ];
 
 /// How rotation responds to forces.
@@ -162,7 +168,7 @@ pub enum ShipClass {
     /// Spathi Eluder — main weapon fires *backwards* ("BUTT missile") so
     /// the ship runs away while shooting. The signature joke of SC2.
     Spael,
-    /// Yehat Terminator — twin cannons, energy shield (TODO).
+    /// Yehat Terminator — twin cannons, energy shield.
     Yehte,
     /// Chmmr Avatar — laser + orbiting defense satellites (TODO).
     Chmav,
@@ -170,6 +176,14 @@ pub enum ShipClass {
     Kzedr,
     /// Mycon Podship — plasmoid (TODO).
     Mycpo,
+    /// Shofixti Scout — small, fast, fragile. Glory Device suicide attack.
+    Shosc,
+    /// Arilou Skiff — auto-targeting halo + hyperspace teleport.
+    Arisk,
+    /// Pkunk Fury — fast, triple cone of forward fire + phase shift.
+    Pkufu,
+    /// Ilwrath Avenger — heavy hitter + cloaking device.
+    Ilwav,
 }
 
 impl ShipClass {
@@ -182,6 +196,10 @@ impl ShipClass {
             ShipClass::Chmav => "chmav",
             ShipClass::Kzedr => "kzedr",
             ShipClass::Mycpo => "mycpo",
+            ShipClass::Shosc => "shosc",
+            ShipClass::Arisk => "arisk",
+            ShipClass::Pkufu => "pkufu",
+            ShipClass::Ilwav => "ilwav",
         }
     }
 }
@@ -366,7 +384,8 @@ pub fn load_ship_catalog(mut commands: Commands) {
 }
 
 /// Spawn the test scene. Classes come from `MatchConfig`, which is
-/// mutable via the class-picker hotkeys (1..=6 → P1, F1..=F6 → P2).
+/// mutable via the class-picker hotkeys (`1`..=`9`, `0` → P1;
+/// `F1`..=`F10` → P2; same index into `ALL_CLASSES`).
 pub fn spawn_match(
     mut commands: Commands,
     catalog: Res<ShipCatalog>,
@@ -393,9 +412,8 @@ pub fn spawn_match(
     );
 }
 
-/// 1..=6 → P1 class, F1..=F6 → P2 class. Changes apply on the next
-/// rematch — switching mid-round would mean despawning the current
-/// hull, which is jarring; better to commit to your pick.
+/// `1`..=`9`, `0` → P1 class (index 0..9 into `ALL_CLASSES`).
+/// `F1`..=`F10` → P2 class. Changes apply on the next rematch.
 fn class_picker_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<MatchConfig>) {
     let p1_keys = [
         KeyCode::Digit1,
@@ -404,6 +422,10 @@ fn class_picker_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<MatchC
         KeyCode::Digit4,
         KeyCode::Digit5,
         KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+        KeyCode::Digit0,
     ];
     let p2_keys = [
         KeyCode::F1,
@@ -412,6 +434,10 @@ fn class_picker_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<MatchC
         KeyCode::F4,
         KeyCode::F5,
         KeyCode::F6,
+        KeyCode::F7,
+        KeyCode::F8,
+        KeyCode::F9,
+        KeyCode::F10,
     ];
     for (i, key) in p1_keys.iter().enumerate() {
         if keys.just_pressed(*key) {
@@ -747,8 +773,9 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
     // weighty/boat-like by default; `M` toggles the global override
     // for experimentation.
     let collider_radius = match class {
-        ShipClass::Spael => 16.0,
-        ShipClass::Yehte | ShipClass::Earcr | ShipClass::Mycpo => 22.0,
+        ShipClass::Shosc | ShipClass::Arisk => 14.0,
+        ShipClass::Spael | ShipClass::Pkufu => 16.0,
+        ShipClass::Yehte | ShipClass::Earcr | ShipClass::Mycpo | ShipClass::Ilwav => 22.0,
         ShipClass::Chmav => 28.0,
         ShipClass::Kzedr => 34.0,
     };
@@ -821,6 +848,47 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 3.5,
             color: Color::srgb(1.0, 0.5, 0.3),
             sprite_size: 9.0,
+        },
+        ShipClass::Shosc => WeaponSpec {
+            // Shofixti gun — fast, low damage. Compensates for the
+            // glass hull with shot rate, not punch.
+            local_direction: forward,
+            muzzle_offset: 22.0,
+            speed: 1000.0,
+            lifetime: 1.5,
+            color: Color::srgb(0.6, 1.0, 1.0),
+            sprite_size: 4.0,
+        },
+        ShipClass::Arisk => WeaponSpec {
+            // Arilou's auto-aiming halo. Approximated as a fast straight
+            // shot for now; real homing lives in M3 alongside Mycon
+            // plasmoid logic.
+            local_direction: forward,
+            muzzle_offset: 22.0,
+            speed: 800.0,
+            lifetime: 1.5,
+            color: Color::srgb(0.5, 1.0, 0.5),
+            sprite_size: 5.0,
+        },
+        ShipClass::Pkufu => WeaponSpec {
+            // Pkunk fires a fast forward cone in the original. For now
+            // a single bolt; the cone is one match-arm change away once
+            // we add multi-projectile fire support.
+            local_direction: forward,
+            muzzle_offset: 22.0,
+            speed: 900.0,
+            lifetime: 1.5,
+            color: Color::srgb(1.0, 0.6, 1.0),
+            sprite_size: 5.0,
+        },
+        ShipClass::Ilwav => WeaponSpec {
+            // Ilwrath's flamethrower — short range, big damage.
+            local_direction: forward,
+            muzzle_offset: 30.0,
+            speed: 600.0,
+            lifetime: 1.0,
+            color: Color::srgb(1.0, 0.4, 0.2),
+            sprite_size: 8.0,
         },
     }
 }
@@ -1015,6 +1083,52 @@ fn trigger_specials(
                 // class something to do while the real abilities cook.
                 vel.0 *= 0.2;
                 cooldown.0 = 2.0;
+            }
+            ShipClass::Shosc => {
+                // Glory Device, simplified: an explosive forward charge
+                // that drops your own crew to 1 in exchange for a huge
+                // velocity impulse. Real Glory in SC2 detonates at any
+                // time killing both ships if you're close; we'll do
+                // the AoE explosion in M3 once we have damage zones.
+                vel.0 += forward * 700.0;
+                cooldown.0 = 3.0;
+                info!("P{} glory charge", ship.player_slot + 1);
+            }
+            ShipClass::Arisk => {
+                // Hyperspace teleport. Canonical Arilou jump is to a
+                // random arena spot; without an RNG resource we jump
+                // a fixed long distance perpendicular to current
+                // heading, which gives a clean "where did they go"
+                // disengage that's deterministic for rollback.
+                let perp = Vec2::new(-forward.y, forward.x);
+                pos.0 += perp * 350.0;
+                vel.0 = Vec2::ZERO;
+                cooldown.0 = 3.0;
+                info!("P{} hyperspace", ship.player_slot + 1);
+            }
+            ShipClass::Pkufu => {
+                // Phase shift — temporary invulnerability. Same
+                // ShieldActive component the Yehat shield uses, but
+                // damage_factor = 0 means total invuln for 1 s.
+                commands.entity(entity).insert(ShieldActive {
+                    remaining: 1.0,
+                    damage_factor: 0.0,
+                });
+                cooldown.0 = 4.0;
+                info!("P{} phase shift", ship.player_slot + 1);
+            }
+            ShipClass::Ilwav => {
+                // Cloaking device — also invulnerability for now since
+                // we don't yet model "untargetable but visible" vs
+                // "invisible". M3 will split the two; the gameplay
+                // shape (Ilwrath ambushes you out of cloak) only
+                // needs the targeting-vs-rendering distinction.
+                commands.entity(entity).insert(ShieldActive {
+                    remaining: 2.5,
+                    damage_factor: 0.0,
+                });
+                cooldown.0 = 6.0;
+                info!("P{} cloak", ship.player_slot + 1);
             }
         }
     }

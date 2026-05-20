@@ -47,14 +47,26 @@ are ~5 seconds.
 | Key | Action |
 | --- | ------ |
 | `R` | Rematch (only between rounds, after a winner is shown) |
-| `1`–`6` | Pick P1's class for the next rematch |
-| `F1`–`F6` | Pick P2's class for the next rematch |
+| `1`–`9`, `0` | Pick P1's class for the next rematch |
+| `F1`–`F10` | Pick P2's class for the next rematch |
 | `[` / `]` | Slow / speed up the entire physics clock (debug) |
 | `\` | Reset time scale to 1.0 |
 | `M` | Cycle angular-control override (off → force Classic → force Inertial → off) |
 
-Class index: `1`/`F1` Earthling, `2`/`F2` Spathi, `3`/`F3` Yehat,
-`4`/`F4` Chmmr, `5`/`F5` Ur-Quan, `6`/`F6` Mycon.
+Class index (same number = same ship for both players):
+
+| # | Class | Note |
+| - | ----- | ---- |
+| 1 / F1  | Earthling Cruiser  | Forward gun, dash special |
+| 2 / F2  | Spathi Eluder      | Fires *backwards*, warp-jump special |
+| 3 / F3  | Yehat Terminator   | Twin cannons, energy shield (25% incoming damage) |
+| 4 / F4  | Chmmr Avatar       | Forward laser, brake (placeholder special) |
+| 5 / F5  | Ur-Quan Dreadnought| Heavy bolt, brake (placeholder) |
+| 6 / F6  | Mycon Podship      | Slow projectile, brake (placeholder) |
+| 7 / F7  | Shofixti Scout     | Fast gun, Glory-charge dash |
+| 8 / F8  | Arilou Skiff       | Halo shot, perpendicular hyperspace teleport |
+| 9 / F9  | Pkunk Fury         | Fast forward fire, phase-shift invuln (1 s) |
+| 0 / F10 | Ilwrath Avenger    | Flamethrower, cloak invuln (2.5 s) |
 
 ## What's implemented today
 
