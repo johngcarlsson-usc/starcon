@@ -106,7 +106,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 10] = [
+pub const ALL_CLASSES: [ShipClass; 15] = [
     ShipClass::Earcr,
     ShipClass::Spael,
     ShipClass::Yehte,
@@ -117,6 +117,12 @@ pub const ALL_CLASSES: [ShipClass; 10] = [
     ShipClass::Arisk,
     ShipClass::Pkufu,
     ShipClass::Ilwav,
+    // bank 2 (hold Shift with the picker key)
+    ShipClass::Thrto,
+    ShipClass::Vuxin,
+    ShipClass::Supbl,
+    ShipClass::Kohma,
+    ShipClass::Syrpe,
 ];
 
 /// How rotation responds to forces.
@@ -184,6 +190,16 @@ pub enum ShipClass {
     Pkufu,
     /// Ilwrath Avenger — heavy hitter + cloaking device.
     Ilwav,
+    /// Thraddash Torch — afterburner leaves a damage trail.
+    Thrto,
+    /// VUX Intruder — slow heavy fighter; limpets attach to enemies.
+    Vuxin,
+    /// Supox Blade — agile cruiser; special is 4-way thrust strafing.
+    Supbl,
+    /// Ur-Quan Kohr-Ah Marauder — flame arc + saw blades on retreat.
+    Kohma,
+    /// Syreen Penetrator — siren song saps enemy crew.
+    Syrpe,
 }
 
 impl ShipClass {
@@ -200,6 +216,11 @@ impl ShipClass {
             ShipClass::Arisk => "arisk",
             ShipClass::Pkufu => "pkufu",
             ShipClass::Ilwav => "ilwav",
+            ShipClass::Thrto => "thrto",
+            ShipClass::Vuxin => "vuxin",
+            ShipClass::Supbl => "supbl",
+            ShipClass::Kohma => "kohma",
+            ShipClass::Syrpe => "syrpe",
         }
     }
 }
@@ -412,10 +433,12 @@ pub fn spawn_match(
     );
 }
 
-/// `1`..=`9`, `0` → P1 class (index 0..9 into `ALL_CLASSES`).
-/// `F1`..=`F10` → P2 class. Changes apply on the next rematch.
+/// Class-picker hotkeys. Each player has 10 key slots (digits for P1,
+/// F-keys for P2) plus a Shift modifier that flips to "bank 2" for the
+/// next 10 classes. So unmodified `1`..=`0` → indices 0..9, holding
+/// Shift while pressing them → 10..19. Changes apply on the next rematch.
 fn class_picker_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<MatchConfig>) {
-    let p1_keys = [
+    const P1_DIGITS: [KeyCode; 10] = [
         KeyCode::Digit1,
         KeyCode::Digit2,
         KeyCode::Digit3,
@@ -427,7 +450,7 @@ fn class_picker_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<MatchC
         KeyCode::Digit9,
         KeyCode::Digit0,
     ];
-    let p2_keys = [
+    const P2_FKEYS: [KeyCode; 10] = [
         KeyCode::F1,
         KeyCode::F2,
         KeyCode::F3,
@@ -439,16 +462,26 @@ fn class_picker_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<MatchC
         KeyCode::F9,
         KeyCode::F10,
     ];
-    for (i, key) in p1_keys.iter().enumerate() {
+
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let bank_offset = if shift { 10 } else { 0 };
+
+    for (i, key) in P1_DIGITS.iter().enumerate() {
         if keys.just_pressed(*key) {
-            config.p1_class = ALL_CLASSES[i];
-            info!("P1 → {:?} (takes effect next rematch)", config.p1_class);
+            let idx = bank_offset + i;
+            if let Some(class) = ALL_CLASSES.get(idx).copied() {
+                config.p1_class = class;
+                info!("P1 → {:?} (takes effect next rematch)", config.p1_class);
+            }
         }
     }
-    for (i, key) in p2_keys.iter().enumerate() {
+    for (i, key) in P2_FKEYS.iter().enumerate() {
         if keys.just_pressed(*key) {
-            config.p2_class = ALL_CLASSES[i];
-            info!("P2 → {:?} (takes effect next rematch)", config.p2_class);
+            let idx = bank_offset + i;
+            if let Some(class) = ALL_CLASSES.get(idx).copied() {
+                config.p2_class = class;
+                info!("P2 → {:?} (takes effect next rematch)", config.p2_class);
+            }
         }
     }
 }
@@ -774,9 +807,15 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
     // for experimentation.
     let collider_radius = match class {
         ShipClass::Shosc | ShipClass::Arisk => 14.0,
-        ShipClass::Spael | ShipClass::Pkufu => 16.0,
-        ShipClass::Yehte | ShipClass::Earcr | ShipClass::Mycpo | ShipClass::Ilwav => 22.0,
-        ShipClass::Chmav => 28.0,
+        ShipClass::Spael | ShipClass::Pkufu | ShipClass::Thrto => 16.0,
+        ShipClass::Yehte
+        | ShipClass::Earcr
+        | ShipClass::Mycpo
+        | ShipClass::Ilwav
+        | ShipClass::Vuxin
+        | ShipClass::Supbl
+        | ShipClass::Syrpe => 22.0,
+        ShipClass::Chmav | ShipClass::Kohma => 28.0,
         ShipClass::Kzedr => 34.0,
     };
     PhysicsSpec {
@@ -889,6 +928,57 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.0,
             color: Color::srgb(1.0, 0.4, 0.2),
             sprite_size: 8.0,
+        },
+        ShipClass::Thrto => WeaponSpec {
+            // Thraddash bullet — small, fast, modest damage.
+            local_direction: forward,
+            muzzle_offset: 22.0,
+            speed: 850.0,
+            lifetime: 1.4,
+            color: Color::srgb(1.0, 0.7, 0.2),
+            sprite_size: 5.0,
+        },
+        ShipClass::Vuxin => WeaponSpec {
+            // VUX limpet — slow, sticky in canon; we treat it as a
+            // chunky slow projectile for now. Real "attach + drag
+            // velocity" lands with the joint-based mechanics in M3.
+            local_direction: forward,
+            muzzle_offset: 26.0,
+            speed: 350.0,
+            lifetime: 4.0,
+            color: Color::srgb(0.4, 0.9, 0.3),
+            sprite_size: 9.0,
+        },
+        ShipClass::Supbl => WeaponSpec {
+            // Supox plasma grenade — slow lob in canon; here a fast
+            // straight shot until we add ballistic arcs.
+            local_direction: forward,
+            muzzle_offset: 24.0,
+            speed: 700.0,
+            lifetime: 1.8,
+            color: Color::srgb(0.5, 0.8, 1.0),
+            sprite_size: 7.0,
+        },
+        ShipClass::Kohma => WeaponSpec {
+            // Kohr-Ah cleansing flames — wide spread in canon; for
+            // now single forward shot. Big damage to make ramming
+            // viable like the original.
+            local_direction: forward,
+            muzzle_offset: 34.0,
+            speed: 550.0,
+            lifetime: 1.5,
+            color: Color::srgb(1.0, 0.55, 0.15),
+            sprite_size: 9.0,
+        },
+        ShipClass::Syrpe => WeaponSpec {
+            // Syreen razor — fast straight shot. The siren song
+            // ability is on the special button, not the primary.
+            local_direction: forward,
+            muzzle_offset: 26.0,
+            speed: 800.0,
+            lifetime: 1.6,
+            color: Color::srgb(1.0, 0.85, 0.95),
+            sprite_size: 5.0,
         },
     }
 }
@@ -1129,6 +1219,64 @@ fn trigger_specials(
                 });
                 cooldown.0 = 6.0;
                 info!("P{} cloak", ship.player_slot + 1);
+            }
+            ShipClass::Thrto => {
+                // Afterburner — strong forward impulse plus a damage
+                // multiplier (modelled as a longer dash) so chasing
+                // a ship into your own contrail is the thematic
+                // payoff once we add trail entities in M3.
+                vel.0 += forward * 500.0;
+                cooldown.0 = 2.0;
+                info!("P{} afterburner", ship.player_slot + 1);
+            }
+            ShipClass::Vuxin => {
+                // VUX limpet drag is canonically applied to enemies,
+                // not the VUX itself — needs a projectile-with-
+                // attachment-joint. Placeholder: heavy hit-and-stop
+                // (kills 90% velocity) which roughly models the VUX
+                // muscling into close-range bombardment.
+                vel.0 *= 0.1;
+                cooldown.0 = 2.0;
+            }
+            ShipClass::Supbl => {
+                // Supox 4-way strafe in canon. Without a strafe-mode
+                // toggle component, special just gives a strong
+                // sideways impulse. Hold direction matters: turning
+                // left makes you strafe left, right makes you strafe
+                // right (picks current turn-input sign).
+                let dir = if input.pressed(input::INPUT_LEFT) {
+                    1.0
+                } else if input.pressed(input::INPUT_RIGHT) {
+                    -1.0
+                } else {
+                    0.0
+                };
+                let perp = Vec2::new(-forward.y, forward.x);
+                vel.0 += perp * dir * 400.0;
+                cooldown.0 = 1.0;
+                if dir != 0.0 {
+                    info!("P{} strafe", ship.player_slot + 1);
+                }
+            }
+            ShipClass::Kohma => {
+                // Kohr-Ah cleansing saw blades: drop a one-shot
+                // ring of crew damage around the ship. Without an
+                // AoE damage zone primitive, we approximate with a
+                // strong sphere of impulse on nearby bodies (push).
+                // Real implementation hooks into the field-effect
+                // pattern (see docs/EXTENSIBILITY.md).
+                vel.0 *= 0.0; // anchor while spinning sawblades, canon
+                cooldown.0 = 3.0;
+                info!("P{} sawblades (placeholder)", ship.player_slot + 1);
+            }
+            ShipClass::Syrpe => {
+                // Syreen siren song saps crew off the *other* ship.
+                // Needs to know about other ships (system query
+                // beyond the per-ship for-loop). Placeholder uses
+                // the same brake-anchor as Kohr-Ah for now.
+                vel.0 *= 0.0;
+                cooldown.0 = 4.0;
+                info!("P{} siren song (placeholder)", ship.player_slot + 1);
             }
         }
     }
