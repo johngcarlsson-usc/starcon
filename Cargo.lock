@@ -5422,8 +5422,10 @@ dependencies = [
  "bevy_matchbox",
  "bytemuck",
  "ggrs 0.11.1",
+ "image",
  "rust-ini",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
