@@ -21,7 +21,7 @@ impl Plugin for PhysicsPlugin {
             .insert_resource(Time::<Physics>::default().with_relative_speed(1.0))
             .add_systems(
                 PhysicsSchedule,
-                wrap_arena.in_set(PhysicsStepSet::Last),
+                wrap_arena.in_set(PhysicsStepSystems::Last),
             );
     }
 }

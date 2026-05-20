@@ -103,11 +103,11 @@ pub struct ShipPlugin;
 
 impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            PhysicsSchedule,
-            apply_player_input.in_set(PhysicsStepSet::First),
-        )
-        .add_systems(Update, swap_rotation_frame);
+        // M1: drive velocities from Update. M4 (rollback) will move this
+        // into GgrsSchedule and switch to Forces-inside-the-solver so the
+        // physics step itself integrates the thrust.
+        app.add_systems(FixedUpdate, apply_player_input)
+            .add_systems(Update, swap_rotation_frame);
     }
 }
 
@@ -194,27 +194,45 @@ fn load_rotation_frames(assets: &AssetServer, code: &str) -> Vec<Handle<Image>> 
     frames
 }
 
-/// Read keyboard for this peer's slot and apply force/torque via Avian's
-/// `Forces` query data. Forces apply for the current step and clear
-/// automatically afterwards — no manual reset needed.
+/// Read keyboard for this peer's slot and write velocities directly.
+/// In M4 this gets moved into the rollback schedule and switched to
+/// Forces-via-Avian so the solver integrates thrust internally.
 fn apply_player_input(
     keys: Res<ButtonInput<KeyCode>>,
-    mut q: Query<(&Ship, Forces)>,
+    time: Res<Time>,
+    mut q: Query<(
+        &Ship,
+        &Rotation,
+        &mut LinearVelocity,
+        &mut AngularVelocity,
+    )>,
 ) {
-    for (ship, mut forces) in &mut q {
+    let dt = time.delta_secs();
+    for (ship, rot, mut lin, mut ang) in &mut q {
         let input = input::read_local_input(&keys, ship.player_slot);
 
-        if input.pressed(input::INPUT_LEFT) {
-            forces.apply_torque(ship.stats.turn_rate * 800.0);
-        }
-        if input.pressed(input::INPUT_RIGHT) {
-            forces.apply_torque(-ship.stats.turn_rate * 800.0);
-        }
+        // Rotation: clamp to the ship's TurnRate (legacy unit is degrees/tick at 36 Hz).
+        let target_omega = if input.pressed(input::INPUT_LEFT) {
+            ship.stats.turn_rate.to_radians() * 60.0
+        } else if input.pressed(input::INPUT_RIGHT) {
+            -ship.stats.turn_rate.to_radians() * 60.0
+        } else {
+            0.0
+        };
+        // Snap to target — SC2 ships have no rotational inertia. We'll add
+        // it back via Avian once we wire chains/satellites (M5+).
+        ang.0 = target_omega;
+
         if input.pressed(input::INPUT_THRUST) {
-            // Ship sprite faces "up" at zero rotation, so forward = rot * Vec2::Y.
-            let rot = *forces.rotation();
+            // Ship sprite faces "up" at zero rotation, so forward = rot * +Y.
             let forward = Vec2::new(-rot.sin, rot.cos);
-            forces.apply_force(forward * ship.stats.accel_rate * ship.stats.mass * 60.0);
+            let accel = ship.stats.accel_rate * 60.0;
+            lin.0 += forward * accel * dt;
+            // Cap at SpeedMax (also legacy 36 Hz tick units — scale up).
+            let max = ship.stats.speed_max * 4.0;
+            if lin.0.length() > max {
+                lin.0 = lin.0.normalize() * max;
+            }
         }
     }
 }
