@@ -93,6 +93,26 @@ pub struct Ship {
     pub player_slot: usize,
 }
 
+/// Live, mutable crew count for a ship. Decoupled from `ShipStats` (which
+/// is static class data) so respawns and replays can reset cleanly.
+#[derive(Component, Debug)]
+pub struct Crew {
+    pub current: i32,
+    pub max: i32,
+}
+
+/// Time (in seconds) until the ship's primary weapon can fire again.
+#[derive(Component, Debug, Default)]
+pub struct WeaponCooldown(pub f32);
+
+/// In-flight projectile. Owner is tracked so we can ignore self-hits.
+#[derive(Component, Debug)]
+pub struct Projectile {
+    pub owner: Entity,
+    pub damage: i32,
+    pub lifetime: f32,
+}
+
 /// All 64 rotation frames preloaded so the renderer can pick by heading
 /// without hitting the asset server hot path.
 #[derive(Component)]
@@ -104,11 +124,20 @@ pub struct ShipPlugin;
 
 impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
-        // M1: drive velocities from Update. M4 (rollback) will move this
-        // into GgrsSchedule and switch to Forces-inside-the-solver so the
-        // physics step itself integrates the thrust.
-        app.add_systems(FixedUpdate, apply_player_input)
-            .add_systems(Update, swap_rotation_frame);
+        // M1 ordering: gameplay logic in FixedUpdate (so it runs at the
+        // physics rate), visual swaps in Update (frame-rate). M4 moves the
+        // gameplay systems into GgrsSchedule.
+        app.add_systems(
+            FixedUpdate,
+            (
+                apply_player_input,
+                tick_weapon_cooldown,
+                fire_weapons.after(tick_weapon_cooldown),
+                tick_projectile_lifetime,
+                handle_projectile_hits,
+            ),
+        )
+        .add_systems(Update, swap_rotation_frame);
     }
 }
 
@@ -201,16 +230,25 @@ fn spawn_ship(
     slot: usize,
 ) {
     let initial = frames.first().cloned().unwrap_or_default();
-    commands.spawn((
+    let gameplay = (
         Ship {
             stats: stats.clone(),
             player_slot: slot,
         },
+        Crew {
+            current: stats.crew_max,
+            max: stats.crew_max,
+        },
+        WeaponCooldown::default(),
         ShipFrames {
             frames: frames.to_vec(),
         },
+    );
+    let visual = (
         Sprite::from_image(initial),
         Transform::from_translation(position.extend(0.0)),
+    );
+    let physics = (
         RigidBody::Dynamic,
         Collider::circle(20.0),
         Mass(stats.mass),
@@ -221,7 +259,9 @@ fn spawn_ship(
         AngularVelocity::ZERO,
         ConstantLocalForce(Vec2::ZERO),
         ConstantTorque(0.0),
-    ));
+        CollisionEventsEnabled,
+    );
+    commands.spawn((gameplay, visual, physics));
 }
 
 fn load_rotation_frames(assets: &AssetServer, code: &str) -> Vec<Handle<Image>> {
@@ -295,5 +335,132 @@ fn swap_rotation_frame(mut q: Query<(&Rotation, &ShipFrames, &mut Sprite)>) {
             idx = 0;
         }
         sprite.image = frames.frames[idx].clone();
+    }
+}
+
+fn tick_weapon_cooldown(time: Res<Time>, mut q: Query<&mut WeaponCooldown>) {
+    let dt = time.delta_secs();
+    for mut cd in &mut q {
+        if cd.0 > 0.0 {
+            cd.0 = (cd.0 - dt).max(0.0);
+        }
+    }
+}
+
+/// Spawn a primary-weapon projectile when FIRE is pressed and the
+/// weapon is off cooldown. The projectile is a small fast dynamic body,
+/// so when it hits a ship the physics solver computes the impulse-at-
+/// contact correctly — the spin imparted to the target is free.
+fn fire_weapons(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut q: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut WeaponCooldown,
+    )>,
+) {
+    const PROJECTILE_SPEED: f32 = 700.0;
+    const PROJECTILE_LIFETIME: f32 = 2.0;
+    const MUZZLE_OFFSET: f32 = 28.0;
+
+    for (entity, ship, pos, rot, vel, mut cooldown) in &mut q {
+        if cooldown.0 > 0.0 {
+            continue;
+        }
+        let input = input::read_local_input(&keys, ship.player_slot);
+        if !input.pressed(input::INPUT_FIRE) {
+            continue;
+        }
+
+        // Local +Y rotated into world space.
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let muzzle = pos.0 + forward * MUZZLE_OFFSET;
+        let projectile_vel = vel.0 + forward * PROJECTILE_SPEED;
+
+        // SC2's [Weapon] Rate is in legacy 36 Hz ticks; convert to seconds.
+        let cooldown_secs = if ship.stats.weapon_rate > 0 {
+            ship.stats.weapon_rate as f32 / 36.0
+        } else {
+            0.25
+        };
+        cooldown.0 = cooldown_secs;
+
+        let damage = ship.stats.weapon_damage.max(1);
+        commands.spawn((
+            Projectile {
+                owner: entity,
+                damage,
+                lifetime: PROJECTILE_LIFETIME,
+            },
+            Sprite::from_color(Color::srgb(1.0, 0.9, 0.4), Vec2::new(6.0, 6.0)),
+            Transform::from_translation(muzzle.extend(0.5)),
+            RigidBody::Dynamic,
+            Collider::circle(3.0),
+            Mass(0.5),
+            LinearVelocity(projectile_vel),
+            AngularVelocity::ZERO,
+            // No damping — projectile flies straight until it dies or hits.
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ));
+    }
+}
+
+fn tick_projectile_lifetime(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut q: Query<(Entity, &mut Projectile)>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut proj) in &mut q {
+        proj.lifetime -= dt;
+        if proj.lifetime <= 0.0 {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// React to Avian `CollisionStart` messages. The physics solver has already
+/// applied the impulse, so all we do here is:
+///   - Deduct crew from the ship the projectile hit (ignoring self-hits).
+///   - Despawn the projectile so it doesn't keep bouncing.
+fn handle_projectile_hits(
+    mut commands: Commands,
+    mut reader: MessageReader<CollisionStart>,
+    projectiles: Query<&Projectile>,
+    mut crews: Query<&mut Crew>,
+) {
+    for event in reader.read() {
+        let (proj_entity, other_entity) = if projectiles.get(event.collider1).is_ok() {
+            (event.collider1, event.collider2)
+        } else if projectiles.get(event.collider2).is_ok() {
+            (event.collider2, event.collider1)
+        } else {
+            continue;
+        };
+
+        let proj = match projectiles.get(proj_entity) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        if proj.owner == other_entity {
+            // Projectiles can't damage their own ship.
+            continue;
+        }
+
+        if let Ok(mut crew) = crews.get_mut(other_entity) {
+            crew.current = (crew.current - proj.damage).max(0);
+            info!(
+                "hit: -{} crew (now {}/{})",
+                proj.damage, crew.current, crew.max
+            );
+        }
+        commands.entity(proj_entity).despawn();
     }
 }
