@@ -202,6 +202,82 @@ pub struct WeaponCooldown(pub f32);
 #[derive(Component, Debug, Default)]
 pub struct SpecialCooldown(pub f32);
 
+/// Physics parameters derived from the ship's `.ini` stats once at spawn,
+/// using the exact scaling formulas from the legacy TimeWarp engine
+/// (`src/melee/mhelpers.cpp` in tw-light). Cached as a component so we
+/// don't recompute every tick — `.ini` stats don't change after spawn.
+///
+/// The legacy constants assume 20 Hz SC2 frames and 0.48 TW-pixels per
+/// SC2-pixel. We work in (world-units, seconds) where 1 world unit ≈
+/// 1 TW pixel, so the only adjustment is converting milliseconds → seconds.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ShipPhysicsDerived {
+    /// Steady-state forward speed at full throttle (world units / sec).
+    pub speed_max: f32,
+    /// Force applied when THRUST is held (Avian force units).
+    pub thrust_force: f32,
+    /// Steady-state angular rate when LEFT or RIGHT is held (rad / sec).
+    /// Sign is the player's input direction; magnitude is class-fixed.
+    pub target_omega: f32,
+    /// Linear damping that produces `speed_max` at `thrust_force`.
+    pub linear_damping: f32,
+    /// Angular damping in Inertial mode — agility-scaled so that more
+    /// nimble ships (lower `TurnRate` stat → quicker turning) also
+    /// shrug off externally-imparted spin faster.
+    pub angular_damping: f32,
+    /// Proportional gain for the Inertial-mode rate-command controller.
+    /// Sized so agile ships recover from a hit within ~0.3 s and the
+    /// Ur-Quan Dreadnought takes ~1 s to come back from the same impulse.
+    pub inertial_torque_gain: f32,
+}
+
+impl ShipPhysicsDerived {
+    /// Derives the physics from the legacy ini stats. Mirrors
+    /// `scale_velocity`, `scale_acceleration`, `scale_turning` from
+    /// `tw-light/src/melee/mhelpers.cpp`.
+    pub fn from_stats(stats: &ShipStats, collider_radius: f32) -> Self {
+        // Original constants (mhelpers.cpp + mgame.cpp Game defaults).
+        const TIME_RATIO_S: f32 = 0.050; // 1 SC2 frame = 50 ms
+        const DISTANCE_RATIO: f32 = 0.48; // TW pixels per SC2 pixel
+
+        let speed_max = stats.speed_max * DISTANCE_RATIO / TIME_RATIO_S;
+        let accel = stats.accel_rate * DISTANCE_RATIO / TIME_RATIO_S / TIME_RATIO_S;
+
+        // scale_turning(t) = (2π/16) / (t+1) / time_ratio
+        // Note: the .ini's TurnRate is INVERSE — lower number → faster turn.
+        let target_omega_mag =
+            (std::f32::consts::TAU / 16.0) / (stats.turn_rate + 1.0) / TIME_RATIO_S;
+
+        // For a constant thrust to stabilise at speed_max:
+        //   F = damping · m · v   →   damping = F / (m · v) = a / v
+        let linear_damping = if speed_max > 0.0 { accel / speed_max } else { 0.0 };
+        let thrust_force = stats.mass * accel;
+
+        // Disk moment of inertia: I = ½ m r²
+        let inertia = 0.5 * stats.mass * collider_radius * collider_radius;
+
+        // Inertial-mode tuning. We pick a per-class rise-time that grows
+        // with TurnRate so nimble ships feel sharp and bulky ones lumber.
+        // K_p ≈ 3·I / rise_time gives ~95% of target omega after rise_time.
+        let rise_time = 0.15 * (stats.turn_rate + 1.0); // Earcr (TR=1) → 0.30 s
+        let inertial_torque_gain = 3.0 * inertia / rise_time;
+
+        // Angular damping: bleed-off rate when no input. Same inverse
+        // relationship with TurnRate as the controller — nimble ships
+        // are also better at self-righting once player releases input.
+        let angular_damping = 5.0 / (stats.turn_rate + 1.0);
+
+        Self {
+            speed_max,
+            thrust_force,
+            target_omega: target_omega_mag,
+            linear_damping,
+            angular_damping,
+            inertial_torque_gain,
+        }
+    }
+}
+
 /// While present, the ship takes reduced damage from projectiles and rams.
 /// Timer decrements every FixedUpdate; the component is removed on expiry.
 #[derive(Component, Debug)]
@@ -407,6 +483,9 @@ fn spawn_ship(
     slot: usize,
 ) {
     let initial = frames.first().cloned().unwrap_or_default();
+    let phys = physics_spec(class);
+    let derived = ShipPhysicsDerived::from_stats(stats, phys.collider_radius);
+
     let gameplay = (
         Ship {
             stats: stats.clone(),
@@ -422,19 +501,19 @@ fn spawn_ship(
         ShipFrames {
             frames: frames.to_vec(),
         },
+        derived,
     );
     let visual = (
         Sprite::from_image(initial),
         Transform::from_translation(position.extend(0.0)),
     );
-    let phys = physics_spec(class, stats);
     let physics = (
         RigidBody::Dynamic,
         Collider::circle(phys.collider_radius),
-        Mass(phys.mass),
+        Mass(stats.mass),
         Rotation::radians(rotation_rad),
-        LinearDamping(phys.linear_damping),
-        AngularDamping(phys.angular_damping),
+        LinearDamping(derived.linear_damping),
+        AngularDamping(derived.angular_damping),
         LinearVelocity::ZERO,
         AngularVelocity::ZERO,
         ConstantLocalForce(Vec2::ZERO),
@@ -479,20 +558,13 @@ fn apply_player_input(
     mut q: Query<(
         &Ship,
         &ShipClass,
+        &ShipPhysicsDerived,
         &mut ConstantLocalForce,
         &mut ConstantTorque,
         &mut AngularVelocity,
     )>,
 ) {
-    const THRUST_GAIN: f32 = 4000.0;
-    /// rad/s per .ini TurnRate unit. Legacy TurnRate was deg / 36 Hz
-    /// tick, so 1 unit ≈ π/180 × 36 ≈ 0.628 rad/s.
-    const TURN_RATE_TO_RAD_PER_SEC: f32 = 0.628;
-    /// Inertial-mode controller stiffness. Tune so an at-rest ship
-    /// reaches commanded rate within ~200 ms given typical mass.
-    const INERTIAL_TORQUE_GAIN: f32 = 4.0e6;
-
-    for (ship, class, mut thrust, mut torque, mut ang_vel) in &mut q {
+    for (ship, class, derived, mut thrust, mut torque, mut ang_vel) in &mut q {
         let input = input::read_local_input(&keys, ship.player_slot);
 
         let dir = if input.pressed(input::INPUT_LEFT) {
@@ -502,29 +574,31 @@ fn apply_player_input(
         } else {
             0.0
         };
-        let target_omega = dir * ship.stats.turn_rate * TURN_RATE_TO_RAD_PER_SEC;
+        let target_omega = dir * derived.target_omega;
 
         let mode = angular_override
             .0
-            .unwrap_or_else(|| physics_spec(*class, &ship.stats).angular_control);
+            .unwrap_or_else(|| physics_spec(*class).angular_control);
 
         match mode {
             AngularControl::Classic => {
-                // Snap to commanded rate; ignore impulses.
+                // Snap to commanded rate; ignore impulses (SC2 default).
                 ang_vel.0 = target_omega;
                 torque.0 = 0.0;
             }
             AngularControl::Inertial => {
-                // Proportional torque toward target. Pressing left
-                // when spinning right (or vice versa) gives a larger
-                // error and faster correction.
+                // Proportional torque toward target. Gain is per-ship —
+                // agile ships have a higher gain *relative to* their
+                // smaller moment of inertia, so they snap back faster.
                 let error = target_omega - ang_vel.0;
-                torque.0 = error * INERTIAL_TORQUE_GAIN;
+                torque.0 = error * derived.inertial_torque_gain;
             }
         }
 
         thrust.0 = if input.pressed(input::INPUT_THRUST) {
-            Vec2::new(0.0, ship.stats.accel_rate * ship.stats.mass * THRUST_GAIN)
+            // Force vector in the ship's local frame (Avian rotates it
+            // into world space because we used ConstantLocalForce).
+            Vec2::new(0.0, derived.thrust_force)
         } else {
             Vec2::ZERO
         };
@@ -656,68 +730,31 @@ fn fire_weapons(
 ///
 /// High angular damping ≈ fighter-like instant-turn (SC2 stock feel).
 /// Low angular damping + big mass ≈ boat-like inertia drift.
+/// Per-class engine knobs that the `.ini` doesn't capture. Mass, speed,
+/// accel, and turn rate are all in the .ini and get derived into
+/// `ShipPhysicsDerived`; this just covers the renderer/collider side
+/// and the Classic-vs-Inertial control mode.
 struct PhysicsSpec {
+    /// Hitbox radius. Eyeballed from the extracted sprite dimensions;
+    /// can move into a manifest field later.
     collider_radius: f32,
-    mass: f32,
-    linear_damping: f32,
-    /// Used in Inertial mode. Ignored in Classic mode because we
-    /// overwrite `AngularVelocity` each frame anyway.
-    angular_damping: f32,
     angular_control: AngularControl,
 }
 
-fn physics_spec(class: ShipClass, stats: &ShipStats) -> PhysicsSpec {
-    // Every stock class defaults to Classic to match original SC2 — no
-    // rotational inertia, hits don't make you spin. Set Inertial here
-    // for a class that should feel weighty/boat-like, or use the `M`
-    // hotkey to flip every ship into Inertial mode for experimentation.
-    match class {
-        ShipClass::Earcr => PhysicsSpec {
-            collider_radius: 22.0,
-            mass: stats.mass,
-            linear_damping: 0.4,
-            angular_damping: 4.0,
-            angular_control: AngularControl::Classic,
-        },
-        ShipClass::Spael => PhysicsSpec {
-            // Eluder is small and twitchy — snappier turn, lower mass.
-            collider_radius: 16.0,
-            mass: stats.mass.max(1.0) * 0.8,
-            linear_damping: 0.5,
-            angular_damping: 6.0,
-            angular_control: AngularControl::Classic,
-        },
-        ShipClass::Yehte => PhysicsSpec {
-            collider_radius: 20.0,
-            mass: stats.mass,
-            linear_damping: 0.4,
-            angular_damping: 5.0,
-            angular_control: AngularControl::Classic,
-        },
-        ShipClass::Chmav => PhysicsSpec {
-            collider_radius: 28.0,
-            mass: stats.mass * 1.4,
-            linear_damping: 0.5,
-            angular_damping: 2.5,
-            angular_control: AngularControl::Classic,
-        },
-        ShipClass::Kzedr => PhysicsSpec {
-            // Ur-Quan Dreadnought — biggest. Low angular damping is
-            // what gives the boat-feel once Inertial mode is enabled;
-            // by default it's still Classic to match SC2.
-            collider_radius: 34.0,
-            mass: stats.mass * 1.6,
-            linear_damping: 0.6,
-            angular_damping: 1.5,
-            angular_control: AngularControl::Classic,
-        },
-        ShipClass::Mycpo => PhysicsSpec {
-            collider_radius: 22.0,
-            mass: stats.mass,
-            linear_damping: 0.4,
-            angular_damping: 3.5,
-            angular_control: AngularControl::Classic,
-        },
+fn physics_spec(class: ShipClass) -> PhysicsSpec {
+    // Every stock class defaults to Classic to match original SC2.
+    // Flip a single arm to Inertial here if you want one class to feel
+    // weighty/boat-like by default; `M` toggles the global override
+    // for experimentation.
+    let collider_radius = match class {
+        ShipClass::Spael => 16.0,
+        ShipClass::Yehte | ShipClass::Earcr | ShipClass::Mycpo => 22.0,
+        ShipClass::Chmav => 28.0,
+        ShipClass::Kzedr => 34.0,
+    };
+    PhysicsSpec {
+        collider_radius,
+        angular_control: AngularControl::Classic,
     }
 }
 
