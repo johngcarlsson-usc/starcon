@@ -51,6 +51,7 @@ are ~5 seconds.
 | `F1`–`F6` | Pick P2's class for the next rematch |
 | `[` / `]` | Slow / speed up the entire physics clock (debug) |
 | `\` | Reset time scale to 1.0 |
+| `M` | Cycle angular-control override (off → force Classic → force Inertial → off) |
 
 Class index: `1`/`F1` Earthling, `2`/`F2` Spathi, `3`/`F3` Yehat,
 `4`/`F4` Chmmr, `5`/`F5` Ur-Quan, `6`/`F6` Mycon.

@@ -113,6 +113,34 @@ pub const ALL_CLASSES: [ShipClass; 6] = [
     ShipClass::Mycpo,
 ];
 
+/// How rotation responds to forces.
+///
+/// **Classic** ≈ original SC2: each frame the ship's `AngularVelocity`
+/// is *overwritten* with the player's commanded turn rate. Collisions
+/// can briefly nudge `AngularVelocity` during a physics step, but the
+/// very next frame we stamp it back to the commanded value, so the
+/// ship never visibly spins from impacts.
+///
+/// **Inertial** keeps `AngularVelocity` as a real state variable —
+/// hits give you spin, and player input becomes a *target* the
+/// controller chases via `ConstantTorque = K · (target − current)`.
+/// Pressing either direction pulls your spin toward your input rather
+/// than pushing it further out, so a violent spin can be recovered
+/// by turning the same way you're spinning (slow correction) or the
+/// opposite way (fast correction); doing nothing recovers via damping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AngularControl {
+    #[default]
+    Classic,
+    Inertial,
+}
+
+/// Optional global override of every ship's per-class `AngularControl`.
+/// `None` means "use what each class declares" (currently Classic for
+/// every stock class — matches original SC2). Toggle with `M`.
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct AngularControlOverride(pub Option<AngularControl>);
+
 /// Marker + per-instance data for an in-match ship entity.
 #[derive(Component, Debug)]
 pub struct Ship {
@@ -206,7 +234,8 @@ impl Plugin for ShipPlugin {
         // physics rate), visual swaps in Update (frame-rate). M4 moves the
         // gameplay systems into GgrsSchedule.
         app.init_resource::<MatchConfig>()
-            .add_systems(Update, class_picker_input);
+            .init_resource::<AngularControlOverride>()
+            .add_systems(Update, (class_picker_input, cycle_angular_override));
         app.add_systems(
             FixedUpdate,
             (
@@ -430,44 +459,98 @@ fn load_rotation_frames(assets: &AssetServer, code: &str) -> Vec<Handle<Image>> 
     frames
 }
 
-/// Read keyboard for this peer's slot and write the ship's persistent
-/// thrust force + steering torque components. The physics solver reads
-/// these every step, so we never touch velocities directly — that's
-/// what gives us angular momentum "for free": a collision impulse at an
-/// off-centre contact point spins the ship up against our torque, and
-/// the player has to actively cancel the spin.
+/// Read keyboard for this peer's slot and command the ship's motion.
 ///
-/// Force/torque magnitudes are scaled from the ship's stats so .ini
-/// tuning still drives behaviour. Damping (in `spawn_ship`) is what
-/// sets the terminal turn rate / cruise speed.
+/// Thrust is always applied as a persistent local force — same in both
+/// rotation modes. Steering branches on `AngularControl`:
+///
+///   - **Classic**: stamp `AngularVelocity` directly to the commanded
+///     turn rate each frame. Collisions can perturb it during a step
+///     but get overwritten next frame, so impacts never visibly spin
+///     the ship. `ConstantTorque` stays at zero. Matches original SC2.
+///   - **Inertial**: leave `AngularVelocity` alone (the solver and any
+///     collision impulses own it) and write `ConstantTorque` as a
+///     proportional controller chasing the commanded target rate.
+///     Either-direction recovery falls out naturally — see the
+///     `AngularControl` doc-comment.
 fn apply_player_input(
     keys: Res<ButtonInput<KeyCode>>,
-    mut q: Query<(&Ship, &mut ConstantLocalForce, &mut ConstantTorque)>,
+    angular_override: Res<AngularControlOverride>,
+    mut q: Query<(
+        &Ship,
+        &ShipClass,
+        &mut ConstantLocalForce,
+        &mut ConstantTorque,
+        &mut AngularVelocity,
+    )>,
 ) {
-    // Tuning knobs — moved into a Resource later so different ships can
-    // override per-class. For now uniform constants get us in the ballpark.
     const THRUST_GAIN: f32 = 4000.0;
-    const TORQUE_GAIN: f32 = 2.0e6;
+    /// rad/s per .ini TurnRate unit. Legacy TurnRate was deg / 36 Hz
+    /// tick, so 1 unit ≈ π/180 × 36 ≈ 0.628 rad/s.
+    const TURN_RATE_TO_RAD_PER_SEC: f32 = 0.628;
+    /// Inertial-mode controller stiffness. Tune so an at-rest ship
+    /// reaches commanded rate within ~200 ms given typical mass.
+    const INERTIAL_TORQUE_GAIN: f32 = 4.0e6;
 
-    for (ship, mut thrust, mut torque) in &mut q {
+    for (ship, class, mut thrust, mut torque, mut ang_vel) in &mut q {
         let input = input::read_local_input(&keys, ship.player_slot);
 
-        let turn = if input.pressed(input::INPUT_LEFT) {
+        let dir = if input.pressed(input::INPUT_LEFT) {
             1.0
         } else if input.pressed(input::INPUT_RIGHT) {
             -1.0
         } else {
             0.0
         };
-        torque.0 = turn * ship.stats.turn_rate * TORQUE_GAIN;
+        let target_omega = dir * ship.stats.turn_rate * TURN_RATE_TO_RAD_PER_SEC;
+
+        let mode = angular_override
+            .0
+            .unwrap_or_else(|| physics_spec(*class, &ship.stats).angular_control);
+
+        match mode {
+            AngularControl::Classic => {
+                // Snap to commanded rate; ignore impulses.
+                ang_vel.0 = target_omega;
+                torque.0 = 0.0;
+            }
+            AngularControl::Inertial => {
+                // Proportional torque toward target. Pressing left
+                // when spinning right (or vice versa) gives a larger
+                // error and faster correction.
+                let error = target_omega - ang_vel.0;
+                torque.0 = error * INERTIAL_TORQUE_GAIN;
+            }
+        }
 
         thrust.0 = if input.pressed(input::INPUT_THRUST) {
-            // Sprite faces +Y at zero rotation, so thrust along local +Y.
             Vec2::new(0.0, ship.stats.accel_rate * ship.stats.mass * THRUST_GAIN)
         } else {
             Vec2::ZERO
         };
     }
+}
+
+/// `M` cycles the global override: None (per-class default, currently
+/// Classic for all stock ships) → Force-Classic → Force-Inertial → back.
+fn cycle_angular_override(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut override_mode: ResMut<AngularControlOverride>,
+) {
+    if !keys.just_pressed(KeyCode::KeyM) {
+        return;
+    }
+    override_mode.0 = match override_mode.0 {
+        None => Some(AngularControl::Classic),
+        Some(AngularControl::Classic) => Some(AngularControl::Inertial),
+        Some(AngularControl::Inertial) => None,
+    };
+    let label = match override_mode.0 {
+        None => "per-class default (Classic)",
+        Some(AngularControl::Classic) => "Classic (forced — no momentum)",
+        Some(AngularControl::Inertial) => "Inertial (momentum, rate-command recovery)",
+    };
+    info!("angular control: {label}");
 }
 
 /// Pick the rotation frame whose angle is closest to the ship's current
@@ -577,16 +660,24 @@ struct PhysicsSpec {
     collider_radius: f32,
     mass: f32,
     linear_damping: f32,
+    /// Used in Inertial mode. Ignored in Classic mode because we
+    /// overwrite `AngularVelocity` each frame anyway.
     angular_damping: f32,
+    angular_control: AngularControl,
 }
 
 fn physics_spec(class: ShipClass, stats: &ShipStats) -> PhysicsSpec {
+    // Every stock class defaults to Classic to match original SC2 — no
+    // rotational inertia, hits don't make you spin. Set Inertial here
+    // for a class that should feel weighty/boat-like, or use the `M`
+    // hotkey to flip every ship into Inertial mode for experimentation.
     match class {
         ShipClass::Earcr => PhysicsSpec {
             collider_radius: 22.0,
             mass: stats.mass,
             linear_damping: 0.4,
             angular_damping: 4.0,
+            angular_control: AngularControl::Classic,
         },
         ShipClass::Spael => PhysicsSpec {
             // Eluder is small and twitchy — snappier turn, lower mass.
@@ -594,34 +685,38 @@ fn physics_spec(class: ShipClass, stats: &ShipStats) -> PhysicsSpec {
             mass: stats.mass.max(1.0) * 0.8,
             linear_damping: 0.5,
             angular_damping: 6.0,
+            angular_control: AngularControl::Classic,
         },
         ShipClass::Yehte => PhysicsSpec {
             collider_radius: 20.0,
             mass: stats.mass,
             linear_damping: 0.4,
             angular_damping: 5.0,
+            angular_control: AngularControl::Classic,
         },
         ShipClass::Chmav => PhysicsSpec {
-            // Chmmr is heavy and slow to rotate — feels weighty.
             collider_radius: 28.0,
             mass: stats.mass * 1.4,
             linear_damping: 0.5,
             angular_damping: 2.5,
+            angular_control: AngularControl::Classic,
         },
         ShipClass::Kzedr => PhysicsSpec {
-            // Ur-Quan Dreadnought — biggest, boat-feel. Low angular
-            // damping is what makes a hit visibly spin it; the giant
-            // moment of inertia (mass × big radius) does the rest.
+            // Ur-Quan Dreadnought — biggest. Low angular damping is
+            // what gives the boat-feel once Inertial mode is enabled;
+            // by default it's still Classic to match SC2.
             collider_radius: 34.0,
             mass: stats.mass * 1.6,
             linear_damping: 0.6,
             angular_damping: 1.5,
+            angular_control: AngularControl::Classic,
         },
         ShipClass::Mycpo => PhysicsSpec {
             collider_radius: 22.0,
             mass: stats.mass,
             linear_damping: 0.4,
             angular_damping: 3.5,
+            angular_control: AngularControl::Classic,
         },
     }
 }
