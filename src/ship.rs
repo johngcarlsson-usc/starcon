@@ -86,6 +86,33 @@ pub struct ShipCatalog {
     pub ships: HashMap<String, ShipStats>,
 }
 
+/// What `spawn_match` should use the next time the scene rebuilds.
+/// Mutated by the class-picker keys; read in `spawn_match`.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct MatchConfig {
+    pub p1_class: ShipClass,
+    pub p2_class: ShipClass,
+}
+
+impl Default for MatchConfig {
+    fn default() -> Self {
+        Self {
+            p1_class: ShipClass::Earcr,
+            p2_class: ShipClass::Spael,
+        }
+    }
+}
+
+/// Stable order so 1..=6 and F1..=F6 hotkeys map deterministically.
+pub const ALL_CLASSES: [ShipClass; 6] = [
+    ShipClass::Earcr,
+    ShipClass::Spael,
+    ShipClass::Yehte,
+    ShipClass::Chmav,
+    ShipClass::Kzedr,
+    ShipClass::Mycpo,
+];
+
 /// Marker + per-instance data for an in-match ship entity.
 #[derive(Component, Debug)]
 pub struct Ship {
@@ -169,6 +196,8 @@ impl Plugin for ShipPlugin {
         // M1 ordering: gameplay logic in FixedUpdate (so it runs at the
         // physics rate), visual swaps in Update (frame-rate). M4 moves the
         // gameplay systems into GgrsSchedule.
+        app.init_resource::<MatchConfig>()
+            .add_systems(Update, class_picker_input);
         app.add_systems(
             FixedUpdate,
             (
@@ -221,33 +250,66 @@ pub fn load_ship_catalog(mut commands: Commands) {
     commands.insert_resource(ShipCatalog { ships });
 }
 
-/// Spawn the test scene: an Earthling Cruiser vs a Spathi Eluder. They
-/// have visibly different stats *and* visibly different weapon behaviour
-/// (the Spathi fires backwards), demonstrating the per-class dispatch.
-/// Replace with a real fleet picker in M5.
+/// Spawn the test scene. Classes come from `MatchConfig`, which is
+/// mutable via the class-picker hotkeys (1..=6 → P1, F1..=F6 → P2).
 pub fn spawn_match(
     mut commands: Commands,
     catalog: Res<ShipCatalog>,
     assets: Res<AssetServer>,
+    config: Res<MatchConfig>,
 ) {
     spawn_class(
         &mut commands,
         &catalog,
         &assets,
-        ShipClass::Earcr,
+        config.p1_class,
         Vec2::new(-300.0, 0.0),
-        std::f32::consts::FRAC_PI_2, // face right
+        std::f32::consts::FRAC_PI_2,
         0,
     );
     spawn_class(
         &mut commands,
         &catalog,
         &assets,
-        ShipClass::Spael,
+        config.p2_class,
         Vec2::new(300.0, 0.0),
-        -std::f32::consts::FRAC_PI_2, // face left
+        -std::f32::consts::FRAC_PI_2,
         1,
     );
+}
+
+/// 1..=6 → P1 class, F1..=F6 → P2 class. Changes apply on the next
+/// rematch — switching mid-round would mean despawning the current
+/// hull, which is jarring; better to commit to your pick.
+fn class_picker_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<MatchConfig>) {
+    let p1_keys = [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+    ];
+    let p2_keys = [
+        KeyCode::F1,
+        KeyCode::F2,
+        KeyCode::F3,
+        KeyCode::F4,
+        KeyCode::F5,
+        KeyCode::F6,
+    ];
+    for (i, key) in p1_keys.iter().enumerate() {
+        if keys.just_pressed(*key) {
+            config.p1_class = ALL_CLASSES[i];
+            info!("P1 → {:?} (takes effect next rematch)", config.p1_class);
+        }
+    }
+    for (i, key) in p2_keys.iter().enumerate() {
+        if keys.just_pressed(*key) {
+            config.p2_class = ALL_CLASSES[i];
+            info!("P2 → {:?} (takes effect next rematch)", config.p2_class);
+        }
+    }
 }
 
 /// Despawn every gameplay entity from the previous round so the next
