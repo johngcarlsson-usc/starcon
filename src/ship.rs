@@ -93,6 +93,44 @@ pub struct Ship {
     pub player_slot: usize,
 }
 
+/// Identifies the ship class for behaviour dispatch. Stat sheets live in
+/// `ShipStats` (loaded from `.ini`); per-class *behaviour* lives in match
+/// expressions in this file. Adding a new class is one variant here plus
+/// arms in `fire_weapons`/etc — no plugin registration ceremony.
+///
+/// The string codes match the legacy TimeWarp ship-file naming so it's
+/// easy to grep across the engine + assets + .ini stat sheets.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ShipClass {
+    /// Earthling Cruiser — point-defense missiles + main gun, fires forward.
+    Earcr,
+    /// Spathi Eluder — main weapon fires *backwards* ("BUTT missile") so
+    /// the ship runs away while shooting. The signature joke of SC2.
+    Spael,
+    /// Yehat Terminator — twin cannons, energy shield (TODO).
+    Yehte,
+    /// Chmmr Avatar — laser + orbiting defense satellites (TODO).
+    Chmav,
+    /// Ur-Quan Kzer-Za Dreadnought — fusion bolt + launch fighters (TODO).
+    Kzedr,
+    /// Mycon Podship — plasmoid (TODO).
+    Mycpo,
+}
+
+impl ShipClass {
+    /// Asset/.ini code (matches `assets/ships/<code>.ini`).
+    pub fn code(self) -> &'static str {
+        match self {
+            ShipClass::Earcr => "earcr",
+            ShipClass::Spael => "spael",
+            ShipClass::Yehte => "yehte",
+            ShipClass::Chmav => "chmav",
+            ShipClass::Kzedr => "kzedr",
+            ShipClass::Mycpo => "mycpo",
+        }
+    }
+}
+
 /// Live, mutable crew count for a ship. Decoupled from `ShipStats` (which
 /// is static class data) so respawns and replays can reset cleanly.
 #[derive(Component, Debug)]
@@ -176,42 +214,56 @@ pub fn load_ship_catalog(mut commands: Commands) {
     commands.insert_resource(ShipCatalog { ships });
 }
 
-/// Spawn the test scene: two Earthling Cruisers facing each other. Player
-/// 1 (arrows + Z/X) on the left; player 2 (WASD + G/H) on the right. They
-/// share a hull class for now — once we have a fleet picker, this becomes
-/// data-driven.
+/// Spawn the test scene: an Earthling Cruiser vs a Spathi Eluder. They
+/// have visibly different stats *and* visibly different weapon behaviour
+/// (the Spathi fires backwards), demonstrating the per-class dispatch.
+/// Replace with a real fleet picker in M5.
 pub fn spawn_match(
     mut commands: Commands,
     catalog: Res<ShipCatalog>,
     assets: Res<AssetServer>,
 ) {
-    let Some(stats) = catalog.ships.get("earcr").cloned() else {
-        error!("earcr missing from catalog");
-        return;
-    };
-    let frames = load_rotation_frames(&assets, "earcr");
-    if frames.is_empty() {
-        error!("no rotation frames found for earcr");
-        return;
-    }
-
-    spawn_ship(
+    spawn_class(
         &mut commands,
-        &stats,
-        &frames,
+        &catalog,
+        &assets,
+        ShipClass::Earcr,
         Vec2::new(-300.0, 0.0),
-        std::f32::consts::FRAC_PI_2, // face +x (right)
+        std::f32::consts::FRAC_PI_2, // face right
         0,
     );
-    spawn_ship(
+    spawn_class(
         &mut commands,
-        &stats,
-        &frames,
+        &catalog,
+        &assets,
+        ShipClass::Spael,
         Vec2::new(300.0, 0.0),
-        -std::f32::consts::FRAC_PI_2, // face -x (left)
+        -std::f32::consts::FRAC_PI_2, // face left
         1,
     );
-    info!("spawned 2 ships");
+}
+
+fn spawn_class(
+    commands: &mut Commands,
+    catalog: &ShipCatalog,
+    assets: &AssetServer,
+    class: ShipClass,
+    position: Vec2,
+    rotation_rad: f32,
+    slot: usize,
+) {
+    let code = class.code();
+    let Some(stats) = catalog.ships.get(code).cloned() else {
+        error!("{code} missing from catalog");
+        return;
+    };
+    let frames = load_rotation_frames(assets, code);
+    if frames.is_empty() {
+        error!("no rotation frames found for {code}");
+        return;
+    }
+    spawn_ship(commands, class, &stats, &frames, position, rotation_rad, slot);
+    info!("spawned P{} as {}", slot + 1, stats.name);
 }
 
 /// Spawns a playable ship at the given pose. All ships share this builder so
@@ -223,6 +275,7 @@ pub fn spawn_match(
 /// free as their bigger moment of inertia naturally fights the torque.
 fn spawn_ship(
     commands: &mut Commands,
+    class: ShipClass,
     stats: &ShipStats,
     frames: &[Handle<Image>],
     position: Vec2,
@@ -235,6 +288,7 @@ fn spawn_ship(
             stats: stats.clone(),
             player_slot: slot,
         },
+        class,
         Crew {
             current: stats.crew_max,
             max: stats.crew_max,
@@ -348,26 +402,26 @@ fn tick_weapon_cooldown(time: Res<Time>, mut q: Query<&mut WeaponCooldown>) {
 }
 
 /// Spawn a primary-weapon projectile when FIRE is pressed and the
-/// weapon is off cooldown. The projectile is a small fast dynamic body,
-/// so when it hits a ship the physics solver computes the impulse-at-
-/// contact correctly — the spin imparted to the target is free.
+/// weapon is off cooldown. Dispatches on `ShipClass` so each class can
+/// shape its weapon differently — direction, speed, sprite tint, etc.
+///
+/// The projectile is a small fast dynamic body, so when it hits a ship
+/// the physics solver computes the impulse-at-contact correctly —
+/// the spin imparted to the target is free.
 fn fire_weapons(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     mut q: Query<(
         Entity,
         &Ship,
+        &ShipClass,
         &Position,
         &Rotation,
         &LinearVelocity,
         &mut WeaponCooldown,
     )>,
 ) {
-    const PROJECTILE_SPEED: f32 = 700.0;
-    const PROJECTILE_LIFETIME: f32 = 2.0;
-    const MUZZLE_OFFSET: f32 = 28.0;
-
-    for (entity, ship, pos, rot, vel, mut cooldown) in &mut q {
+    for (entity, ship, class, pos, rot, vel, mut cooldown) in &mut q {
         if cooldown.0 > 0.0 {
             continue;
         }
@@ -376,10 +430,14 @@ fn fire_weapons(
             continue;
         }
 
-        // Local +Y rotated into world space.
-        let forward = Vec2::new(-rot.sin, rot.cos);
-        let muzzle = pos.0 + forward * MUZZLE_OFFSET;
-        let projectile_vel = vel.0 + forward * PROJECTILE_SPEED;
+        let spec = primary_weapon(*class);
+        let local_dir = spec.local_direction;
+        let world_dir = Vec2::new(
+            local_dir.x * rot.cos - local_dir.y * rot.sin,
+            local_dir.x * rot.sin + local_dir.y * rot.cos,
+        );
+        let muzzle = pos.0 + world_dir * spec.muzzle_offset;
+        let projectile_vel = vel.0 + world_dir * spec.speed;
 
         // SC2's [Weapon] Rate is in legacy 36 Hz ticks; convert to seconds.
         let cooldown_secs = if ship.stats.weapon_rate > 0 {
@@ -394,12 +452,12 @@ fn fire_weapons(
             Projectile {
                 owner: entity,
                 damage,
-                lifetime: PROJECTILE_LIFETIME,
+                lifetime: spec.lifetime,
             },
-            Sprite::from_color(Color::srgb(1.0, 0.9, 0.4), Vec2::new(6.0, 6.0)),
+            Sprite::from_color(spec.color, Vec2::splat(spec.sprite_size)),
             Transform::from_translation(muzzle.extend(0.5)),
             RigidBody::Dynamic,
-            Collider::circle(3.0),
+            Collider::circle(spec.sprite_size * 0.5),
             Mass(0.5),
             LinearVelocity(projectile_vel),
             AngularVelocity::ZERO,
@@ -408,6 +466,73 @@ fn fire_weapons(
             AngularDamping(0.0),
             CollisionEventsEnabled,
         ));
+    }
+}
+
+/// Per-class primary-weapon shape. The fields stay generic on purpose so
+/// adding a class doesn't reshape callers — just add a match arm.
+struct WeaponSpec {
+    local_direction: Vec2,
+    muzzle_offset: f32,
+    speed: f32,
+    lifetime: f32,
+    color: Color,
+    sprite_size: f32,
+}
+
+fn primary_weapon(class: ShipClass) -> WeaponSpec {
+    let forward = Vec2::new(0.0, 1.0);
+    let backward = Vec2::new(0.0, -1.0);
+    match class {
+        ShipClass::Earcr => WeaponSpec {
+            local_direction: forward,
+            muzzle_offset: 28.0,
+            speed: 700.0,
+            lifetime: 2.0,
+            color: Color::srgb(1.0, 0.9, 0.4),
+            sprite_size: 6.0,
+        },
+        ShipClass::Spael => WeaponSpec {
+            // BUTT missile — fires backwards as the Eluder runs away.
+            local_direction: backward,
+            muzzle_offset: 28.0,
+            speed: 500.0,
+            lifetime: 3.0,
+            color: Color::srgb(1.0, 0.5, 0.7),
+            sprite_size: 8.0,
+        },
+        ShipClass::Yehte => WeaponSpec {
+            local_direction: forward,
+            muzzle_offset: 30.0,
+            speed: 900.0,
+            lifetime: 1.2,
+            color: Color::srgb(0.8, 1.0, 0.4),
+            sprite_size: 5.0,
+        },
+        ShipClass::Chmav => WeaponSpec {
+            local_direction: forward,
+            muzzle_offset: 30.0,
+            speed: 1200.0,
+            lifetime: 0.8,
+            color: Color::srgb(0.4, 0.9, 1.0),
+            sprite_size: 4.0,
+        },
+        ShipClass::Kzedr => WeaponSpec {
+            local_direction: forward,
+            muzzle_offset: 36.0,
+            speed: 500.0,
+            lifetime: 2.5,
+            color: Color::srgb(0.6, 1.0, 0.6),
+            sprite_size: 10.0,
+        },
+        ShipClass::Mycpo => WeaponSpec {
+            local_direction: forward,
+            muzzle_offset: 26.0,
+            speed: 400.0,
+            lifetime: 3.5,
+            color: Color::srgb(1.0, 0.5, 0.3),
+            sprite_size: 9.0,
+        },
     }
 }
 
