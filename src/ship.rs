@@ -173,6 +173,7 @@ impl Plugin for ShipPlugin {
                 fire_weapons.after(tick_weapon_cooldown),
                 tick_projectile_lifetime,
                 handle_projectile_hits,
+                handle_ship_collisions,
             ),
         )
         .add_systems(Update, swap_rotation_frame);
@@ -302,13 +303,14 @@ fn spawn_ship(
         Sprite::from_image(initial),
         Transform::from_translation(position.extend(0.0)),
     );
+    let phys = physics_spec(class, stats);
     let physics = (
         RigidBody::Dynamic,
-        Collider::circle(20.0),
-        Mass(stats.mass),
+        Collider::circle(phys.collider_radius),
+        Mass(phys.mass),
         Rotation::radians(rotation_rad),
-        LinearDamping(0.4),
-        AngularDamping(4.0),
+        LinearDamping(phys.linear_damping),
+        AngularDamping(phys.angular_damping),
         LinearVelocity::ZERO,
         AngularVelocity::ZERO,
         ConstantLocalForce(Vec2::ZERO),
@@ -469,6 +471,66 @@ fn fire_weapons(
     }
 }
 
+/// Per-class physics knobs. Defaults come from `ShipStats.mass`; this
+/// layer adds the *feel* parameters that the .ini doesn't capture —
+/// collider radius, how snappy the steering is (angular damping),
+/// how much the ship coasts in space (linear damping).
+///
+/// High angular damping ≈ fighter-like instant-turn (SC2 stock feel).
+/// Low angular damping + big mass ≈ boat-like inertia drift.
+struct PhysicsSpec {
+    collider_radius: f32,
+    mass: f32,
+    linear_damping: f32,
+    angular_damping: f32,
+}
+
+fn physics_spec(class: ShipClass, stats: &ShipStats) -> PhysicsSpec {
+    match class {
+        ShipClass::Earcr => PhysicsSpec {
+            collider_radius: 22.0,
+            mass: stats.mass,
+            linear_damping: 0.4,
+            angular_damping: 4.0,
+        },
+        ShipClass::Spael => PhysicsSpec {
+            // Eluder is small and twitchy — snappier turn, lower mass.
+            collider_radius: 16.0,
+            mass: stats.mass.max(1.0) * 0.8,
+            linear_damping: 0.5,
+            angular_damping: 6.0,
+        },
+        ShipClass::Yehte => PhysicsSpec {
+            collider_radius: 20.0,
+            mass: stats.mass,
+            linear_damping: 0.4,
+            angular_damping: 5.0,
+        },
+        ShipClass::Chmav => PhysicsSpec {
+            // Chmmr is heavy and slow to rotate — feels weighty.
+            collider_radius: 28.0,
+            mass: stats.mass * 1.4,
+            linear_damping: 0.5,
+            angular_damping: 2.5,
+        },
+        ShipClass::Kzedr => PhysicsSpec {
+            // Ur-Quan Dreadnought — biggest, boat-feel. Low angular
+            // damping is what makes a hit visibly spin it; the giant
+            // moment of inertia (mass × big radius) does the rest.
+            collider_radius: 34.0,
+            mass: stats.mass * 1.6,
+            linear_damping: 0.6,
+            angular_damping: 1.5,
+        },
+        ShipClass::Mycpo => PhysicsSpec {
+            collider_radius: 22.0,
+            mass: stats.mass,
+            linear_damping: 0.4,
+            angular_damping: 3.5,
+        },
+    }
+}
+
 /// Per-class primary-weapon shape. The fields stay generic on purpose so
 /// adding a class doesn't reshape callers — just add a match arm.
 struct WeaponSpec {
@@ -587,5 +649,41 @@ fn handle_projectile_hits(
             );
         }
         commands.entity(proj_entity).despawn();
+    }
+}
+
+/// Ship-on-ship contact damage. Avian has already applied the impulse
+/// (so the bigger ship pushes the smaller one and they both potentially
+/// spin); on top of that we deduct crew proportional to how fast they
+/// were closing. Below a threshold relative speed it's just a love tap,
+/// no damage.
+fn handle_ship_collisions(
+    mut reader: MessageReader<CollisionStart>,
+    mut q: Query<(&LinearVelocity, &mut Crew), With<Ship>>,
+) {
+    const RAM_DAMAGE_THRESHOLD: f32 = 80.0;
+    const RAM_DAMAGE_SCALE: f32 = 60.0;
+
+    for event in reader.read() {
+        // Only handle pairs where BOTH entities are ships with crew.
+        let Ok([(v1, _), (v2, _)]) = q.get_many([event.collider1, event.collider2]) else {
+            continue;
+        };
+        let rel_speed = (v1.0 - v2.0).length();
+        if rel_speed < RAM_DAMAGE_THRESHOLD {
+            continue;
+        }
+        let dmg = ((rel_speed - RAM_DAMAGE_THRESHOLD) / RAM_DAMAGE_SCALE)
+            .ceil()
+            .max(1.0) as i32;
+
+        // Apply to both ships — collision is symmetric and both crews
+        // get rattled. We re-fetch so we can mutate one at a time.
+        for entity in [event.collider1, event.collider2] {
+            if let Ok((_, mut crew)) = q.get_mut(entity) {
+                crew.current = (crew.current - dmg).max(0);
+                info!("ram: -{dmg} crew (now {}/{})", crew.current, crew.max);
+            }
+        }
     }
 }
