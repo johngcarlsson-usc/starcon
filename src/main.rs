@@ -2,6 +2,7 @@ mod input;
 mod netplay;
 mod physics;
 mod ship;
+mod timeflow;
 
 use bevy::prelude::*;
 
@@ -34,6 +35,7 @@ fn main() {
             physics::PhysicsPlugin,
             input::InputPlugin,
             netplay::NetplayPlugin,
+            timeflow::TimeflowPlugin,
         ))
         .add_systems(Startup, setup_camera)
         .add_systems(OnEnter(AppState::Loading), ship::load_ship_catalog)
