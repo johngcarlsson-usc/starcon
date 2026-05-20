@@ -143,6 +143,10 @@ pub struct Crew {
 #[derive(Component, Debug, Default)]
 pub struct WeaponCooldown(pub f32);
 
+/// Time (in seconds) until the ship's special ability can be used again.
+#[derive(Component, Debug, Default)]
+pub struct SpecialCooldown(pub f32);
+
 /// In-flight projectile. Owner is tracked so we can ignore self-hits.
 #[derive(Component, Debug)]
 pub struct Projectile {
@@ -170,7 +174,9 @@ impl Plugin for ShipPlugin {
             (
                 apply_player_input,
                 tick_weapon_cooldown,
+                tick_special_cooldown,
                 fire_weapons.after(tick_weapon_cooldown),
+                trigger_specials.after(tick_special_cooldown),
                 tick_projectile_lifetime,
                 handle_projectile_hits,
                 handle_ship_collisions,
@@ -295,6 +301,7 @@ fn spawn_ship(
             max: stats.crew_max,
         },
         WeaponCooldown::default(),
+        SpecialCooldown::default(),
         ShipFrames {
             frames: frames.to_vec(),
         },
@@ -683,6 +690,73 @@ fn handle_ship_collisions(
             if let Ok((_, mut crew)) = q.get_mut(entity) {
                 crew.current = (crew.current - dmg).max(0);
                 info!("ram: -{dmg} crew (now {}/{})", crew.current, crew.max);
+            }
+        }
+    }
+}
+
+fn tick_special_cooldown(time: Res<Time>, mut q: Query<&mut SpecialCooldown>) {
+    let dt = time.delta_secs();
+    for mut cd in &mut q {
+        if cd.0 > 0.0 {
+            cd.0 = (cd.0 - dt).max(0.0);
+        }
+    }
+}
+
+/// Per-class SPECIAL ability dispatch. Same shape as fire_weapons:
+/// new class → one match arm. Each arm decides whether to mutate the
+/// ship's own position/velocity (teleport, dash), apply force to other
+/// bodies (push field, tractor), or spawn helper entities (mines,
+/// drones). The dispatch is sync — for richer behaviour just spawn
+/// an entity with its own per-frame lifetime system.
+fn trigger_specials(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut q: Query<(
+        &Ship,
+        &ShipClass,
+        &mut Position,
+        &Rotation,
+        &mut LinearVelocity,
+        &mut SpecialCooldown,
+    )>,
+) {
+    for (ship, class, mut pos, rot, mut vel, mut cooldown) in &mut q {
+        if cooldown.0 > 0.0 {
+            continue;
+        }
+        let input = input::read_local_input(&keys, ship.player_slot);
+        if !input.pressed(input::INPUT_SPECIAL) {
+            continue;
+        }
+
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        match class {
+            ShipClass::Earcr => {
+                // Forward dash — short impulse, 1.5 s cooldown.
+                vel.0 += forward * 350.0;
+                cooldown.0 = 1.5;
+                info!("P{} dash", ship.player_slot + 1);
+            }
+            ShipClass::Spael => {
+                // Phase-jump backwards 200 units. The classic Spathi flee.
+                pos.0 -= forward * 200.0;
+                vel.0 *= 0.5; // bleed momentum so the warp feels distinct
+                cooldown.0 = 2.5;
+                info!("P{} warp", ship.player_slot + 1);
+            }
+            ShipClass::Yehte => {
+                // Placeholder until the shield + battery system lands —
+                // for now, mirror Earcr's dash so the class is playable.
+                vel.0 += forward * 280.0;
+                cooldown.0 = 1.5;
+            }
+            ShipClass::Chmav | ShipClass::Kzedr | ShipClass::Mycpo => {
+                // TODO: tractor beam / fighters / plasmoid (M5+). For
+                // now: free brake — kill 80% of velocity. Gives the
+                // class something to do while the real abilities cook.
+                vel.0 *= 0.2;
+                cooldown.0 = 2.0;
             }
         }
     }
