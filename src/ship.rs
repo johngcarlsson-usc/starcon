@@ -646,7 +646,7 @@ fn swap_rotation_frame(mut q: Query<(&Rotation, &ShipFrames, &mut Sprite)>) {
     }
 }
 
-fn tick_weapon_cooldown(time: Res<Time>, mut q: Query<&mut WeaponCooldown>) {
+fn tick_weapon_cooldown(time: Res<Time<Physics>>, mut q: Query<&mut WeaponCooldown>) {
     let dt = time.delta_secs();
     for mut cd in &mut q {
         if cd.0 > 0.0 {
@@ -827,7 +827,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
 
 fn tick_projectile_lifetime(
     mut commands: Commands,
-    time: Res<Time>,
+    time: Res<Time<Physics>>,
     mut q: Query<(Entity, &mut Projectile)>,
 ) {
     let dt = time.delta_secs();
@@ -933,7 +933,7 @@ fn handle_ship_collisions(
 
 fn tick_shield(
     mut commands: Commands,
-    time: Res<Time>,
+    time: Res<Time<Physics>>,
     mut q: Query<(Entity, &mut ShieldActive)>,
 ) {
     let dt = time.delta_secs();
@@ -946,7 +946,7 @@ fn tick_shield(
     }
 }
 
-fn tick_special_cooldown(time: Res<Time>, mut q: Query<&mut SpecialCooldown>) {
+fn tick_special_cooldown(time: Res<Time<Physics>>, mut q: Query<&mut SpecialCooldown>) {
     let dt = time.delta_secs();
     for mut cd in &mut q {
         if cd.0 > 0.0 {

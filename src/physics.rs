@@ -1,12 +1,13 @@
 //! Physics integration. Owned by Avian 2D (XPBD); we just configure it for
-//! space combat: no gravity, fixed 60 Hz tick (rollback-friendly), and a
-//! toroidal arena wrap that runs after each physics step.
+//! space combat: no gravity and a toroidal arena wrap that runs after each
+//! physics step. Tick rate comes from Bevy's `FixedUpdate` (60 Hz default)
+//! which Avian drives its `PhysicsSchedule` off of — we don't pin it
+//! ourselves. `Time<Physics>` is owned by Avian's plugin; gameplay timers
+//! read it (not Bevy's wall-clock `Time`) so global slow-mo / fast-forward
+//! also scales weapon cooldowns, projectile lifetimes, etc.
 
 use avian2d::prelude::*;
 use bevy::prelude::*;
-
-pub const TICK_HZ: u32 = 60;
-pub const TICK_DT: f32 = 1.0 / TICK_HZ as f32;
 
 /// Arena wraps at ±this value on each axis. Matches the SC2 Super Melee feel
 /// — small enough that combat stays close, large enough that you can run.
@@ -18,7 +19,6 @@ impl Plugin for PhysicsPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(PhysicsPlugins::default())
             .insert_resource(Gravity(Vec2::ZERO))
-            .insert_resource(Time::<Physics>::default().with_relative_speed(1.0))
             .add_systems(
                 PhysicsSchedule,
                 wrap_arena.in_set(PhysicsStepSystems::Last),
