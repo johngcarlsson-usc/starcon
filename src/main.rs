@@ -1,3 +1,4 @@
+mod hud;
 mod input;
 mod netplay;
 mod physics;
@@ -36,6 +37,7 @@ fn main() {
             input::InputPlugin,
             netplay::NetplayPlugin,
             timeflow::TimeflowPlugin,
+            hud::HudPlugin,
         ))
         .add_systems(Startup, setup_camera)
         .add_systems(OnEnter(AppState::Loading), ship::load_ship_catalog)
