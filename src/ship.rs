@@ -174,6 +174,15 @@ pub struct WeaponCooldown(pub f32);
 #[derive(Component, Debug, Default)]
 pub struct SpecialCooldown(pub f32);
 
+/// While present, the ship takes reduced damage from projectiles and rams.
+/// Timer decrements every FixedUpdate; the component is removed on expiry.
+#[derive(Component, Debug)]
+pub struct ShieldActive {
+    pub remaining: f32,
+    /// Multiplier on incoming damage (0.0 = invulnerable, 1.0 = none).
+    pub damage_factor: f32,
+}
+
 /// In-flight projectile. Owner is tracked so we can ignore self-hits.
 #[derive(Component, Debug)]
 pub struct Projectile {
@@ -204,6 +213,7 @@ impl Plugin for ShipPlugin {
                 apply_player_input,
                 tick_weapon_cooldown,
                 tick_special_cooldown,
+                tick_shield,
                 fire_weapons.after(tick_weapon_cooldown),
                 trigger_specials.after(tick_special_cooldown),
                 tick_projectile_lifetime,
@@ -705,6 +715,7 @@ fn handle_projectile_hits(
     mut commands: Commands,
     mut reader: MessageReader<CollisionStart>,
     projectiles: Query<&Projectile>,
+    shields: Query<&ShieldActive>,
     mut crews: Query<&mut Crew>,
 ) {
     for event in reader.read() {
@@ -722,15 +733,22 @@ fn handle_projectile_hits(
         };
 
         if proj.owner == other_entity {
-            // Projectiles can't damage their own ship.
             continue;
         }
 
         if let Ok(mut crew) = crews.get_mut(other_entity) {
-            crew.current = (crew.current - proj.damage).max(0);
+            let factor = shields
+                .get(other_entity)
+                .map(|s| s.damage_factor)
+                .unwrap_or(1.0);
+            let damage = ((proj.damage as f32 * factor).round() as i32).max(0);
+            crew.current = (crew.current - damage).max(0);
             info!(
-                "hit: -{} crew (now {}/{})",
-                proj.damage, crew.current, crew.max
+                "hit: -{} crew (now {}/{}){}",
+                damage,
+                crew.current,
+                crew.max,
+                if factor < 1.0 { " [shielded]" } else { "" }
             );
         }
         commands.entity(proj_entity).despawn();
@@ -745,12 +763,12 @@ fn handle_projectile_hits(
 fn handle_ship_collisions(
     mut reader: MessageReader<CollisionStart>,
     mut q: Query<(&LinearVelocity, &mut Crew), With<Ship>>,
+    shields: Query<&ShieldActive>,
 ) {
     const RAM_DAMAGE_THRESHOLD: f32 = 80.0;
     const RAM_DAMAGE_SCALE: f32 = 60.0;
 
     for event in reader.read() {
-        // Only handle pairs where BOTH entities are ships with crew.
         let Ok([(v1, _), (v2, _)]) = q.get_many([event.collider1, event.collider2]) else {
             continue;
         };
@@ -758,17 +776,40 @@ fn handle_ship_collisions(
         if rel_speed < RAM_DAMAGE_THRESHOLD {
             continue;
         }
-        let dmg = ((rel_speed - RAM_DAMAGE_THRESHOLD) / RAM_DAMAGE_SCALE)
+        let base = ((rel_speed - RAM_DAMAGE_THRESHOLD) / RAM_DAMAGE_SCALE)
             .ceil()
-            .max(1.0) as i32;
+            .max(1.0);
 
-        // Apply to both ships — collision is symmetric and both crews
-        // get rattled. We re-fetch so we can mutate one at a time.
         for entity in [event.collider1, event.collider2] {
+            let factor = shields
+                .get(entity)
+                .map(|s| s.damage_factor)
+                .unwrap_or(1.0);
+            let dmg = ((base * factor).round() as i32).max(0);
             if let Ok((_, mut crew)) = q.get_mut(entity) {
                 crew.current = (crew.current - dmg).max(0);
-                info!("ram: -{dmg} crew (now {}/{})", crew.current, crew.max);
+                info!(
+                    "ram: -{dmg} crew (now {}/{}){}",
+                    crew.current,
+                    crew.max,
+                    if factor < 1.0 { " [shielded]" } else { "" }
+                );
             }
+        }
+    }
+}
+
+fn tick_shield(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut q: Query<(Entity, &mut ShieldActive)>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut shield) in &mut q {
+        shield.remaining -= dt;
+        if shield.remaining <= 0.0 {
+            commands.entity(entity).remove::<ShieldActive>();
+            info!("shield down");
         }
     }
 }
@@ -789,8 +830,10 @@ fn tick_special_cooldown(time: Res<Time>, mut q: Query<&mut SpecialCooldown>) {
 /// drones). The dispatch is sync — for richer behaviour just spawn
 /// an entity with its own per-frame lifetime system.
 fn trigger_specials(
+    mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     mut q: Query<(
+        Entity,
         &Ship,
         &ShipClass,
         &mut Position,
@@ -799,7 +842,7 @@ fn trigger_specials(
         &mut SpecialCooldown,
     )>,
 ) {
-    for (ship, class, mut pos, rot, mut vel, mut cooldown) in &mut q {
+    for (entity, ship, class, mut pos, rot, mut vel, mut cooldown) in &mut q {
         if cooldown.0 > 0.0 {
             continue;
         }
@@ -824,10 +867,15 @@ fn trigger_specials(
                 info!("P{} warp", ship.player_slot + 1);
             }
             ShipClass::Yehte => {
-                // Placeholder until the shield + battery system lands —
-                // for now, mirror Earcr's dash so the class is playable.
-                vel.0 += forward * 280.0;
-                cooldown.0 = 1.5;
+                // Yehat energy shield — 2 s of 25% incoming damage, 5 s
+                // cooldown. First special that affects *other* ships'
+                // attacks rather than this ship's motion.
+                commands.entity(entity).insert(ShieldActive {
+                    remaining: 2.0,
+                    damage_factor: 0.25,
+                });
+                cooldown.0 = 5.0;
+                info!("P{} shield up", ship.player_slot + 1);
             }
             ShipClass::Chmav | ShipClass::Kzedr | ShipClass::Mycpo => {
                 // TODO: tractor beam / fighters / plasmoid (M5+). For
