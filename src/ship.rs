@@ -106,7 +106,8 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 20] = [
+pub const ALL_CLASSES: [ShipClass; 25] = [
+    // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
     ShipClass::Yehte,
@@ -128,6 +129,12 @@ pub const ALL_CLASSES: [ShipClass; 20] = [
     ShipClass::Druma,
     ShipClass::Utwju,
     ShipClass::Zfpst,
+    // bank 3 (hold Ctrl with the picker key)
+    ShipClass::Mmrxf,
+    ShipClass::Orzne,
+    ShipClass::Slypr,
+    ShipClass::Umgdr,
+    ShipClass::Meltr,
 ];
 
 /// How rotation responds to forces.
@@ -215,6 +222,18 @@ pub enum ShipClass {
     Utwju,
     /// Zoq-Fot-Pik Stinger — agile, tongue lash close-range attack.
     Zfpst,
+    /// Mmrnmhrm X-Form — transforms between Y-Form (fighter) and X-Form
+    /// (interceptor). For now, single form with placeholder transform.
+    Mmrxf,
+    /// Orz Nemesis — flexible-arm cannon + space marines. Both deferred.
+    Orzne,
+    /// Slylandro Probe — homing lightning. AI-only enemy in original SC2;
+    /// TW gave it stats so we ship it as a pickable class.
+    Slypr,
+    /// Umgah Drone — anti-grav cone weapon, fusion crystal slingshot special.
+    Umgdr,
+    /// Melnorme Trader — chargeable plasma cannon (canonical mechanic).
+    Meltr,
 }
 
 impl ShipClass {
@@ -241,6 +260,11 @@ impl ShipClass {
             ShipClass::Druma => "druma",
             ShipClass::Utwju => "utwju",
             ShipClass::Zfpst => "zfpst",
+            ShipClass::Mmrxf => "mmrxf",
+            ShipClass::Orzne => "orzne",
+            ShipClass::Slypr => "slypr",
+            ShipClass::Umgdr => "umgdr",
+            ShipClass::Meltr => "meltr",
         }
     }
 }
@@ -454,9 +478,9 @@ pub fn spawn_match(
 }
 
 /// Class-picker hotkeys. Each player has 10 key slots (digits for P1,
-/// F-keys for P2) plus a Shift modifier that flips to "bank 2" for the
-/// next 10 classes. So unmodified `1`..=`0` → indices 0..9, holding
-/// Shift while pressing them → 10..19. Changes apply on the next rematch.
+/// F-keys for P2) plus modifier-based bank selection: no modifier picks
+/// classes 0..9, `Shift` picks 10..19, `Ctrl` picks 20..24. Changes
+/// apply on the next rematch.
 fn class_picker_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<MatchConfig>) {
     const P1_DIGITS: [KeyCode; 10] = [
         KeyCode::Digit1,
@@ -484,7 +508,14 @@ fn class_picker_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<MatchC
     ];
 
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    let bank_offset = if shift { 10 } else { 0 };
+    let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    let bank_offset = if ctrl {
+        20
+    } else if shift {
+        10
+    } else {
+        0
+    };
 
     for (i, key) in P1_DIGITS.iter().enumerate() {
         if keys.just_pressed(*key) {
@@ -833,6 +864,7 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
     // weighty/boat-like by default; `M` toggles the global override
     // for experimentation.
     let collider_radius = match class {
+        ShipClass::Slypr | ShipClass::Umgdr => 12.0,
         ShipClass::Shosc | ShipClass::Arisk | ShipClass::Zfpst => 14.0,
         ShipClass::Spael | ShipClass::Pkufu | ShipClass::Thrto => 16.0,
         ShipClass::Yehte
@@ -844,7 +876,10 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Syrpe
         | ShipClass::Andgu
         | ShipClass::Druma
-        | ShipClass::Utwju => 22.0,
+        | ShipClass::Utwju
+        | ShipClass::Mmrxf
+        | ShipClass::Orzne
+        | ShipClass::Meltr => 22.0,
         ShipClass::Chmav | ShipClass::Kohma | ShipClass::Chebr => 28.0,
         ShipClass::Kzedr => 34.0,
     };
@@ -1058,6 +1093,57 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 0.6,
             color: Color::srgb(1.0, 0.7, 0.5),
             sprite_size: 4.0,
+        },
+        ShipClass::Mmrxf => WeaponSpec {
+            // X-Form lasers — fast forward beam shot.
+            local_direction: forward,
+            muzzle_offset: 24.0,
+            speed: 1100.0,
+            lifetime: 1.0,
+            color: Color::srgb(0.6, 0.8, 1.0),
+            sprite_size: 4.0,
+        },
+        ShipClass::Orzne => WeaponSpec {
+            // Orz "flexible arm" — extendable cannon. For now a
+            // single forward shot until we have multi-stage projectiles.
+            local_direction: forward,
+            muzzle_offset: 28.0,
+            speed: 700.0,
+            lifetime: 1.5,
+            color: Color::srgb(0.8, 0.9, 0.6),
+            sprite_size: 6.0,
+        },
+        ShipClass::Slypr => WeaponSpec {
+            // Slylandro lightning — homes in canon; straight-line
+            // placeholder until homing projectile lands with Mycon
+            // plasmoid in M3.
+            local_direction: forward,
+            muzzle_offset: 18.0,
+            speed: 600.0,
+            lifetime: 2.0,
+            color: Color::srgb(1.0, 1.0, 0.5),
+            sprite_size: 5.0,
+        },
+        ShipClass::Umgdr => WeaponSpec {
+            // Umgah anti-grav cone — fan of short-range projectiles
+            // in canon; single forward shot placeholder.
+            local_direction: forward,
+            muzzle_offset: 18.0,
+            speed: 500.0,
+            lifetime: 0.8,
+            color: Color::srgb(0.5, 1.0, 0.7),
+            sprite_size: 7.0,
+        },
+        ShipClass::Meltr => WeaponSpec {
+            // Melnorme chargeable plasma — held-fire charges in canon.
+            // For now a fixed-power forward shot until we wire up
+            // press-to-charge / release-to-fire input semantics.
+            local_direction: forward,
+            muzzle_offset: 26.0,
+            speed: 800.0,
+            lifetime: 1.5,
+            color: Color::srgb(0.9, 0.5, 1.0),
+            sprite_size: 6.0,
         },
     }
 }
@@ -1407,6 +1493,47 @@ fn trigger_specials(
                 vel.0 += forward * 300.0;
                 cooldown.0 = 2.0;
                 info!("P{} taunt", ship.player_slot + 1);
+            }
+            ShipClass::Mmrxf => {
+                // Mmrnmhrm X↔Y form swap. Needs class mutation +
+                // re-deriving ShipPhysicsDerived, which requires
+                // commands access in the right shape — saved for M3.
+                // For now: forward dash as the "transform" visual cue.
+                vel.0 += forward * 350.0;
+                cooldown.0 = 2.0;
+                info!("P{} transform (placeholder)", ship.player_slot + 1);
+            }
+            ShipClass::Orzne => {
+                // Orz space marines need sub-entity AI (carrier-class
+                // hosts launching their own bodies). Placeholder dash.
+                vel.0 += forward * 300.0;
+                cooldown.0 = 2.0;
+                info!("P{} marines (placeholder)", ship.player_slot + 1);
+            }
+            ShipClass::Slypr => {
+                // Slylandro Probe self-destructs in canon. Until we have
+                // AoE damage, use a teleport like Arilou.
+                let perp = Vec2::new(-forward.y, forward.x);
+                pos.0 += perp * 400.0;
+                vel.0 = Vec2::ZERO;
+                cooldown.0 = 3.0;
+                info!("P{} probe jump (placeholder)", ship.player_slot + 1);
+            }
+            ShipClass::Umgdr => {
+                // Umgah anti-grav slingshot — accelerates the ship
+                // *backwards* sharply. Maps cleanly to a reverse
+                // impulse, which is a fresh dispatch shape (every
+                // other special goes forward).
+                vel.0 -= forward * 500.0;
+                cooldown.0 = 2.0;
+                info!("P{} anti-grav", ship.player_slot + 1);
+            }
+            ShipClass::Meltr => {
+                // Melnorme confusion ray needs to affect enemy controls;
+                // beyond the per-ship loop. Placeholder dash.
+                vel.0 += forward * 300.0;
+                cooldown.0 = 2.0;
+                info!("P{} confusion (placeholder)", ship.player_slot + 1);
             }
         }
     }

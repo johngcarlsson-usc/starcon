@@ -30,18 +30,31 @@ Two ships, full gameplay loop:
 
 ## M3 — Class behaviour fill-in
 
-The four placeholder classes need their real specials:
+The full canonical SC2 Ur-Quan Masters 25-ship roster is loaded and
+selectable; physics + weapons + a per-class special arm all dispatch
+correctly. Several specials are still placeholders (flagged with
+`info!(... placeholder)` in `trigger_specials`) because they need
+engine primitives we haven't built yet. Grouped by what's missing:
 
-- **Yehat Terminator**: energy shield (damage modifier — first class to show
-  that a special can affect *incoming* events, not just the ship's own motion)
-- **Chmmr Avatar**: tractor beam (Avian `DistanceJoint` between ship + target)
-  + orbiting defense satellites (sub-entities with their own collision)
-- **Ur-Quan Kzer-Za Dreadnought**: launchable fighters (spawn dependent
-  sub-entities; the existing P2 fighter AI is its own subgenre of work)
-- **Mycon Podship**: plasmoid — a slow projectile that homes on the nearest
-  enemy
+**AoE damage zones / area effects** (needed for): Shofixti Glory Device,
+Kohr-Ah sawblades, Chenjesu DOGI mines, Slylandro self-destruct.
 
-Each is independent of the others and can ship as its own commit.
+**Sub-entity AI / fighters** (needed for): Ur-Quan Kzer-Za fighters,
+Chmmr satellites, Orz space marines.
+
+**Targeting-without-damage** (needed for): Ilwrath cloak (untargetable
+but visible), VUX limpet attachment, Mycon homing plasmoid.
+
+**Mode-toggle abilities** (need a state component swap + re-derive of
+ShipPhysicsDerived at runtime): Mmrnmhrm X↔Y form, Androsynth Blazer
+mode, Melnorme charging fire.
+
+**Cross-ship queries / mind effects** (need cross-entity reads in the
+special arms): Syreen siren song, Melnorme confusion ray.
+
+Each of these primitives is one focused commit. Adding them
+incrementally lets the placeholder specials light up one at a time
+without changing any class-dispatch shape.
 
 ## M4 — Rollback netplay
 
@@ -66,15 +79,12 @@ This is the big one. Three pieces, in order:
 - Multi-ship per side: when your active hull dies, next ship in fleet enters
 - Match ends when a side has no ships left
 
-## M6 — Port the remaining ships
+## M6 — User-contributed TW-Light ships (deferred)
 
-170 ships in the original. Each is a `.cpp` of bespoke logic — reimplement
-in Rust. Group by complexity:
-
-- **Easy** (Pkunk Fury, Shofixti Scout, Earthling, Spathi): simple projectile + one special
-- **Medium** (Chmmr, Ur-Quan, Kohr-Ah, Utwig): area effects, sub-objects
-- **Hard** (Slylandro Probe, Orz, Androsynth): mode changes, dimensional
-  shift, ship sub-spawning
+The legacy TW-Light repository has ~170 ships, of which 25 are canonical
+SC2 (now all loaded — see M3). The remaining ~145 are user-contributed
+hulls of varying quality. Not in scope for the initial port; revisit
+once netplay and the M3 mechanic primitives are settled.
 
 ## M7 — Polish
 

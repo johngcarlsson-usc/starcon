@@ -49,7 +49,8 @@ are ~5 seconds.
 | `R` | Rematch (only between rounds, after a winner is shown) |
 | `1`–`9`, `0` | Pick P1's class for the next rematch (bank 1) |
 | `F1`–`F10` | Pick P2's class for the next rematch (bank 1) |
-| `Shift` + above | Same key but pick from bank 2 (classes 10–14) |
+| `Shift` + above | Same key but pick from bank 2 (classes 10–19) |
+| `Ctrl` + above | Pick from bank 3 (classes 20–24) |
 | `[` / `]` | Slow / speed up the entire physics clock (debug) |
 | `\` | Reset time scale to 1.0 |
 | `M` | Cycle angular-control override (off → force Classic → force Inertial → off) |
@@ -78,11 +79,16 @@ Class index (same number = same ship for both players):
 | ⇧+8 / ⇧+F8 | Druuge Mauler      | Heavy cannon **with recoil** (firing pushes you back), ship-jump |
 | ⇧+9 / ⇧+F9 | Utwig Jugger       | Twin prong, 2 s ricochet shield |
 | ⇧+0 / ⇧+F10| Zoq-Fot-Pik Stinger| Tongue lash, taunt-dash |
+| ⌃+1 / ⌃+F1 | Mmrnmhrm X-Form    | Beam shot, transform placeholder |
+| ⌃+2 / ⌃+F2 | Orz Nemesis        | Flex-arm shot, marines (placeholder) |
+| ⌃+3 / ⌃+F3 | Slylandro Probe    | Lightning shot, perpendicular jump |
+| ⌃+4 / ⌃+F4 | Umgah Drone        | Cone shot, **anti-grav reverse impulse** |
+| ⌃+5 / ⌃+F5 | Melnorme Trader    | Plasma shot, confusion (placeholder) |
 
 ## What's implemented today
 
 - 2D physics via Avian — real mass, angular momentum, impulse-at-contact spin
-- 6 ship classes with distinct per-class:
+- Full canonical SC2 (Ur-Quan Masters) **25-ship roster** with distinct per-class:
   - **Stats** loaded from `assets/ships/<code>.ini` (legacy TW format)
   - **Physics tuning** (collider, mass, damping — big ships boat-feel, small ships agile)
   - **Weapon shape** (direction, speed, lifetime, color — Spathi fires *backwards*!)
@@ -112,17 +118,15 @@ from the original Allegro 4 datafiles via `cargo run --bin extract_dat --feature
 (see `tools/extract_dat.rs`). PNGs preserve the original magenta-keyed
 transparency converted to RGBA alpha.
 
-Starting subset (with assets and stats):
+The full canonical SC2 Ur-Quan Masters lineup is in:
 
-- `earcr` — Earthling Cruiser
-- `kzedr` — Ur-Quan (Kzer-Za) Dreadnought
-- `chmav` — Chmmr Avatar
-- `spael` — Spathi Eluder
-- `yehte` — Yehat Terminator
-- `mycpo` — Mycon Podship
+  Alliance:  earcr, yehte, shosc, mmrxf, syrpe, chebr, arisk
+  Hierarchy: kzedr, mycpo, spael, vuxin, ilwav, andgu, umgdr
+  SC2-only:  chmav, kohma, druma, orzne, supbl, thrto, utwju,
+             zfpst, pkufu, meltr, slypr
 
-The remaining ~165 TW-Light ships will be ported once these six have all their
-class-specific behaviour wired up.
+The remaining ~145 TW-Light user-contributed ships from the legacy
+repository are not in scope for the initial port.
 
 ## License
 
