@@ -250,6 +250,22 @@ pub fn spawn_match(
     );
 }
 
+/// Despawn every gameplay entity from the previous round so the next
+/// OnEnter(InMatch) can spawn a clean scene. Camera, HUD nodes, and
+/// the catalog resource survive.
+pub fn teardown_match(
+    mut commands: Commands,
+    ships: Query<Entity, With<Ship>>,
+    projectiles: Query<Entity, With<Projectile>>,
+) {
+    for e in &ships {
+        commands.entity(e).despawn();
+    }
+    for e in &projectiles {
+        commands.entity(e).despawn();
+    }
+}
+
 fn spawn_class(
     commands: &mut Commands,
     catalog: &ShipCatalog,

@@ -14,9 +14,23 @@ struct CrewReadout {
     slot: usize,
 }
 
+#[derive(Component)]
+struct StatusBanner;
+
+/// Whose turn it is in the match loop. Restarts go Live → PostMatch
+/// (waiting for R) → Live.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MatchPhase {
+    #[default]
+    Live,
+    PostMatch,
+}
+
 #[derive(Resource, Default)]
-struct MatchOutcome {
-    winner_announced: bool,
+pub struct MatchOutcome {
+    pub winner: Option<usize>,
+    pub p1_wins: u32,
+    pub p2_wins: u32,
 }
 
 pub struct HudPlugin;
@@ -24,6 +38,7 @@ pub struct HudPlugin;
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MatchOutcome>()
+            .init_resource::<MatchPhase>()
             .add_systems(Startup, setup_hud)
             .add_systems(
                 Update,
@@ -31,13 +46,14 @@ impl Plugin for HudPlugin {
                     update_crew_readouts,
                     destroy_zero_crew_ships,
                     detect_winner,
+                    update_status_banner,
                 ),
             );
     }
 }
 
 fn setup_hud(mut commands: Commands) {
-    // Root node spanning the screen so the two readouts can pin to corners.
+    // Top row: per-player crew readouts pinned to corners.
     commands
         .spawn(Node {
             width: Val::Percent(100.0),
@@ -59,6 +75,27 @@ fn setup_hud(mut commands: Commands) {
                     CrewReadout { slot },
                 ));
             }
+        });
+
+    // Centred banner that lights up between rounds.
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(0.0),
+            left: Val::Px(0.0),
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        })
+        .with_children(|root| {
+            root.spawn((
+                Text::new(""),
+                TextFont::from_font_size(40.0),
+                TextColor(Color::srgb(1.0, 1.0, 1.0)),
+                StatusBanner,
+            ));
         });
 }
 
@@ -88,12 +125,14 @@ fn destroy_zero_crew_ships(
     }
 }
 
-fn detect_winner(ships: Query<&Ship>, mut outcome: ResMut<MatchOutcome>) {
-    if outcome.winner_announced {
+fn detect_winner(
+    ships: Query<&Ship>,
+    mut outcome: ResMut<MatchOutcome>,
+    mut phase: ResMut<MatchPhase>,
+) {
+    if *phase == MatchPhase::PostMatch {
         return;
     }
-    // Need to wait until at least one ship has spawned before we can
-    // declare a winner — the HUD's Startup runs before the match scene.
     let mut have_p1 = false;
     let mut have_p2 = false;
     for ship in &ships {
@@ -103,14 +142,51 @@ fn detect_winner(ships: Query<&Ship>, mut outcome: ResMut<MatchOutcome>) {
             _ => {}
         }
     }
-    if have_p1 && !have_p2 {
-        info!("WINNER: Player 1");
-        outcome.winner_announced = true;
+    // Need at least one ship to ever have existed before declaring an
+    // outcome — Startup runs before the match scene spawns ships.
+    let winner = if have_p1 && !have_p2 {
+        Some(0usize)
     } else if have_p2 && !have_p1 {
-        info!("WINNER: Player 2");
-        outcome.winner_announced = true;
-    } else if !have_p1 && !have_p2 {
-        // Both gone (probably ramming both to zero) — call it a draw.
-        // Skip until we've definitely seen ships spawn.
+        Some(1usize)
+    } else {
+        None
+    };
+    if let Some(w) = winner {
+        outcome.winner = Some(w);
+        if w == 0 {
+            outcome.p1_wins += 1;
+        } else {
+            outcome.p2_wins += 1;
+        }
+        *phase = MatchPhase::PostMatch;
+        info!(
+            "WINNER: Player {} (score {}-{})",
+            w + 1,
+            outcome.p1_wins,
+            outcome.p2_wins
+        );
+    }
+}
+
+fn update_status_banner(
+    phase: Res<MatchPhase>,
+    outcome: Res<MatchOutcome>,
+    mut q: Query<&mut Text, With<StatusBanner>>,
+) {
+    for mut text in &mut q {
+        text.0 = match *phase {
+            MatchPhase::Live => format!("{} — {}", outcome.p1_wins, outcome.p2_wins),
+            MatchPhase::PostMatch => match outcome.winner {
+                Some(0) => format!(
+                    "P1 WINS  ({}-{})\n[R] rematch",
+                    outcome.p1_wins, outcome.p2_wins
+                ),
+                Some(1) => format!(
+                    "P2 WINS  ({}-{})\n[R] rematch",
+                    outcome.p1_wins, outcome.p2_wins
+                ),
+                _ => "DRAW\n[R] rematch".to_string(),
+            },
+        };
     }
 }

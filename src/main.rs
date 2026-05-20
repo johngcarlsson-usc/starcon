@@ -8,10 +8,13 @@ mod timeflow;
 use bevy::prelude::*;
 
 #[derive(States, Clone, Copy, Eq, PartialEq, Hash, Debug, Default)]
-enum AppState {
+pub enum AppState {
     #[default]
     Loading,
     MainMenu,
+    /// Tears down the previous round's entities before re-entering
+    /// InMatch. One-frame transient state — used by the rematch flow.
+    Resetting,
     InMatch,
 }
 
@@ -42,9 +45,14 @@ fn main() {
         .add_systems(Startup, setup_camera)
         .add_systems(OnEnter(AppState::Loading), ship::load_ship_catalog)
         .add_systems(OnEnter(AppState::InMatch), ship::spawn_match)
+        .add_systems(OnEnter(AppState::Resetting), ship::teardown_match)
         .add_systems(
             Update,
-            advance_to_match.run_if(in_state(AppState::Loading)),
+            (
+                advance_to_match.run_if(in_state(AppState::Loading)),
+                resume_from_reset.run_if(in_state(AppState::Resetting)),
+                request_rematch.run_if(in_state(AppState::InMatch)),
+            ),
         )
         .run();
 }
@@ -61,5 +69,27 @@ fn advance_to_match(
 ) {
     if catalog.is_some() {
         next.set(AppState::InMatch);
+    }
+}
+
+/// Once OnEnter(Resetting) has finished tearing down the old round,
+/// we bounce straight back into InMatch on the next frame.
+fn resume_from_reset(
+    mut next: ResMut<NextState<AppState>>,
+    mut phase: ResMut<hud::MatchPhase>,
+    mut outcome: ResMut<hud::MatchOutcome>,
+) {
+    outcome.winner = None;
+    *phase = hud::MatchPhase::Live;
+    next.set(AppState::InMatch);
+}
+
+fn request_rematch(
+    keys: Res<ButtonInput<KeyCode>>,
+    phase: Res<hud::MatchPhase>,
+    mut next: ResMut<NextState<AppState>>,
+) {
+    if *phase == hud::MatchPhase::PostMatch && keys.just_pressed(KeyCode::KeyR) {
+        next.set(AppState::Resetting);
     }
 }
