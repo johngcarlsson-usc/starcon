@@ -1,3 +1,4 @@
+use avian2d::dynamics::rigid_body::forces::{ConstantLocalForce, ConstantTorque};
 use avian2d::prelude::*;
 use bevy::prelude::*;
 use ini::Ini;
@@ -146,7 +147,10 @@ pub fn load_ship_catalog(mut commands: Commands) {
     commands.insert_resource(ShipCatalog { ships });
 }
 
-/// Spawn the M1 test scene: one Earthling Cruiser at the origin.
+/// Spawn the test scene: two Earthling Cruisers facing each other. Player
+/// 1 (arrows + Z/X) on the left; player 2 (WASD + G/H) on the right. They
+/// share a hull class for now — once we have a fleet picker, this becomes
+/// data-driven.
 pub fn spawn_match(
     mut commands: Commands,
     catalog: Res<ShipCatalog>,
@@ -157,26 +161,67 @@ pub fn spawn_match(
         return;
     };
     let frames = load_rotation_frames(&assets, "earcr");
-    let initial = frames[0].clone();
+    if frames.is_empty() {
+        error!("no rotation frames found for earcr");
+        return;
+    }
 
+    spawn_ship(
+        &mut commands,
+        &stats,
+        &frames,
+        Vec2::new(-300.0, 0.0),
+        std::f32::consts::FRAC_PI_2, // face +x (right)
+        0,
+    );
+    spawn_ship(
+        &mut commands,
+        &stats,
+        &frames,
+        Vec2::new(300.0, 0.0),
+        -std::f32::consts::FRAC_PI_2, // face -x (left)
+        1,
+    );
+    info!("spawned 2 ships");
+}
+
+/// Spawns a playable ship at the given pose. All ships share this builder so
+/// per-ship tuning (damping, collider size, etc.) lives in one place.
+///
+/// Angular damping is kept low enough that collisions impart visible spin —
+/// fighter-class ships rely on their high `turn_rate` (and thus high applied
+/// torque) to recover quickly, while larger ships get a boat-like feel for
+/// free as their bigger moment of inertia naturally fights the torque.
+fn spawn_ship(
+    commands: &mut Commands,
+    stats: &ShipStats,
+    frames: &[Handle<Image>],
+    position: Vec2,
+    rotation_rad: f32,
+    slot: usize,
+) {
+    let initial = frames.first().cloned().unwrap_or_default();
     commands.spawn((
         Ship {
             stats: stats.clone(),
-            player_slot: 0,
+            player_slot: slot,
         },
-        ShipFrames { frames },
+        ShipFrames {
+            frames: frames.to_vec(),
+        },
         Sprite::from_image(initial),
-        Transform::from_xyz(0.0, 0.0, 0.0),
+        Transform::from_translation(position.extend(0.0)),
         RigidBody::Dynamic,
         Collider::circle(20.0),
         Mass(stats.mass),
-        LinearDamping(0.0),
-        AngularDamping(2.0),
+        Rotation::radians(rotation_rad),
+        LinearDamping(0.4),
+        AngularDamping(4.0),
         LinearVelocity::ZERO,
         AngularVelocity::ZERO,
+        ConstantLocalForce(Vec2::ZERO),
+        ConstantTorque(0.0),
     ));
-
-    info!("spawned earcr at origin");
 }
 
 fn load_rotation_frames(assets: &AssetServer, code: &str) -> Vec<Handle<Image>> {
@@ -194,46 +239,43 @@ fn load_rotation_frames(assets: &AssetServer, code: &str) -> Vec<Handle<Image>> 
     frames
 }
 
-/// Read keyboard for this peer's slot and write velocities directly.
-/// In M4 this gets moved into the rollback schedule and switched to
-/// Forces-via-Avian so the solver integrates thrust internally.
+/// Read keyboard for this peer's slot and write the ship's persistent
+/// thrust force + steering torque components. The physics solver reads
+/// these every step, so we never touch velocities directly — that's
+/// what gives us angular momentum "for free": a collision impulse at an
+/// off-centre contact point spins the ship up against our torque, and
+/// the player has to actively cancel the spin.
+///
+/// Force/torque magnitudes are scaled from the ship's stats so .ini
+/// tuning still drives behaviour. Damping (in `spawn_ship`) is what
+/// sets the terminal turn rate / cruise speed.
 fn apply_player_input(
     keys: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
-    mut q: Query<(
-        &Ship,
-        &Rotation,
-        &mut LinearVelocity,
-        &mut AngularVelocity,
-    )>,
+    mut q: Query<(&Ship, &mut ConstantLocalForce, &mut ConstantTorque)>,
 ) {
-    let dt = time.delta_secs();
-    for (ship, rot, mut lin, mut ang) in &mut q {
+    // Tuning knobs — moved into a Resource later so different ships can
+    // override per-class. For now uniform constants get us in the ballpark.
+    const THRUST_GAIN: f32 = 4000.0;
+    const TORQUE_GAIN: f32 = 2.0e6;
+
+    for (ship, mut thrust, mut torque) in &mut q {
         let input = input::read_local_input(&keys, ship.player_slot);
 
-        // Rotation: clamp to the ship's TurnRate (legacy unit is degrees/tick at 36 Hz).
-        let target_omega = if input.pressed(input::INPUT_LEFT) {
-            ship.stats.turn_rate.to_radians() * 60.0
+        let turn = if input.pressed(input::INPUT_LEFT) {
+            1.0
         } else if input.pressed(input::INPUT_RIGHT) {
-            -ship.stats.turn_rate.to_radians() * 60.0
+            -1.0
         } else {
             0.0
         };
-        // Snap to target — SC2 ships have no rotational inertia. We'll add
-        // it back via Avian once we wire chains/satellites (M5+).
-        ang.0 = target_omega;
+        torque.0 = turn * ship.stats.turn_rate * TORQUE_GAIN;
 
-        if input.pressed(input::INPUT_THRUST) {
-            // Ship sprite faces "up" at zero rotation, so forward = rot * +Y.
-            let forward = Vec2::new(-rot.sin, rot.cos);
-            let accel = ship.stats.accel_rate * 60.0;
-            lin.0 += forward * accel * dt;
-            // Cap at SpeedMax (also legacy 36 Hz tick units — scale up).
-            let max = ship.stats.speed_max * 4.0;
-            if lin.0.length() > max {
-                lin.0 = lin.0.normalize() * max;
-            }
-        }
+        thrust.0 = if input.pressed(input::INPUT_THRUST) {
+            // Sprite faces +Y at zero rotation, so thrust along local +Y.
+            Vec2::new(0.0, ship.stats.accel_rate * ship.stats.mass * THRUST_GAIN)
+        } else {
+            Vec2::ZERO
+        };
     }
 }
 
