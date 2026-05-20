@@ -5,6 +5,7 @@ edition = "2021"
 license = "GPL-2.0-or-later"
 description = "Modern rewrite of Star Control: TimeWarp (TW-Light), a fan Star Control melee game"
 publish = false
+default-run = "starcon"
 
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = [

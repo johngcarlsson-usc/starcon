@@ -173,9 +173,7 @@ pub fn spawn_match(
         LinearDamping(0.0),
         AngularDamping(2.0),
         LinearVelocity::ZERO,
-        AngularVelocity(0.0),
-        ExternalForce::default().with_persistence(false),
-        ExternalTorque::default().with_persistence(false),
+        AngularVelocity::ZERO,
     ));
 
     info!("spawned earcr at origin");
@@ -196,28 +194,27 @@ fn load_rotation_frames(assets: &AssetServer, code: &str) -> Vec<Handle<Image>> 
     frames
 }
 
-/// Read keyboard for this peer's slot and convert it into Avian
-/// ExternalForce / ExternalTorque writes. Runs at the start of every
-/// physics step so the solver sees up-to-date inputs.
+/// Read keyboard for this peer's slot and apply force/torque via Avian's
+/// `Forces` query data. Forces apply for the current step and clear
+/// automatically afterwards — no manual reset needed.
 fn apply_player_input(
     keys: Res<ButtonInput<KeyCode>>,
-    mut q: Query<(&Ship, &Rotation, &mut ExternalForce, &mut ExternalTorque)>,
+    mut q: Query<(&Ship, Forces)>,
 ) {
-    for (ship, rot, mut force, mut torque) in &mut q {
+    for (ship, mut forces) in &mut q {
         let input = input::read_local_input(&keys, ship.player_slot);
-        force.clear();
-        torque.clear();
 
         if input.pressed(input::INPUT_LEFT) {
-            torque.apply_torque(ship.stats.turn_rate * 800.0);
+            forces.apply_torque(ship.stats.turn_rate * 800.0);
         }
         if input.pressed(input::INPUT_RIGHT) {
-            torque.apply_torque(-ship.stats.turn_rate * 800.0);
+            forces.apply_torque(-ship.stats.turn_rate * 800.0);
         }
         if input.pressed(input::INPUT_THRUST) {
             // Ship sprite faces "up" at zero rotation, so forward = rot * Vec2::Y.
+            let rot = *forces.rotation();
             let forward = Vec2::new(-rot.sin, rot.cos);
-            force.apply_force(forward * ship.stats.accel_rate * ship.stats.mass * 60.0);
+            forces.apply_force(forward * ship.stats.accel_rate * ship.stats.mass * 60.0);
         }
     }
 }
