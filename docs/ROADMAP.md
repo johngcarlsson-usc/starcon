@@ -2,73 +2,106 @@
 
 Milestone-driven. Each milestone produces something runnable before moving on.
 
-## M0 — Scaffold (✅ current)
+## M0 — Scaffold ✅
 
 - Cargo project compiles
 - Six ships' `.ini`/`.txt` salvaged into `assets/ships/`
 - `.dat` sprite/sound archives parked in `assets/legacy-dat/` for later extraction
 - Module skeleton: `ship`, `physics`, `input`, `netplay`
 
-## M1 — One ship moves on screen
+## M2 — Sprite extraction ✅
 
-- Bevy window + 2D camera
-- Placeholder sprite (colored triangle) for one ship class
-- Local keyboard control drives a `PlayerInput` → `Velocity` → `Transform`
-- Toroidal arena wraparound
+(Got bumped earlier than originally planned because it was easy.) Allegro 4
+`dat` CLI shell-out, BMP → PNG with the engine's magenta key converted to
+RGBA alpha, per-ship `manifest.json`. Run `cargo run --bin extract_dat --features tools`
+to (re)generate.
 
-## M2 — Extract sprites from Allegro `.dat`
+## M1 — Local 1v1 melee ✅
 
-The original `.dat` files are Allegro 4 datafiles. They contain ship rotation
-frames (typically 64 angles), thruster/explosion animations, and short PCM
-sounds. We need to convert these once, offline, into PNG sheets + WAV/OGG so
-the runtime stays simple.
+Two ships, full gameplay loop:
 
-Approach: write a small `xtask` (`cargo xtask extract-dat`) that parses the
-Allegro datafile header and dumps each object. Format spec is in the legacy
-source under `src/libraries/allegro/`.
+- Avian 2D physics with real angular momentum and per-class damping
+  (big ships boat-feel, small ships agile)
+- Per-class dispatch in three independent surfaces: physics (`physics_spec`),
+  primary weapon (`primary_weapon`), special ability (`trigger_specials`)
+- Projectiles, weapon cooldown, crew counts, ram damage, win detection
+- Match restart on R, running score, class picker (1-6 / F1-F6)
+- Time-scale debug controls + extensibility seam doc (`src/timeflow.rs`)
 
-## M3 — Local two-player melee
+## M3 — Class behaviour fill-in
 
-- Both keyboards (P1 arrows+ZX, P2 WASD+GH) drive two ships in the same arena
-- Projectiles (`Bullet`) with TTL and per-ship damage
-- Crew/Battery readouts
-- One weapon + one special per ship (Earthling Cruiser is the easiest to start)
+The four placeholder classes need their real specials:
+
+- **Yehat Terminator**: energy shield (damage modifier — first class to show
+  that a special can affect *incoming* events, not just the ship's own motion)
+- **Chmmr Avatar**: tractor beam (Avian `DistanceJoint` between ship + target)
+  + orbiting defense satellites (sub-entities with their own collision)
+- **Ur-Quan Kzer-Za Dreadnought**: launchable fighters (spawn dependent
+  sub-entities; the existing P2 fighter AI is its own subgenre of work)
+- **Mycon Podship**: plasmoid — a slow projectile that homes on the nearest
+  enemy
+
+Each is independent of the others and can ship as its own commit.
 
 ## M4 — Rollback netplay
 
-- Move every gameplay system into `bevy_ggrs::GgrsSchedule`
-- Audit for nondeterminism: no `Time` reads, no `rand` without a rollback-safe RNG, no `HashMap` iteration over game state
-- Add `Rollback` components to ships, projectiles, particle handles
-- Matchbox signaling against a public room URL for two-peer melee
-- Desync detection via per-frame state hash
+This is the big one. Three pieces, in order:
 
-## M5 — Fleet selection + win conditions
+1. **Determinism audit + lockdown.** Move every gameplay system out of
+   `Update`/`FixedUpdate` into `bevy_ggrs::GgrsSchedule`. Audit for non-
+   determinism — no `Time` reads, no `HashMap` iteration, no random
+   without a rollback-safe RNG. Disable Avian's SIMD paths (already off
+   by feature flag) and pin its substep schedule to the GGRS clock.
+2. **State snapshot ring buffer.** GGRS requires this; it's also the
+   foundation for the time-rewind ability documented in `src/timeflow.rs`.
+   Snapshot: ship transforms, velocities, crew, cooldowns, projectile
+   list, match phase.
+3. **Matchbox wiring.** Public signaling server (`wss://match.helsing.studio`)
+   for dev; document self-host in M7. Two-peer melee, desync detection
+   via per-frame state hash, optional resync via snapshot exchange.
 
-- Pre-match fleet builder reading `fleets.ini` rules (point budget, ship caps)
-- Round-based melee: ship dies → next ship in fleet enters → fleet eliminated = match over
+## M5 — Fleet selection + rounds
+
+- Pre-match fleet builder reading `fleets.ini` (500-point budget, ship caps)
+- Multi-ship per side: when your active hull dies, next ship in fleet enters
+- Match ends when a side has no ships left
 
 ## M6 — Port the remaining ships
 
-176 ships in the original. Each is a `.cpp` of bespoke logic — we'll need to
-reimplement weapon/special behaviour per ship in Rust. Group by complexity:
+170 ships in the original. Each is a `.cpp` of bespoke logic — reimplement
+in Rust. Group by complexity:
 
-- **Easy** (Earthling, Spathi, Yehat, Mycon, Pkunk): simple projectile + one special
+- **Easy** (Pkunk Fury, Shofixti Scout, Earthling, Spathi): simple projectile + one special
 - **Medium** (Chmmr, Ur-Quan, Kohr-Ah, Utwig): area effects, sub-objects
-- **Hard** (Slylandro Probe, Orz, Androsynth): mode changes, dimensional shift,
-  ship sub-spawning
+- **Hard** (Slylandro Probe, Orz, Androsynth): mode changes, dimensional
+  shift, ship sub-spawning
 
 ## M7 — Polish
 
-- Audio (mix legacy WAVs)
+- Audio (mix legacy WAVs through `bevy_audio` or `kira`)
 - Title screen, fleet builder UI, match settings
-- Web (WASM) build pipeline
+- Web (WASM) build pipeline + self-host matchbox docs
 - Replay recording / desync diagnostics
+- Authentic projectile sprites (currently solid colour rectangles)
+
+## Speculative — exotic abilities
+
+These motivated the Avian + GGRS architectural choices. None of them require
+a rewrite from where we are now; they're all single-class arms or single new
+systems on top of the existing seams:
+
+- **Time bubble** (per-region slow zone) — see `docs/EXTENSIBILITY.md`
+- **Time rewind** (replay from snapshot ring buffer) — pairs cleanly with M4
+- **Wormhole** (Avian teleport-on-overlap, two-entity pairing)
+- **Tether / chain weapons** (Avian distance joints, already supported)
+- **Subjective time** (per-ship clock scaling)
 
 ---
 
 ## Non-goals (for now)
 
 - Adventure/exploration mode (TW had ambitions; we keep it melee-first)
-- Mod loading (data-driven loading from `.ini` is the foundation, but no plugin API yet)
+- Mod loading (data-driven loading from `.ini` is the foundation, but no
+  plugin API yet)
 - Spectator mode
 - Matchmaking lobbies (use plain Matchbox rooms; users share a URL)
