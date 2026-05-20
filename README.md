@@ -68,11 +68,16 @@ Class index (same number = same ship for both players):
 | 8 / F8  | Arilou Skiff        | Halo shot, perpendicular hyperspace teleport |
 | 9 / F9  | Pkunk Fury          | Fast forward fire, phase-shift invuln (1 s) |
 | 0 / F10 | Ilwrath Avenger     | Flamethrower, cloak invuln (2.5 s) |
-| ⇧+1 / ⇧+F1 | Thraddash Torch  | Forward bolt, afterburner dash |
-| ⇧+2 / ⇧+F2 | VUX Intruder     | Slow limpet, hit-and-stop brake |
-| ⇧+3 / ⇧+F3 | Supox Blade      | Plasma grenade, direction-aware strafe |
-| ⇧+4 / ⇧+F4 | Kohr-Ah Marauder | Cleansing flame, sawblade anchor (placeholder) |
-| ⇧+5 / ⇧+F5 | Syreen Penetrator| Razor shot, siren song (placeholder) |
+| ⇧+1 / ⇧+F1 | Thraddash Torch    | Forward bolt, afterburner dash |
+| ⇧+2 / ⇧+F2 | VUX Intruder       | Slow limpet, hit-and-stop brake |
+| ⇧+3 / ⇧+F3 | Supox Blade        | Plasma grenade, direction-aware strafe |
+| ⇧+4 / ⇧+F4 | Kohr-Ah Marauder   | Cleansing flame, sawblade anchor (placeholder) |
+| ⇧+5 / ⇧+F5 | Syreen Penetrator  | Razor shot, siren song (placeholder) |
+| ⇧+6 / ⇧+F6 | Androsynth Guardian| Bubble shot, Blazer-comet long dash |
+| ⇧+7 / ⇧+F7 | Chenjesu Broodhome | Crystal shard, DOGI deploy (placeholder) |
+| ⇧+8 / ⇧+F8 | Druuge Mauler      | Heavy cannon **with recoil** (firing pushes you back), ship-jump |
+| ⇧+9 / ⇧+F9 | Utwig Jugger       | Twin prong, 2 s ricochet shield |
+| ⇧+0 / ⇧+F10| Zoq-Fot-Pik Stinger| Tongue lash, taunt-dash |
 
 ## What's implemented today
 

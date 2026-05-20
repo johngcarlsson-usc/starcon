@@ -106,7 +106,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 15] = [
+pub const ALL_CLASSES: [ShipClass; 20] = [
     ShipClass::Earcr,
     ShipClass::Spael,
     ShipClass::Yehte,
@@ -123,6 +123,11 @@ pub const ALL_CLASSES: [ShipClass; 15] = [
     ShipClass::Supbl,
     ShipClass::Kohma,
     ShipClass::Syrpe,
+    ShipClass::Andgu,
+    ShipClass::Chebr,
+    ShipClass::Druma,
+    ShipClass::Utwju,
+    ShipClass::Zfpst,
 ];
 
 /// How rotation responds to forces.
@@ -200,6 +205,16 @@ pub enum ShipClass {
     Kohma,
     /// Syreen Penetrator — siren song saps enemy crew.
     Syrpe,
+    /// Androsynth Guardian — bubble shots + Blazer comet mode.
+    Andgu,
+    /// Chenjesu Broodhome — heavy SC1 ship, DOGI lightning mines.
+    Chebr,
+    /// Druuge Mauler — recoil cannon physically pushes the ship backward.
+    Druma,
+    /// Utwig Jugger — ricochet shield bounces incoming damage back.
+    Utwju,
+    /// Zoq-Fot-Pik Stinger — agile, tongue lash close-range attack.
+    Zfpst,
 }
 
 impl ShipClass {
@@ -221,6 +236,11 @@ impl ShipClass {
             ShipClass::Supbl => "supbl",
             ShipClass::Kohma => "kohma",
             ShipClass::Syrpe => "syrpe",
+            ShipClass::Andgu => "andgu",
+            ShipClass::Chebr => "chebr",
+            ShipClass::Druma => "druma",
+            ShipClass::Utwju => "utwju",
+            ShipClass::Zfpst => "zfpst",
         }
     }
 }
@@ -730,11 +750,11 @@ fn fire_weapons(
         &ShipClass,
         &Position,
         &Rotation,
-        &LinearVelocity,
+        &mut LinearVelocity,
         &mut WeaponCooldown,
     )>,
 ) {
-    for (entity, ship, class, pos, rot, vel, mut cooldown) in &mut q {
+    for (entity, ship, class, pos, rot, mut vel, mut cooldown) in &mut q {
         if cooldown.0 > 0.0 {
             continue;
         }
@@ -779,6 +799,13 @@ fn fire_weapons(
             AngularDamping(0.0),
             CollisionEventsEnabled,
         ));
+
+        // Druuge cannon recoil: the heavy shell physically shoves the
+        // ship in the opposite direction. Demonstrates that a weapon's
+        // primary can affect its firer just by mutating velocity here.
+        if matches!(class, ShipClass::Druma) {
+            vel.0 -= world_dir * 120.0;
+        }
     }
 }
 
@@ -806,7 +833,7 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
     // weighty/boat-like by default; `M` toggles the global override
     // for experimentation.
     let collider_radius = match class {
-        ShipClass::Shosc | ShipClass::Arisk => 14.0,
+        ShipClass::Shosc | ShipClass::Arisk | ShipClass::Zfpst => 14.0,
         ShipClass::Spael | ShipClass::Pkufu | ShipClass::Thrto => 16.0,
         ShipClass::Yehte
         | ShipClass::Earcr
@@ -814,8 +841,11 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Ilwav
         | ShipClass::Vuxin
         | ShipClass::Supbl
-        | ShipClass::Syrpe => 22.0,
-        ShipClass::Chmav | ShipClass::Kohma => 28.0,
+        | ShipClass::Syrpe
+        | ShipClass::Andgu
+        | ShipClass::Druma
+        | ShipClass::Utwju => 22.0,
+        ShipClass::Chmav | ShipClass::Kohma | ShipClass::Chebr => 28.0,
         ShipClass::Kzedr => 34.0,
     };
     PhysicsSpec {
@@ -979,6 +1009,55 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.6,
             color: Color::srgb(1.0, 0.85, 0.95),
             sprite_size: 5.0,
+        },
+        ShipClass::Andgu => WeaponSpec {
+            // Androsynth bubble shot — slow, big, persistent.
+            local_direction: forward,
+            muzzle_offset: 24.0,
+            speed: 450.0,
+            lifetime: 2.5,
+            color: Color::srgb(0.7, 0.7, 1.0),
+            sprite_size: 8.0,
+        },
+        ShipClass::Chebr => WeaponSpec {
+            // Chenjesu crystal shard cluster — single shot for now.
+            local_direction: forward,
+            muzzle_offset: 32.0,
+            speed: 700.0,
+            lifetime: 1.5,
+            color: Color::srgb(0.9, 0.8, 1.0),
+            sprite_size: 6.0,
+        },
+        ShipClass::Druma => WeaponSpec {
+            // Druuge cannon — slow heavy shell. Firing this also
+            // recoils the ship backwards; see fire_weapons for the
+            // ship-side impulse.
+            local_direction: forward,
+            muzzle_offset: 30.0,
+            speed: 600.0,
+            lifetime: 2.5,
+            color: Color::srgb(1.0, 0.3, 0.1),
+            sprite_size: 10.0,
+        },
+        ShipClass::Utwju => WeaponSpec {
+            // Utwig dual prong — fast forward shot.
+            local_direction: forward,
+            muzzle_offset: 28.0,
+            speed: 900.0,
+            lifetime: 1.5,
+            color: Color::srgb(0.8, 0.7, 1.0),
+            sprite_size: 5.0,
+        },
+        ShipClass::Zfpst => WeaponSpec {
+            // Zoq-Fot-Pik tongue lash — short, fast. Real tongue is a
+            // melee swipe; here treated as a very short-range fast
+            // shot until we add melee-style hitboxes.
+            local_direction: forward,
+            muzzle_offset: 20.0,
+            speed: 1100.0,
+            lifetime: 0.6,
+            color: Color::srgb(1.0, 0.7, 0.5),
+            sprite_size: 4.0,
         },
     }
 }
@@ -1277,6 +1356,57 @@ fn trigger_specials(
                 vel.0 *= 0.0;
                 cooldown.0 = 4.0;
                 info!("P{} siren song (placeholder)", ship.player_slot + 1);
+            }
+            ShipClass::Andgu => {
+                // Androsynth Blazer comet — a long high-speed forward
+                // dash. Real Blazer is a held-mode toggle that turns
+                // the ship into a ramming missile; until we model
+                // toggle-modes, this gives the right "fast straight
+                // line" feel for a single charge.
+                vel.0 += forward * 650.0;
+                cooldown.0 = 3.0;
+                info!("P{} comet", ship.player_slot + 1);
+            }
+            ShipClass::Chebr => {
+                // Chenjesu DOGI mines drift around dropping damage
+                // zones. Without sub-entity AI yet, use a brake-and-
+                // anchor placeholder so the special button does
+                // something visible.
+                vel.0 *= 0.0;
+                cooldown.0 = 3.5;
+                info!("P{} DOGI deploy (placeholder)", ship.player_slot + 1);
+            }
+            ShipClass::Druma => {
+                // Druuge ship-jump — short forward impulse. The
+                // recoil-from-firing-main-weapon is the more iconic
+                // ability and that lives in fire_weapons (see the
+                // Druma arm there once we add it).
+                vel.0 += forward * 250.0;
+                cooldown.0 = 1.0;
+                info!("P{} ship jump", ship.player_slot + 1);
+            }
+            ShipClass::Utwju => {
+                // Utwig ricochet shield — 2 s of zero damage taken AND
+                // any projectile that would have hit bounces away. We
+                // get the zero-damage half from ShieldActive(0.0); the
+                // bounce-back is implicit because the projectile is
+                // still a kinematic body and Avian's contact response
+                // handles the reflection.
+                commands.entity(entity).insert(ShieldActive {
+                    remaining: 2.0,
+                    damage_factor: 0.0,
+                });
+                cooldown.0 = 5.0;
+                info!("P{} ricochet shield", ship.player_slot + 1);
+            }
+            ShipClass::Zfpst => {
+                // Zoq-Fot-Pik taunt: provoke the enemy. Real taunt
+                // doesn't change much beyond morale and a sound effect.
+                // For now a small forward dash so the special is at
+                // least visibly something.
+                vel.0 += forward * 300.0;
+                cooldown.0 = 2.0;
+                info!("P{} taunt", ship.player_slot + 1);
             }
         }
     }

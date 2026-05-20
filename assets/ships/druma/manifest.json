@@ -1,0 +1,708 @@
+{
+  "sounds": [
+    "wave_a01",
+    "wave_b01"
+  ],
+  "sprites": {
+    "ship_p00": {
+      "file": "ship_p00.png",
+      "h": 100,
+      "w": 64
+    },
+    "ship_p01": {
+      "file": "ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p02": {
+      "file": "ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p03": {
+      "file": "ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p04": {
+      "file": "ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p05": {
+      "file": "ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p06": {
+      "file": "ship_p06.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_s00": {
+      "file": "ship_s00.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s01_bmp": {
+      "file": "ship_s01_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s02_bmp": {
+      "file": "ship_s02_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s03_bmp": {
+      "file": "ship_s03_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s04_bmp": {
+      "file": "ship_s04_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s05_bmp": {
+      "file": "ship_s05_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s06_bmp": {
+      "file": "ship_s06_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s07_bmp": {
+      "file": "ship_s07_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s08_bmp": {
+      "file": "ship_s08_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s09_bmp": {
+      "file": "ship_s09_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s10_bmp": {
+      "file": "ship_s10_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s11_bmp": {
+      "file": "ship_s11_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s12_bmp": {
+      "file": "ship_s12_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s13_bmp": {
+      "file": "ship_s13_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s14_bmp": {
+      "file": "ship_s14_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s15_bmp": {
+      "file": "ship_s15_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s16_bmp": {
+      "file": "ship_s16_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s17_bmp": {
+      "file": "ship_s17_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s18_bmp": {
+      "file": "ship_s18_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s19_bmp": {
+      "file": "ship_s19_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s20_bmp": {
+      "file": "ship_s20_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s21_bmp": {
+      "file": "ship_s21_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s22_bmp": {
+      "file": "ship_s22_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s23_bmp": {
+      "file": "ship_s23_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s24_bmp": {
+      "file": "ship_s24_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s25_bmp": {
+      "file": "ship_s25_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s26_bmp": {
+      "file": "ship_s26_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s27_bmp": {
+      "file": "ship_s27_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s28_bmp": {
+      "file": "ship_s28_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s29_bmp": {
+      "file": "ship_s29_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s30_bmp": {
+      "file": "ship_s30_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s31_bmp": {
+      "file": "ship_s31_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s32_bmp": {
+      "file": "ship_s32_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s33_bmp": {
+      "file": "ship_s33_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s34_bmp": {
+      "file": "ship_s34_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s35_bmp": {
+      "file": "ship_s35_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s36_bmp": {
+      "file": "ship_s36_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s37_bmp": {
+      "file": "ship_s37_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s38_bmp": {
+      "file": "ship_s38_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s39_bmp": {
+      "file": "ship_s39_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s40_bmp": {
+      "file": "ship_s40_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s41_bmp": {
+      "file": "ship_s41_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s42_bmp": {
+      "file": "ship_s42_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s43_bmp": {
+      "file": "ship_s43_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s44_bmp": {
+      "file": "ship_s44_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s45_bmp": {
+      "file": "ship_s45_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s46_bmp": {
+      "file": "ship_s46_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s47_bmp": {
+      "file": "ship_s47_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s48_bmp": {
+      "file": "ship_s48_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s49_bmp": {
+      "file": "ship_s49_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s50_bmp": {
+      "file": "ship_s50_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s51_bmp": {
+      "file": "ship_s51_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s52_bmp": {
+      "file": "ship_s52_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s53_bmp": {
+      "file": "ship_s53_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s54_bmp": {
+      "file": "ship_s54_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s55_bmp": {
+      "file": "ship_s55_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s56_bmp": {
+      "file": "ship_s56_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s57_bmp": {
+      "file": "ship_s57_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s58_bmp": {
+      "file": "ship_s58_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s59_bmp": {
+      "file": "ship_s59_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s60_bmp": {
+      "file": "ship_s60_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s61_bmp": {
+      "file": "ship_s61_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s62_bmp": {
+      "file": "ship_s62_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "ship_s63_bmp": {
+      "file": "ship_s63_bmp.png",
+      "h": 100,
+      "w": 100
+    },
+    "shot_a01": {
+      "file": "shot_a01.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a02": {
+      "file": "shot_a02.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a03": {
+      "file": "shot_a03.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a04": {
+      "file": "shot_a04.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a05": {
+      "file": "shot_a05.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a06": {
+      "file": "shot_a06.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a07": {
+      "file": "shot_a07.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a08": {
+      "file": "shot_a08.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a09": {
+      "file": "shot_a09.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a10": {
+      "file": "shot_a10.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a11": {
+      "file": "shot_a11.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a12": {
+      "file": "shot_a12.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a13": {
+      "file": "shot_a13.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a14": {
+      "file": "shot_a14.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a15": {
+      "file": "shot_a15.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a16": {
+      "file": "shot_a16.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a17": {
+      "file": "shot_a17.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a18": {
+      "file": "shot_a18.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a19": {
+      "file": "shot_a19.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a20": {
+      "file": "shot_a20.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a21": {
+      "file": "shot_a21.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a22": {
+      "file": "shot_a22.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a23": {
+      "file": "shot_a23.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a24": {
+      "file": "shot_a24.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a25": {
+      "file": "shot_a25.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a26": {
+      "file": "shot_a26.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a27": {
+      "file": "shot_a27.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a28": {
+      "file": "shot_a28.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a29": {
+      "file": "shot_a29.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a30": {
+      "file": "shot_a30.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a31": {
+      "file": "shot_a31.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a32": {
+      "file": "shot_a32.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a33": {
+      "file": "shot_a33.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a34": {
+      "file": "shot_a34.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a35": {
+      "file": "shot_a35.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a36": {
+      "file": "shot_a36.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a37": {
+      "file": "shot_a37.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a38": {
+      "file": "shot_a38.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a39": {
+      "file": "shot_a39.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a40": {
+      "file": "shot_a40.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a41": {
+      "file": "shot_a41.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a42": {
+      "file": "shot_a42.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a43": {
+      "file": "shot_a43.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a44": {
+      "file": "shot_a44.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a45": {
+      "file": "shot_a45.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a46": {
+      "file": "shot_a46.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a47": {
+      "file": "shot_a47.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a48": {
+      "file": "shot_a48.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a49": {
+      "file": "shot_a49.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a50": {
+      "file": "shot_a50.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a51": {
+      "file": "shot_a51.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a52": {
+      "file": "shot_a52.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a53": {
+      "file": "shot_a53.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a54": {
+      "file": "shot_a54.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a55": {
+      "file": "shot_a55.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a56": {
+      "file": "shot_a56.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a57": {
+      "file": "shot_a57.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a58": {
+      "file": "shot_a58.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a59": {
+      "file": "shot_a59.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a60": {
+      "file": "shot_a60.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a61": {
+      "file": "shot_a61.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a62": {
+      "file": "shot_a62.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a63": {
+      "file": "shot_a63.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_a64": {
+      "file": "shot_a64.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_b01": {
+      "file": "shot_b01.png",
+      "h": 30,
+      "w": 30
+    },
+    "shot_b02": {
+      "file": "shot_b02.png",
+      "h": 30,
+      "w": 30
+    },
+    "shot_b03": {
+      "file": "shot_b03.png",
+      "h": 30,
+      "w": 30
+    },
+    "shot_b04": {
+      "file": "shot_b04.png",
+      "h": 30,
+      "w": 30
+    },
+    "shot_b05": {
+      "file": "shot_b05.png",
+      "h": 30,
+      "w": 30
+    }
+  }
+}
