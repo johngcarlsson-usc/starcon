@@ -95,19 +95,28 @@ fn process_pending_polygons(
     }
     let mut done = Vec::new();
     for (class, handle) in &pending.handles {
-        if let Some(image) = images.get(handle) {
-            if let Some(poly) = compute_polygon(image) {
+        let Some(image) = images.get(handle) else {
+            continue; // not loaded yet, try next frame
+        };
+        let size = image.texture_descriptor.size;
+        let data_len = image.data.as_ref().map(|d| d.len()).unwrap_or(0);
+        match compute_polygon(image) {
+            Some(poly) => {
                 info!(
-                    "collider polygon ready for {:?}: {} vertices",
-                    class,
-                    poly.len()
+                    "collider polygon ready for {:?}: {} verts (image {}x{}, {} bytes)",
+                    class, poly.len(), size.width, size.height, data_len
                 );
                 colliders.polys.insert(*class, poly);
             }
-            // Whether or not we extracted a polygon, treat the handle
-            // as resolved so we don't retry every frame.
-            done.push(*class);
+            None => {
+                warn!(
+                    "could not extract polygon for {:?}: image {}x{}, data {} bytes, format {:?}",
+                    class, size.width, size.height, data_len,
+                    image.texture_descriptor.format,
+                );
+            }
         }
+        done.push(*class);
     }
     for class in done {
         pending.handles.remove(&class);
