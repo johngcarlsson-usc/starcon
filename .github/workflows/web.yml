@@ -55,7 +55,13 @@ jobs:
             --out-dir dist/ \
             --out-name starcon \
             target/wasm32-unknown-unknown/release/starcon.wasm
-          cp web/index.html dist/
+          # Stamp the index with this commit's short SHA so the
+          # `?v=...` cache-buster on the wasm-bindgen JS forces every
+          # visitor's browser to re-fetch the JS + wasm on each deploy.
+          # Otherwise GH Pages' default 10 min cache can serve stale
+          # bundles long after a push.
+          SHA=$(git rev-parse --short HEAD)
+          sed "s|__BUILD_SHA__|${SHA}|g" web/index.html > dist/index.html
           cp -r assets dist/assets
 
       - name: Show build size

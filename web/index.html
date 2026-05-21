@@ -40,8 +40,13 @@
     <small>first load is ~50 MB, subsequent loads are instant</small>
   </div>
   <script type="module">
-    import init from './starcon.js';
-    init()
+    // ?v=__BUILD_SHA__ is replaced by the CI workflow with this
+    // commit's short SHA so the import URL changes on every deploy.
+    // Without it, GH Pages' default cache headers can serve stale
+    // starcon.js to returning visitors for ~10 min — which during
+    // active iteration is "every visit feels broken".
+    import init from './starcon.js?v=__BUILD_SHA__';
+    init('./starcon_bg.wasm?v=__BUILD_SHA__')
       .then(() => {
         const el = document.getElementById('loading');
         if (el) el.remove();
@@ -55,5 +60,6 @@
         console.error(err);
       });
   </script>
+  <!-- build: __BUILD_SHA__ -->
 </body>
 </html>
