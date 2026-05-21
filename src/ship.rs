@@ -529,13 +529,17 @@ pub fn spawn_match(
     assets: Res<AssetServer>,
     config: Res<MatchConfig>,
 ) {
+    // Rotation convention: 0 rad = ship facing +Y (up); positive
+    // rotation is CCW. To face right (+X) we want -π/2 (CW 90°), and
+    // to face left (-X) we want +π/2. P1 sits on the left and faces
+    // right at the enemy; P2 sits on the right and faces left.
     spawn_class(
         &mut commands,
         &catalog,
         &assets,
         config.p1_class,
         Vec2::new(-300.0, 0.0),
-        std::f32::consts::FRAC_PI_2,
+        -std::f32::consts::FRAC_PI_2,
         0,
     );
     spawn_class(
@@ -544,7 +548,7 @@ pub fn spawn_match(
         &assets,
         config.p2_class,
         Vec2::new(300.0, 0.0),
-        -std::f32::consts::FRAC_PI_2,
+        std::f32::consts::FRAC_PI_2,
         1,
     );
 }
@@ -816,20 +820,30 @@ fn cycle_angular_override(
 
 /// Pick the rotation frame whose angle is closest to the ship's current
 /// heading. Frame 0 = pointing up, frames go clockwise around 360°.
-fn swap_rotation_frame(mut q: Query<(&Rotation, &ShipFrames, &mut Sprite)>) {
-    for (rot, frames, mut sprite) in &mut q {
+/// Pick the rotation frame whose angle is closest to the ship's current
+/// heading, AND force the entity's `Transform::rotation` back to
+/// identity so Bevy's renderer doesn't *also* rotate the sprite —
+/// otherwise we get the SC2 rotation-frame *plus* an additional Bevy
+/// transform rotation, doubling the visible spin.
+///
+/// Frame 0 = sprite as authored (pointing up / +Y in world space).
+/// Frames go clockwise around 360° as the index increases, matching
+/// the legacy Allegro datafile convention.
+fn swap_rotation_frame(mut q: Query<(&Rotation, &ShipFrames, &mut Sprite, &mut Transform)>) {
+    for (rot, frames, mut sprite, mut transform) in &mut q {
         if frames.frames.is_empty() {
             continue;
         }
-        // Avian's Rotation stores cos/sin; recover the angle.
         let angle = rot.sin.atan2(rot.cos);
-        // Map [-π, π] CCW into [0, N) CW frame index.
         let n = frames.frames.len() as f32;
         let mut idx = ((-angle) / std::f32::consts::TAU * n).rem_euclid(n) as usize;
         if idx >= frames.frames.len() {
             idx = 0;
         }
         sprite.image = frames.frames[idx].clone();
+        // Cancel Avian's rotation sync on this sprite — the chosen
+        // frame already encodes the rotation visually.
+        transform.rotation = Quat::IDENTITY;
     }
 }
 
