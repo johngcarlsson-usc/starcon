@@ -37,6 +37,14 @@ fn main() {
                     }),
                     ..default()
                 })
+                .set(AssetPlugin {
+                    // Skip the per-asset `.meta` sidecar probe — we don't
+                    // generate those, and on WASM every miss is a real
+                    // network round-trip that doubles the asset-load
+                    // count and floods devtools with 404 noise.
+                    meta_check: bevy::asset::AssetMetaCheck::Never,
+                    ..default()
+                })
                 .set(ImagePlugin::default_nearest()),
         )
         .init_state::<AppState>()
