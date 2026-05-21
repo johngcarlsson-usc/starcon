@@ -616,6 +616,17 @@ pub fn load_ship_catalog(mut commands: Commands) {
         }
     }
     info!("ship catalog: {} entries", ships.len());
+    info!("------------------------------------------------------------");
+    info!("CONTROLS");
+    info!("  P1 — Arrow keys (turn / thrust),  Z fire,  X special");
+    info!("  P2 — W A S D    (thrust / turn),  G fire,  H special");
+    info!("  Tab / Shift+Tab        — cycle P1 to next/prev ship");
+    info!("  ` (backtick) / Shift+` — cycle P2 to next/prev ship");
+    info!("  Digits 1..0            — direct-pick P1 (Shift/Ctrl = banks 11-20, 21-25)");
+    info!("  F1..F10                — direct-pick P2 (same modifier banks)");
+    info!("  M                      — cycle angular control: Classic / Inertial");
+    info!("  R (only post-match)    — rematch");
+    info!("------------------------------------------------------------");
     commands.insert_resource(ShipCatalog { ships });
 }
 

@@ -596,6 +596,13 @@ fn spawn_one_projectile(
         RigidBody::Dynamic,
         Collider::circle(volley.sprite_size * 0.5),
         Mass(0.5),
+        // `Position` is required because `PhysicsTransformConfig::
+        // transform_to_position` is disabled — without this Avian
+        // would default the projectile to (0, 0) on its first sync
+        // and the visual would briefly flash at the muzzle, then
+        // teleport to world origin before flying off in the right
+        // direction. (The "two streams of bullets" bug.)
+        avian2d::prelude::Position(muzzle),
         Rotation::radians(initial_angle),
         LinearVelocity(projectile_vel),
         AngularVelocity::ZERO,
