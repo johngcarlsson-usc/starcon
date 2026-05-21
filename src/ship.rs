@@ -605,7 +605,9 @@ impl Plugin for ShipPlugin {
                 tick_tractors,
                 tick_invisible,
                 tick_damage_to_battery,
+                tick_sub_entities,
                 handle_projectile_hits,
+                handle_sub_entity_collisions,
                 handle_ship_collisions,
             ),
         )
@@ -797,6 +799,10 @@ pub fn teardown_match(
     ships: Query<Entity, With<Ship>>,
     projectiles: Query<Entity, With<Projectile>>,
     damage_zones: Query<Entity, With<DamageZone>>,
+    attached_zones: Query<Entity, With<AttachedDamageZone>>,
+    beams: Query<Entity, With<Beam>>,
+    tractors: Query<Entity, With<TractorBeam>>,
+    sub_entities: Query<Entity, With<SubEntity>>,
 ) {
     for e in &ships {
         commands.entity(e).despawn();
@@ -805,6 +811,18 @@ pub fn teardown_match(
         commands.entity(e).despawn();
     }
     for e in &damage_zones {
+        commands.entity(e).despawn();
+    }
+    for e in &attached_zones {
+        commands.entity(e).despawn();
+    }
+    for e in &beams {
+        commands.entity(e).despawn();
+    }
+    for e in &tractors {
+        commands.entity(e).despawn();
+    }
+    for e in &sub_entities {
         commands.entity(e).despawn();
     }
 }
@@ -1112,7 +1130,13 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
         }),
 
         // Ur-Quan Kzer-Za Dreadnought — fusion bolt + launch fighters.
-        // Fighters need SubEntity primitive (TODO shpkzedr.cpp:55).
+        // shpkzedr.cpp activate_special: spawns 1-2 KzerZaFighter
+        // sub-entities (one per crew burned, max 2). Each fighter
+        // flies out at specialVelocity, fires lasers at the target,
+        // and returns home — for MVP we model it as a homing sub
+        // that detonates on contact. Canonical full behaviour
+        // (orbiting + laser fire + return) needs the AI to be
+        // extended; the framework supports it.
         ShipClass::Kzedr => Some(ShipAbilities {
             primary: AbilitySpec {
                 kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
@@ -1130,7 +1154,33 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 6.0 / 20.0,
             },
             special: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "Kzer-Za fighters (shpkzedr.cpp:55)" },
+                kind: AbilityKind::Sequence(vec![
+                    // SpecialDrain=8 already deducted; canonical also
+                    // burns 1 crew per fighter launched.
+                    AbilityKind::ModifyCrew { delta: -1 },
+                    AbilityKind::SpawnSubEntity {
+                        // Spawn from the back of the dreadnought.
+                        local_offset: Vec2::new(0.0, -25.0),
+                        initial_angle_offset: std::f32::consts::PI,
+                        // .ini Special Velocity=35 → 336 u/s.
+                        initial_speed: 35.0 * SC2_VEL_SCALE,
+                        sprite_path: Some("ships/kzedr/sprites/shot_b01.png".into()),
+                        sprite_size: 14.0,
+                        color: Color::srgb(1.0, 1.0, 1.0),
+                        // .ini Special Armour = 1 (effectively one-hit).
+                        hp: 1,
+                        // .ini Special Frames=23000 / 20 = 1150 s; cap
+                        // to a sensible value so they don't pile up
+                        // forever in our shorter rounds.
+                        lifetime_s: 20.0,
+                        ai: crate::ability::SubEntityAiSpec::HomeAndDetonate {
+                            turn_rate: sc2_turning(4.0),
+                            speed: 35.0 * SC2_VEL_SCALE,
+                            damage_on_hit: 2,
+                            batt_sap: 0,
+                        },
+                    },
+                ]),
                 cooldown_s: 9.0 / 20.0,
             },
         }),
@@ -1436,9 +1486,56 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 8.0 / 20.0,
             },
             special: AbilitySpec {
+                // shpsyrpe.cpp activate_special: damage enemy crew in
+                // specialRange, spawn that many CrewPod sub-entities
+                // around them. Friendly Syreen ships can collect the
+                // pods to add to their crew.
+                //
+                // We don't have target tracking yet, so we approximate
+                // by spawning a handful of pods radially around the
+                // firer. Friendly contact picks them up; enemy contact
+                // does nothing. Range/Damage tuning from .ini Special
+                // (Range=11→440, Damage=5, Velocity=4→38.4).
                 kind: AbilityKind::Sequence(vec![
-                    AbilityKind::BrakeImpulse { max_dv: 8000.0 / 10.0 }, // ≈ 800 m/s on mass 10
-                    AbilityKind::Todo { ident: "Syreen siren song (shpsyrpe.cpp:661)" },
+                    AbilityKind::SpawnSubEntity {
+                        local_offset: Vec2::new(-30.0, 0.0),
+                        initial_angle_offset: -std::f32::consts::FRAC_PI_2,
+                        initial_speed: 4.0 * SC2_VEL_SCALE,
+                        sprite_path: Some("ships/syrpe/sprites/shot_b01.png".into()),
+                        sprite_size: 8.0,
+                        color: Color::srgb(1.0, 0.6, 0.9),
+                        hp: 1,
+                        lifetime_s: 12.0,
+                        ai: crate::ability::SubEntityAiSpec::DriftAndCollect {
+                            crew_value: 1,
+                        },
+                    },
+                    AbilityKind::SpawnSubEntity {
+                        local_offset: Vec2::new(30.0, 0.0),
+                        initial_angle_offset: std::f32::consts::FRAC_PI_2,
+                        initial_speed: 4.0 * SC2_VEL_SCALE,
+                        sprite_path: Some("ships/syrpe/sprites/shot_b01.png".into()),
+                        sprite_size: 8.0,
+                        color: Color::srgb(1.0, 0.6, 0.9),
+                        hp: 1,
+                        lifetime_s: 12.0,
+                        ai: crate::ability::SubEntityAiSpec::DriftAndCollect {
+                            crew_value: 1,
+                        },
+                    },
+                    AbilityKind::SpawnSubEntity {
+                        local_offset: Vec2::new(0.0, 30.0),
+                        initial_angle_offset: 0.0,
+                        initial_speed: 4.0 * SC2_VEL_SCALE,
+                        sprite_path: Some("ships/syrpe/sprites/shot_b01.png".into()),
+                        sprite_size: 8.0,
+                        color: Color::srgb(1.0, 0.6, 0.9),
+                        hp: 1,
+                        lifetime_s: 12.0,
+                        ai: crate::ability::SubEntityAiSpec::DriftAndCollect {
+                            crew_value: 1,
+                        },
+                    },
                 ]),
                 cooldown_s: 20.0 / 20.0,
             },
@@ -1486,7 +1583,33 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 1.0 / 20.0,
             },
             special: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "Chenjesu DOGI (shpchebr.cpp:1017)" },
+                // shpchebr.cpp activate_special: spawn 1 ChenjesuDOGI
+                // mine from (0, -size.y/1.5) at angle+π (back of ship).
+                // The DOGI homes on the nearest enemy with an avoidance
+                // angle and fuel-saps battery on contact. .ini Special:
+                // Velocity=33, FuelSap=8, Armour=3, AccelRate=20,
+                // AvoidanceAngle=27.5°. We model AccelRate as a steady
+                // homing speed of (Velocity·9.6), turn rate from
+                // sc2_turning derivative; avoidance is omitted for now.
+                kind: AbilityKind::SpawnSubEntity {
+                    local_offset: Vec2::new(0.0, -32.0),
+                    initial_angle_offset: std::f32::consts::PI,
+                    initial_speed: 33.0 * SC2_VEL_SCALE,
+                    sprite_path: Some("ships/chebr/sprites/shot_c_00_tga.png".into()),
+                    sprite_size: 14.0,
+                    color: Color::srgb(0.7, 0.8, 1.0),
+                    // .ini Special Armour=3 → survives 3 hits.
+                    hp: 3,
+                    lifetime_s: 15.0,
+                    ai: crate::ability::SubEntityAiSpec::HomeAndDetonate {
+                        turn_rate: sc2_turning(2.0),
+                        speed: 33.0 * SC2_VEL_SCALE,
+                        // .ini has no Special.Damage → DOGI deals 0
+                        // crew damage in canon; the threat is FuelSap=8.
+                        damage_on_hit: 0,
+                        batt_sap: 8,
+                    },
+                },
                 cooldown_s: 1.0 / 20.0,
             },
         }),
@@ -1632,11 +1755,35 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 4.0 / 20.0,
             },
             special: AbilitySpec {
-                // Marine spawning costs 1 crew in canon — model the
-                // cost; the sub-entity AI is the missing piece.
+                // shporzne.cpp activate_special: spawn one OrzMarine
+                // sub-entity per press (cost 1 crew, up to MAX_MARINES).
+                // The marine homes on the nearest enemy, attaches on
+                // contact, and drains crew over time. We model that
+                // as AttachAndDrain — one-shot heavy crew drain
+                // approximating the per-tick drain over the canonical
+                // attached duration.
                 kind: AbilityKind::Sequence(vec![
                     AbilityKind::ModifyCrew { delta: -1 },
-                    AbilityKind::Todo { ident: "Orz marine sub-entity (shporzne.cpp:564)" },
+                    AbilityKind::SpawnSubEntity {
+                        local_offset: Vec2::new(0.0, 28.0),
+                        initial_angle_offset: 0.0,
+                        // .ini Special SpeedMax=40 → 384 u/s top.
+                        initial_speed: 40.0 * SC2_VEL_SCALE,
+                        sprite_path: Some("ships/orzne/sprites/shot_b_01_bmp.png".into()),
+                        sprite_size: 10.0,
+                        color: Color::srgb(0.9, 1.0, 0.5),
+                        // .ini Armour=3 (marine itself can absorb a
+                        // few projectile hits — though we don't
+                        // currently route projectile damage to subs
+                        // — for now hp=1 = one-shot on a ship hit).
+                        hp: 1,
+                        lifetime_s: 15.0,
+                        ai: crate::ability::SubEntityAiSpec::AttachAndDrain {
+                            turn_rate: sc2_turning(2.0),
+                            speed: 40.0 * SC2_VEL_SCALE,
+                            crew_drain: 4,
+                        },
+                    },
                 ]),
                 cooldown_s: 12.0 / 20.0,
             },
@@ -2135,6 +2282,133 @@ pub struct Limpet;
 /// so 3 kg per stick is fairly aggressive — three of them on a Spathi
 /// (mass 16 kg) is a 60 % heavier ship.
 pub const LIMPET_MASS: f32 = 3.0;
+
+/// Small autonomous body spawned by a ship's special — Chenjesu DOGI,
+/// Orz marine, Syreen crew pod, Kzer-Za fighter. Has its own physics
+/// body, sprite, HP, lifetime, and an `SubEntityAi` component that
+/// drives per-tick steering + on-collision behaviour.
+///
+/// Generic enough to cover four canonical mechanics by varying the AI
+/// component alone. Living off the existing Avian collision events;
+/// `handle_sub_entity_collisions` dispatches the right effect per AI.
+#[derive(Component, Debug)]
+pub struct SubEntity {
+    /// Which ship spawned this — used for friendly-fire filtering and
+    /// for `DriftAndCollect` to know who's allowed to pick it up.
+    pub owner: Entity,
+    /// Seconds remaining. Despawns when this hits zero.
+    pub remaining_s: f32,
+    /// Hit points. Some sub-entities survive multiple hits (DOGI has
+    /// armour 3, fighters take a few). When this drops to ≤ 0 the
+    /// sub-entity despawns.
+    pub hp: i32,
+}
+
+/// Behaviour variants for `SubEntity`. Carried as a separate
+/// component so it can be queried/mutated independently of the body
+/// state. New canonical mechanics extend this enum.
+#[derive(Component, Debug)]
+pub enum SubEntityAi {
+    /// Steer toward the nearest non-friendly ship; on contact deal
+    /// `damage_on_hit` crew damage and `batt_sap` battery drain.
+    /// Survives until `hp` drops below zero or lifetime expires.
+    /// Canonical: Chenjesu DOGI (`shpchebr.cpp:ChenjesuDOGI`).
+    HomeAndDetonate {
+        target: Option<Entity>,
+        turn_rate: f32,
+        speed: f32,
+        damage_on_hit: i32,
+        batt_sap: i32,
+    },
+    /// Steer toward the nearest enemy; on contact deal heavy crew
+    /// damage and consume the sub-entity. Models Orz marine
+    /// boarding (`shporzne.cpp:OrzMarine`); the actual joint-attach
+    /// is approximated by one-shot drain.
+    AttachAndDrain {
+        target: Option<Entity>,
+        turn_rate: f32,
+        speed: f32,
+        crew_drain: i32,
+    },
+    /// Pure ballistic drift at the spawn-time velocity. On contact
+    /// with a ship whose `player_slot == owner_slot`, add
+    /// `crew_value` to that ship's crew and consume the pod.
+    /// Enemy contact does nothing. Models Syreen crew pods
+    /// (`shpsyrpe.cpp:CrewPod`).
+    DriftAndCollect {
+        owner_slot: usize,
+        crew_value: i32,
+    },
+}
+
+/// Spawn a sub-entity attached to `owner`'s pose with the given AI
+/// behaviour. Sprite / size / colour are visual; HP and lifetime are
+/// the body-state knobs.
+/// `initial_angle_offset` is in radians CCW from the owner's forward —
+/// `0` = straight forward (out the nose), `π` = directly backward
+/// (out the rear, Spathi-BUTT style).
+pub(crate) fn spawn_sub_entity(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    owner: Entity,
+    owner_pos: Vec2,
+    owner_rot: &Rotation,
+    local_offset: Vec2,
+    initial_angle_offset: f32,
+    initial_speed: f32,
+    sprite_path: Option<&str>,
+    sprite_size: f32,
+    color: Color,
+    hp: i32,
+    lifetime_s: f32,
+    ai: SubEntityAi,
+) {
+    let world_pos_offset = Vec2::new(
+        local_offset.x * owner_rot.cos - local_offset.y * owner_rot.sin,
+        local_offset.x * owner_rot.sin + local_offset.y * owner_rot.cos,
+    );
+    let spawn_pos = owner_pos + world_pos_offset;
+    let forward = Vec2::new(-owner_rot.sin, owner_rot.cos);
+    let (s, c) = initial_angle_offset.sin_cos();
+    let world_dir = Vec2::new(
+        forward.x * c - forward.y * s,
+        forward.x * s + forward.y * c,
+    );
+    let initial_vel = world_dir * initial_speed;
+    let initial_rotation = world_dir.y.atan2(world_dir.x) - std::f32::consts::FRAC_PI_2;
+
+    let sprite = if let Some(path) = sprite_path {
+        Sprite {
+            image: assets.load(path.to_string()),
+            color,
+            custom_size: Some(Vec2::splat(sprite_size)),
+            ..default()
+        }
+    } else {
+        Sprite::from_color(color, Vec2::splat(sprite_size))
+    };
+
+    commands.spawn((
+        SubEntity {
+            owner,
+            remaining_s: lifetime_s,
+            hp,
+        },
+        ai,
+        sprite,
+        Transform::from_translation(spawn_pos.extend(0.4)),
+        RigidBody::Dynamic,
+        Collider::circle((sprite_size * 0.5).max(1.0)),
+        Mass(1.0),
+        Position(spawn_pos),
+        Rotation::radians(initial_rotation),
+        LinearVelocity(initial_vel),
+        AngularVelocity::ZERO,
+        LinearDamping(0.0),
+        AngularDamping(0.0),
+        CollisionEventsEnabled,
+    ));
+}
 
 // SC2 unit conversion helpers (mirror mhelpers.cpp).
 //
@@ -2782,6 +3056,179 @@ fn tick_damage_to_battery(
         d.remaining -= dt;
         if d.remaining <= 0.0 {
             commands.entity(e).remove::<DamageToBattery>();
+        }
+    }
+}
+
+/// Drive each `SubEntity` per tick: lifetime/hp bookkeeping, target
+/// (re)acquisition, steering toward the target capped by `turn_rate`.
+/// Pure-drift behaviours (Syreen pods) skip the steering.
+fn tick_sub_entities(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut subs: Query<(Entity, &mut SubEntity, &Position, &mut LinearVelocity, &mut SubEntityAi)>,
+    ships: Query<(Entity, &Ship, &Position), Without<SubEntity>>,
+) {
+    let dt = time.delta_secs();
+    for (sub_entity, mut sub, sub_pos, mut sub_vel, mut ai) in &mut subs {
+        sub.remaining_s -= dt;
+        if sub.remaining_s <= 0.0 || sub.hp <= 0 {
+            commands.entity(sub_entity).despawn();
+            continue;
+        }
+        let owner_slot = ships.get(sub.owner).ok().map(|(_, s, _)| s.player_slot);
+
+        match &mut *ai {
+            SubEntityAi::HomeAndDetonate {
+                target,
+                turn_rate,
+                speed,
+                ..
+            }
+            | SubEntityAi::AttachAndDrain {
+                target,
+                turn_rate,
+                speed,
+                ..
+            } => {
+                // Re-acquire target if missing or destroyed.
+                let target_lost = target.map(|t| ships.get(t).is_err()).unwrap_or(true);
+                if target_lost {
+                    let mut best: Option<(Entity, f32)> = None;
+                    for (e, s, p) in &ships {
+                        if Some(s.player_slot) == owner_slot {
+                            continue;
+                        }
+                        let d2 = (p.0 - sub_pos.0).length_squared();
+                        if best.map_or(true, |(_, bd)| d2 < bd) {
+                            best = Some((e, d2));
+                        }
+                    }
+                    *target = best.map(|(e, _)| e);
+                }
+                let Some(t) = *target else {
+                    continue;
+                };
+                let Ok((_, _, t_pos)) = ships.get(t) else {
+                    continue;
+                };
+                let to_target = (t_pos.0 - sub_pos.0).normalize_or_zero();
+                if to_target == Vec2::ZERO {
+                    continue;
+                }
+                let current = sub_vel.0.normalize_or_zero();
+                if current == Vec2::ZERO {
+                    sub_vel.0 = to_target * *speed;
+                    continue;
+                }
+                // Cap rotation per tick at `turn_rate * dt`. Compute
+                // signed angle between current heading and desired,
+                // clamp, then rotate the velocity vector by that.
+                let cur_angle = current.y.atan2(current.x);
+                let tgt_angle = to_target.y.atan2(to_target.x);
+                let mut diff = tgt_angle - cur_angle;
+                while diff > std::f32::consts::PI {
+                    diff -= std::f32::consts::TAU;
+                }
+                while diff < -std::f32::consts::PI {
+                    diff += std::f32::consts::TAU;
+                }
+                let cap = (*turn_rate * dt).abs();
+                let actual = diff.clamp(-cap, cap);
+                let (sn, cs) = actual.sin_cos();
+                let new_dir = Vec2::new(
+                    current.x * cs - current.y * sn,
+                    current.x * sn + current.y * cs,
+                );
+                sub_vel.0 = new_dir * *speed;
+            }
+            SubEntityAi::DriftAndCollect { .. } => {
+                // No steering. Drift forever at spawn velocity.
+            }
+        }
+    }
+}
+
+/// Resolve collisions between sub-entities and ships. Dispatches the
+/// AI's on-hit behaviour: damage + sap for DOGI, heavy crew drain for
+/// marines, friendly-collect for crew pods. Owner is never affected
+/// by its own sub-entity.
+fn handle_sub_entity_collisions(
+    mut commands: Commands,
+    mut reader: MessageReader<CollisionStart>,
+    mut subs: Query<(&mut SubEntity, &SubEntityAi)>,
+    mut crews: Query<&mut Crew>,
+    mut batteries: Query<&mut Battery>,
+    ships: Query<&Ship>,
+) {
+    for event in reader.read() {
+        let (sub_entity, other_entity) = if subs.contains(event.collider1) {
+            (event.collider1, event.collider2)
+        } else if subs.contains(event.collider2) {
+            (event.collider2, event.collider1)
+        } else {
+            continue;
+        };
+        let Ok((mut sub, ai)) = subs.get_mut(sub_entity) else {
+            continue;
+        };
+        if other_entity == sub.owner {
+            continue;
+        }
+        let Ok(other_ship) = ships.get(other_entity) else {
+            continue;
+        };
+
+        match ai {
+            SubEntityAi::HomeAndDetonate {
+                damage_on_hit,
+                batt_sap,
+                ..
+            } => {
+                if let Ok(mut crew) = crews.get_mut(other_entity) {
+                    crew.current = (crew.current - *damage_on_hit).max(0);
+                }
+                if let Ok(mut batt) = batteries.get_mut(other_entity) {
+                    batt.current = (batt.current - *batt_sap).max(0);
+                }
+                sub.hp -= 1;
+                // `tick_sub_entities` despawns when hp <= 0.
+                info!(
+                    "DOGI hit P{}: -{} crew, -{} batt (sub hp now {})",
+                    other_ship.player_slot + 1,
+                    damage_on_hit,
+                    batt_sap,
+                    sub.hp
+                );
+            }
+            SubEntityAi::AttachAndDrain { crew_drain, .. } => {
+                if let Ok(mut crew) = crews.get_mut(other_entity) {
+                    crew.current = (crew.current - *crew_drain).max(0);
+                }
+                info!(
+                    "marine boarded P{}: -{} crew",
+                    other_ship.player_slot + 1,
+                    crew_drain
+                );
+                commands.entity(sub_entity).despawn();
+            }
+            SubEntityAi::DriftAndCollect {
+                owner_slot,
+                crew_value,
+            } => {
+                if other_ship.player_slot == *owner_slot {
+                    if let Ok(mut crew) = crews.get_mut(other_entity) {
+                        crew.current = (crew.current + *crew_value).min(crew.max);
+                    }
+                    info!(
+                        "pod collected by P{}: +{} crew",
+                        other_ship.player_slot + 1,
+                        crew_value
+                    );
+                    commands.entity(sub_entity).despawn();
+                }
+                // Enemy contact: no effect, pod keeps drifting.
+            }
         }
     }
 }

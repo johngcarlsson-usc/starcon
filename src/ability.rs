@@ -20,9 +20,9 @@ use bevy::prelude::*;
 
 use crate::input;
 use crate::ship::{
-    spawn_attached_damage_zone, spawn_beam, spawn_damage_zone, spawn_tractor, Barrel, Battery,
-    Crew, DamageToBattery, Homing, Invisible, Limpet, PointDefenseActive, Projectile,
-    ShieldActive, Ship, SpecialCooldown, WeaponCooldown,
+    spawn_attached_damage_zone, spawn_beam, spawn_damage_zone, spawn_sub_entity, spawn_tractor,
+    Barrel, Battery, Crew, DamageToBattery, Homing, Invisible, Limpet, PointDefenseActive,
+    Projectile, ShieldActive, Ship, SpecialCooldown, SubEntityAi, WeaponCooldown,
 };
 
 /// Per-ship behaviour manifest. Present on entities that have been
@@ -130,6 +130,23 @@ pub enum AbilityKind {
     /// (shputwju.cpp:96, `batt += normal` while special_recharge > 0).
     GrantDamageToBattery { duration_s: f32, conversion: f32 },
 
+    /// Spawn a sub-entity (Chenjesu DOGI, Orz marine, Syreen crew
+    /// pod, Kzer-Za fighter). Has its own physics body + sprite + HP
+    /// and runs an AI variant for steering / target acquisition /
+    /// on-contact behaviour. `initial_angle_offset` is radians CCW
+    /// from ship-forward: `0` = out the nose, `π` = out the rear.
+    SpawnSubEntity {
+        local_offset: Vec2,
+        initial_angle_offset: f32,
+        initial_speed: f32,
+        sprite_path: Option<String>,
+        sprite_size: f32,
+        color: Color,
+        hp: i32,
+        lifetime_s: f32,
+        ai: SubEntityAiSpec,
+    },
+
     /// Spawn a stationary damage zone at the firer's pose. `offset` is
     /// ship-local. `source_self` makes the zone immune to the firer
     /// (DOGI / Kohr-Ah blades use this); `false` is a self-damaging
@@ -169,6 +186,31 @@ pub enum AbilityKind {
     /// every primitive to land — the missing one becomes a focused
     /// follow-up PR. See `docs/EXTENSIBILITY.md` for the list.
     Todo { ident: &'static str },
+}
+
+/// Per-variant AI tuning for `SpawnSubEntity`. Each variant maps
+/// directly to a `ship::SubEntityAi` constructor — kept separate so
+/// the manifest carries plain data (no `Option<Entity>`-style runtime
+/// state) while the runtime component carries the live AI.
+#[derive(Debug, Clone)]
+pub enum SubEntityAiSpec {
+    HomeAndDetonate {
+        turn_rate: f32,
+        speed: f32,
+        damage_on_hit: i32,
+        batt_sap: i32,
+    },
+    AttachAndDrain {
+        turn_rate: f32,
+        speed: f32,
+        crew_drain: i32,
+    },
+    // DriftAndCollect: owner_slot is filled in at spawn time from
+    // ctx.ship, so the manifest doesn't have to know which slot the
+    // firer is in.
+    DriftAndCollect {
+        crew_value: i32,
+    },
 }
 
 /// One beam emitted by a `SpawnBeams` ability. World pose is derived
@@ -395,6 +437,64 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
                 conversion: *conversion,
             });
             info!("P{} fortitude up", slot);
+        }
+        AbilityKind::SpawnSubEntity {
+            local_offset,
+            initial_angle_offset,
+            initial_speed,
+            sprite_path,
+            sprite_size,
+            color,
+            hp,
+            lifetime_s,
+            ai,
+        } => {
+            let runtime_ai = match ai {
+                SubEntityAiSpec::HomeAndDetonate {
+                    turn_rate,
+                    speed,
+                    damage_on_hit,
+                    batt_sap,
+                } => SubEntityAi::HomeAndDetonate {
+                    target: None,
+                    turn_rate: *turn_rate,
+                    speed: *speed,
+                    damage_on_hit: *damage_on_hit,
+                    batt_sap: *batt_sap,
+                },
+                SubEntityAiSpec::AttachAndDrain {
+                    turn_rate,
+                    speed,
+                    crew_drain,
+                } => SubEntityAi::AttachAndDrain {
+                    target: None,
+                    turn_rate: *turn_rate,
+                    speed: *speed,
+                    crew_drain: *crew_drain,
+                },
+                SubEntityAiSpec::DriftAndCollect { crew_value } => {
+                    SubEntityAi::DriftAndCollect {
+                        owner_slot: ctx.ship.player_slot,
+                        crew_value: *crew_value,
+                    }
+                }
+            };
+            spawn_sub_entity(
+                ctx.commands,
+                ctx.assets,
+                ctx.entity,
+                ctx.pos.0,
+                ctx.rot,
+                *local_offset,
+                *initial_angle_offset,
+                *initial_speed,
+                sprite_path.as_deref(),
+                *sprite_size,
+                *color,
+                *hp,
+                *lifetime_s,
+                runtime_ai,
+            );
         }
         AbilityKind::GrantPointDefense {
             range,
