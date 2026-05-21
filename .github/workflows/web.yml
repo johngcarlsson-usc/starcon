@@ -33,18 +33,15 @@ jobs:
       - name: Cache Cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          # Cache wasm-bindgen-cli too so we don't recompile it every run.
           cache-all-crates: true
 
-      - name: Install wasm-bindgen-cli
-        run: |
-          # Use cargo-binstall to pull a prebuilt binary in seconds
-          # instead of compiling wasm-bindgen-cli from source (~5 min).
-          if ! command -v cargo-binstall >/dev/null; then
-            curl -L --proto '=https' --tlsv1.2 -sSf \
-              https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          fi
-          cargo binstall -y wasm-bindgen-cli
+      - name: Install wasm-bindgen-cli (version-matched)
+        uses: taiki-e/install-action@v2
+        with:
+          # Must match the wasm-bindgen crate version Bevy pulls in
+          # (check Cargo.lock if Bevy bumps it). Mismatch = cryptic
+          # `imported function does not exist` runtime errors.
+          tool: wasm-bindgen-cli@0.2.121
 
       - name: Build (wasm32, release)
         run: cargo build --release --bin starcon --target wasm32-unknown-unknown
