@@ -532,6 +532,7 @@ impl Plugin for ShipPlugin {
                 trigger_specials.after(tick_special_cooldown),
                 tick_projectile_lifetime,
                 steer_homing_projectiles,
+                orient_projectiles,
                 tick_damage_zones,
                 handle_projectile_hits,
                 handle_ship_collisions,
@@ -935,6 +936,7 @@ fn tick_battery_recharge(
 fn fire_weapons(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
+    assets: Res<AssetServer>,
     mut q: Query<(
         Entity,
         &Ship,
@@ -978,7 +980,7 @@ fn fire_weapons(
 
         let damage = ship.stats.weapon_damage.max(1);
         let world_dir =
-            spawn_projectile(&mut commands, entity, pos.0, rot, vel.0, &spec, damage);
+            spawn_projectile(&mut commands, &assets, entity, pos.0, rot, vel.0, &spec, damage);
 
         // Recoil from firing: applied here (not in spawn_projectile)
         // because it's specifically the *firer's* reaction to the
@@ -995,6 +997,7 @@ fn fire_weapons(
 /// can apply recoil to the firer if the spec requests it.
 fn spawn_projectile(
     commands: &mut Commands,
+    assets: &AssetServer,
     owner: Entity,
     pos: Vec2,
     rot: &Rotation,
@@ -1009,17 +1012,40 @@ fn spawn_projectile(
     );
     let muzzle = pos + world_dir * spec.muzzle_offset;
     let projectile_vel = ship_vel + world_dir * spec.speed;
+    // Initial rotation matches velocity direction so the canonical
+    // up-facing sprite frame visually points the right way at spawn;
+    // `orient_projectiles` keeps it aligned as homing projectiles curve.
+    let initial_angle = world_dir.y.atan2(world_dir.x) - std::f32::consts::FRAC_PI_2;
+
+    let sprite = if let Some(path) = spec.projectile_sprite {
+        Sprite {
+            image: assets.load(path),
+            color: spec.color,
+            custom_size: Some(Vec2::splat(spec.sprite_size)),
+            ..default()
+        }
+    } else {
+        // Placeholder: solid-color square via the WhitePixel pattern
+        // isn't available here without threading the resource through,
+        // so use Sprite::from_color which works for *colour-only*
+        // projectiles even though it would render nothing without an
+        // image — projectiles missing canonical art aren't strictly
+        // intended to render, this just keeps the spawn from panicking.
+        Sprite::from_color(spec.color, Vec2::splat(spec.sprite_size))
+    };
+
     let mut ent = commands.spawn((
         Projectile {
             owner,
             damage,
             lifetime: spec.lifetime,
         },
-        Sprite::from_color(spec.color, Vec2::splat(spec.sprite_size)),
+        sprite,
         Transform::from_translation(muzzle.extend(0.5)),
         RigidBody::Dynamic,
         Collider::circle(spec.sprite_size * 0.5),
         Mass(0.5),
+        Rotation::radians(initial_angle),
         LinearVelocity(projectile_vel),
         AngularVelocity::ZERO,
         // No damping — projectile flies straight until it dies or hits.
@@ -1097,6 +1123,20 @@ struct WeaponSpec {
     lifetime: f32,
     color: Color,
     sprite_size: f32,
+    /// Optional asset path (relative to `assets/`) of the projectile's
+    /// canonical sprite from the legacy `.dat`. When `Some`, the
+    /// projectile renders with that texture and is rotated to face
+    /// its velocity vector each tick (see `orient_projectiles`).
+    /// When `None`, falls back to the WhitePixel + `color` tint —
+    /// useful for placeholder projectiles or AoE blobs.
+    ///
+    /// Naming convention from `[Objects]` in each ship's `SHIP_DAT`:
+    /// `shot_a##` is `WeaponSprites` (primary), `shot_b##` is whatever
+    /// follows it (`WeaponExplosion` for ships with no special sprite,
+    /// or `SpecialSprites` for ships like Spathi with a separate
+    /// special projectile). Picking frame `_01` gives the up-facing
+    /// version, which the orient system then rotates per-frame.
+    projectile_sprite: Option<&'static str>,
     /// Recoil impulse imparted to the firing ship, in N·s. Real units
     /// — applied as `Δv = -world_dir * recoil_impulse / ship_mass`, so
     /// the same cannon kicks a light hull harder than a heavy one
@@ -1147,8 +1187,10 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             muzzle_offset: 28.0,
             speed: 768.0,
             lifetime: 3.125,
-            color: Color::srgb(1.0, 0.9, 0.4),
-            sprite_size: 7.0,
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 16.0,
+            // Canonical EarthlingMissile sprite from shot_a (= WeaponSprites).
+            projectile_sprite: Some("ships/earcr/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 1.96,
             is_limpet: false,
@@ -1163,8 +1205,10 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             muzzle_offset: 22.0,
             speed: 920.0,
             lifetime: 0.7,
-            color: Color::srgb(1.0, 0.5, 0.7),
-            sprite_size: 5.0,
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 8.0,
+            // Canonical Spathi cannon shot (WeaponSprites = shot_a).
+            projectile_sprite: Some("ships/spael/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1176,6 +1220,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.2,
             color: Color::srgb(0.8, 1.0, 0.4),
             sprite_size: 5.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1187,6 +1232,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 0.8,
             color: Color::srgb(0.4, 0.9, 1.0),
             sprite_size: 4.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1200,6 +1246,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 2.5,
             color: Color::srgb(0.6, 1.0, 0.6),
             sprite_size: 10.0,
+            projectile_sprite: None,
             recoil_impulse: 800.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1214,6 +1261,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 3.5,
             color: Color::srgb(1.0, 0.5, 0.3),
             sprite_size: 9.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 1.5,
             is_limpet: false,
@@ -1227,6 +1275,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(0.6, 1.0, 1.0),
             sprite_size: 4.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1241,6 +1290,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(0.5, 1.0, 0.5),
             sprite_size: 5.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1255,6 +1305,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(1.0, 0.6, 1.0),
             sprite_size: 5.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1267,6 +1318,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.0,
             color: Color::srgb(1.0, 0.4, 0.2),
             sprite_size: 8.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1279,6 +1331,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.4,
             color: Color::srgb(1.0, 0.7, 0.2),
             sprite_size: 5.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1298,6 +1351,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 4.0,
             color: Color::srgb(0.4, 0.9, 0.3),
             sprite_size: 9.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: true,
@@ -1311,6 +1365,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.8,
             color: Color::srgb(0.5, 0.8, 1.0),
             sprite_size: 7.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1325,6 +1380,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(1.0, 0.55, 0.15),
             sprite_size: 9.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1338,6 +1394,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.6,
             color: Color::srgb(1.0, 0.85, 0.95),
             sprite_size: 5.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1350,6 +1407,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 2.5,
             color: Color::srgb(0.7, 0.7, 1.0),
             sprite_size: 8.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1362,6 +1420,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(0.9, 0.8, 1.0),
             sprite_size: 6.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1379,6 +1438,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 2.5,
             color: Color::srgb(1.0, 0.3, 0.1),
             sprite_size: 10.0,
+            projectile_sprite: None,
             recoil_impulse: 2000.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1391,6 +1451,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(0.8, 0.7, 1.0),
             sprite_size: 5.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1405,6 +1466,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 0.6,
             color: Color::srgb(1.0, 0.7, 0.5),
             sprite_size: 4.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1417,6 +1479,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.0,
             color: Color::srgb(0.6, 0.8, 1.0),
             sprite_size: 4.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1430,6 +1493,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(0.8, 0.9, 0.6),
             sprite_size: 6.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1444,6 +1508,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 2.0,
             color: Color::srgb(1.0, 1.0, 0.5),
             sprite_size: 5.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1457,6 +1522,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 0.8,
             color: Color::srgb(0.5, 1.0, 0.7),
             sprite_size: 7.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1471,6 +1537,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(0.9, 0.5, 1.0),
             sprite_size: 6.0,
+            projectile_sprite: None,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1561,6 +1628,21 @@ fn steer_homing_projectiles(
             current_dir.x * s + current_dir.y * c,
         );
         vel.0 = new_dir * speed;
+    }
+}
+
+/// Rotate each projectile's `Rotation` to match its current velocity
+/// direction. Frame 0 of the canonical weapon sprites points up (+Y),
+/// so we offset by -π/2 to align "up-facing" art with motion. Runs
+/// after `steer_homing_projectiles` so homing missiles keep facing
+/// their target as they curve.
+fn orient_projectiles(mut q: Query<(&LinearVelocity, &mut Rotation), With<Projectile>>) {
+    for (vel, mut rot) in &mut q {
+        if vel.0.length_squared() <= 0.0 {
+            continue;
+        }
+        let angle = vel.0.y.atan2(vel.0.x) - std::f32::consts::FRAC_PI_2;
+        *rot = Rotation::radians(angle);
     }
 }
 
@@ -1812,6 +1894,7 @@ fn tick_special_cooldown(time: Res<Time<Physics>>, mut q: Query<&mut SpecialCool
 fn trigger_specials(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
+    assets: Res<AssetServer>,
     mut q: Query<(
         Entity,
         &Ship,
@@ -1887,15 +1970,19 @@ fn trigger_specials(
                     muzzle_offset: 22.0,
                     speed: 432.0, // Velocity=45 × distance_ratio / time_ratio
                     lifetime: 1.1, // ≈ Range=12 ÷ Velocity at scale
-                    color: Color::srgb(1.0, 0.5, 0.7),
-                    sprite_size: 7.0,
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 12.0,
+                    // Canonical BUTT sprite from shot_b (= SpecialSprites
+                    // for the Spathi — Spael has SpecialSprites=64 in
+                    // its SHIP_DAT [Objects]).
+                    projectile_sprite: Some("ships/spael/sprites/shot_b01.png"),
                     recoil_impulse: 0.0,
                     // .ini Special TurnRate=1 → scale_turning gives
                     // (2π/16) / (1+1) / 0.05 ≈ 3.93 rad/s.
                     homing_turn_rate: 3.93,
-            is_limpet: false,
+                    is_limpet: false,
                 };
-                spawn_projectile(&mut commands, entity, pos.0, rot, vel.0, &butt, 2);
+                spawn_projectile(&mut commands, &assets, entity, pos.0, rot, vel.0, &butt, 2);
                 cooldown.0 = 1.2;
                 info!("P{} BUTT", ship.player_slot + 1);
             }
