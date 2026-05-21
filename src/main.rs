@@ -48,12 +48,7 @@ fn main() {
                 .set(ImagePlugin::default_nearest()),
         )
         .init_state::<AppState>()
-        // DIAGNOSTIC: magenta clear color so we can immediately tell
-        // whether the canvas is rendering at all on WASM. If you see
-        // magenta the canvas + Bevy render pipeline work — the issue
-        // is sprite loading or transform. Revert to dark blue once the
-        // browser play actually shows something.
-        .insert_resource(ClearColor(Color::srgb(0.6, 0.1, 0.5)))
+        .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.05)))
         .add_plugins((
             ship::ShipPlugin,
             physics::PhysicsPlugin,
@@ -77,22 +72,8 @@ fn main() {
         .run();
 }
 
-fn setup_camera(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-) {
+fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
-    // DIAGNOSTIC: a 200x200 cyan square at world origin, this time
-    // built with Mesh2d + ColorMaterial since Sprite::from_color
-    // turned out to render nothing in our setup (no underlying
-    // image handle to tint). If we see this, the 2D pipeline is
-    // fine and the AoE damage-zone rendering needs the same fix.
-    commands.spawn((
-        Mesh2d(meshes.add(Rectangle::new(200.0, 200.0))),
-        MeshMaterial2d(materials.add(Color::srgb(0.2, 1.0, 1.0))),
-        Transform::from_xyz(0.0, 0.0, 1.0),
-    ));
 }
 
 // M1: skip the main menu and drop straight into a one-ship test scene
