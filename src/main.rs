@@ -77,14 +77,20 @@ fn main() {
         .run();
 }
 
-fn setup_camera(mut commands: Commands) {
+fn setup_camera(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
     commands.spawn(Camera2d);
-    // DIAGNOSTIC: a 200x200 cyan square at world origin. If you see
-    // a cyan square on the magenta background, then sprite spawning
-    // and the camera transform are both working — meaning the issue
-    // is specifically with the *ship* sprite textures loading.
+    // DIAGNOSTIC: a 200x200 cyan square at world origin, this time
+    // built with Mesh2d + ColorMaterial since Sprite::from_color
+    // turned out to render nothing in our setup (no underlying
+    // image handle to tint). If we see this, the 2D pipeline is
+    // fine and the AoE damage-zone rendering needs the same fix.
     commands.spawn((
-        Sprite::from_color(Color::srgb(0.2, 1.0, 1.0), Vec2::splat(200.0)),
+        Mesh2d(meshes.add(Rectangle::new(200.0, 200.0))),
+        MeshMaterial2d(materials.add(Color::srgb(0.2, 1.0, 1.0))),
         Transform::from_xyz(0.0, 0.0, 1.0),
     ));
 }

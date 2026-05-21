@@ -13,6 +13,7 @@ bevy = { version = "0.18", default-features = false, features = [
     "bevy_window",
     "bevy_render",
     "bevy_sprite",
+    "bevy_sprite_render",
     "bevy_text",
     "bevy_ui",
     "bevy_core_pipeline",
