@@ -652,11 +652,24 @@ pub fn spawn_match(
     );
 }
 
-/// Class-picker hotkeys. Each player has 10 key slots (digits for P1,
-/// F-keys for P2) plus modifier-based bank selection: no modifier picks
-/// classes 0..9, `Shift` picks 10..19, `Ctrl` picks 20..24. Changes
-/// apply on the next rematch.
-fn class_picker_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<MatchConfig>) {
+/// Class-picker hotkeys. Two ways in:
+///
+///   1. Direct-pick: digits `1`..`0` set P1; `F1`..`F10` set P2.
+///      Hold Shift to pick from the second bank of ten classes, Ctrl
+///      for the third bank.
+///   2. Cycle: `Tab` / `Shift+Tab` walks P1 forward / backward
+///      through `ALL_CLASSES`; `~` (backtick) / `Shift+~` does the
+///      same for P2.
+///
+/// Either way, changing a class triggers an immediate `AppState::
+/// Resetting` so the new ship spawns *now*, not on the next rematch.
+/// Lets you test ship behaviours without waiting for one to die.
+fn class_picker_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut config: ResMut<MatchConfig>,
+    mut next_state: ResMut<NextState<crate::AppState>>,
+    current_state: Res<State<crate::AppState>>,
+) {
     const P1_DIGITS: [KeyCode; 10] = [
         KeyCode::Digit1,
         KeyCode::Digit2,
@@ -692,12 +705,17 @@ fn class_picker_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<MatchC
         0
     };
 
+    let mut changed = false;
+
     for (i, key) in P1_DIGITS.iter().enumerate() {
         if keys.just_pressed(*key) {
             let idx = bank_offset + i;
             if let Some(class) = ALL_CLASSES.get(idx).copied() {
-                config.p1_class = class;
-                info!("P1 → {:?} (takes effect next rematch)", config.p1_class);
+                if config.p1_class != class {
+                    config.p1_class = class;
+                    info!("P1 → {:?}", config.p1_class);
+                    changed = true;
+                }
             }
         }
     }
@@ -705,11 +723,46 @@ fn class_picker_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<MatchC
         if keys.just_pressed(*key) {
             let idx = bank_offset + i;
             if let Some(class) = ALL_CLASSES.get(idx).copied() {
-                config.p2_class = class;
-                info!("P2 → {:?} (takes effect next rematch)", config.p2_class);
+                if config.p2_class != class {
+                    config.p2_class = class;
+                    info!("P2 → {:?}", config.p2_class);
+                    changed = true;
+                }
             }
         }
     }
+
+    // Cycling hotkeys — quick way to walk the roster mid-match.
+    if keys.just_pressed(KeyCode::Tab) {
+        let dir: i32 = if shift { -1 } else { 1 };
+        config.p1_class = cycle_class(config.p1_class, dir);
+        info!("P1 → {:?}", config.p1_class);
+        changed = true;
+    }
+    if keys.just_pressed(KeyCode::Backquote) {
+        let dir: i32 = if shift { -1 } else { 1 };
+        config.p2_class = cycle_class(config.p2_class, dir);
+        info!("P2 → {:?}", config.p2_class);
+        changed = true;
+    }
+
+    // Trigger a fresh spawn so the change takes effect immediately —
+    // skip if we're mid-reset already (would re-enter the state
+    // machine in the same frame, harmless but noisy).
+    if changed && *current_state.get() == crate::AppState::InMatch {
+        next_state.set(crate::AppState::Resetting);
+    }
+}
+
+fn cycle_class(current: ShipClass, dir: i32) -> ShipClass {
+    let n = ALL_CLASSES.len() as i32;
+    let cur_idx = ALL_CLASSES
+        .iter()
+        .position(|c| *c == current)
+        .map(|i| i as i32)
+        .unwrap_or(0);
+    let next = ((cur_idx + dir).rem_euclid(n)) as usize;
+    ALL_CLASSES[next]
 }
 
 /// Despawn every gameplay entity from the previous round so the next
@@ -809,6 +862,11 @@ fn spawn_ship(
         RigidBody::Dynamic,
         Collider::circle(phys.collider_radius),
         Mass(stats.mass),
+        // `Position` is now mandatory because we disabled
+        // `PhysicsTransformConfig::transform_to_position` — Avian no
+        // longer reads spawn pose from `Transform`, so without an
+        // explicit `Position` every ship starts at (0, 0).
+        Position(position),
         Rotation::radians(rotation_rad),
         LinearDamping(derived.linear_damping),
         AngularDamping(derived.angular_damping),
