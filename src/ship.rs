@@ -503,6 +503,54 @@ pub(crate) fn spawn_damage_zone(
     ));
 }
 
+/// Owner-attached damage zone — same gameplay shape as `DamageZone`
+/// but its world position is recomputed each tick from the owner's
+/// `Position + Rotation`, so it sticks to the ship as it moves.
+///
+/// Canonical uses (legacy `shp*.cpp`):
+///   - Umgah anti-grav cone (`shpumgdr.cpp:UmgahCone`) — a fixed
+///     forward offset that damages anything inside while fire is held
+///   - Zoq-Fot-Pik tongue lash (`shpzfpst.cpp:ZoqFotPikTongue`) — a
+///     short-lived attached zone tip-extended from the Stinger
+///
+/// Friendly-fire immunity is automatic (owner is never damaged by its
+/// own attached zone, same as `DamageZone::source = Some(owner)`).
+#[derive(Component, Debug)]
+pub struct AttachedDamageZone {
+    pub owner: Entity,
+    pub local_offset: Vec2,
+    pub radius: f32,
+    pub damage_per_sec: f32,
+    pub lifetime: f32,
+    pub color: Color,
+}
+
+/// Spawn an attached damage zone owned by `owner`. Position is
+/// undefined until the first `tick_attached_damage_zones` pass — the
+/// system snaps it into place on the next FixedUpdate.
+pub(crate) fn spawn_attached_damage_zone(
+    commands: &mut Commands,
+    owner: Entity,
+    local_offset: Vec2,
+    radius: f32,
+    damage_per_sec: f32,
+    lifetime: f32,
+    color: Color,
+) {
+    commands.spawn((
+        AttachedDamageZone {
+            owner,
+            local_offset,
+            radius,
+            damage_per_sec,
+            lifetime,
+            color,
+        },
+        Sprite::from_color(color, Vec2::splat(radius * 2.0)),
+        Transform::from_translation(Vec3::ZERO),
+    ));
+}
+
 /// All 64 rotation frames preloaded so the renderer can pick by heading
 /// without hitting the asset server hot path.
 #[derive(Component)]
@@ -533,6 +581,7 @@ impl Plugin for ShipPlugin {
                 steer_homing_projectiles,
                 orient_projectiles,
                 tick_damage_zones,
+                tick_attached_damage_zones,
                 tick_beams,
                 handle_projectile_hits,
                 handle_ship_collisions,
@@ -1377,14 +1426,16 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             },
             special: AbilitySpec {
                 // ZFP tongue: a ship-attached SpaceObject at dist=39
-                // ahead. Attached-zone primitive doesn't exist —
-                // approximate with a brief stationary zone.
-                kind: AbilityKind::SpawnDamageZone {
-                    offset: Vec2::new(0.0, 39.0),
+                // ahead of the Stinger, lifetime 6 frames (~0.3 s).
+                // Now uses the real attached-zone primitive so the
+                // tongue follows the ship as it moves/turns mid-lash
+                // (canonical `pos = ship.pos + dist·unit_vector(angle)`
+                // updated every tick in shpzfpst.cpp:ZoqFotPikTongue).
+                kind: AbilityKind::SpawnAttachedDamageZone {
+                    local_offset: Vec2::new(0.0, 39.0),
                     radius: 20.0,
-                    damage_per_sec: 240.0, // 12 dmg/0.05s
+                    damage_per_sec: 240.0,
                     duration_s: 0.3,
-                    source_self: true,
                     color: Color::srgba(1.0, 0.5, 0.3, 0.55),
                 },
                 cooldown_s: 6.0 / 20.0,
@@ -1458,10 +1509,23 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             },
         }),
 
-        // Umgah Drone — attached cone (TODO) + anti-grav slingshot.
+        // Umgah Drone — attached anti-grav cone (UmgahCone in legacy is
+        // a ship-attached SpaceObject at dist=81 ahead, damaging on
+        // contact while fire_weapon is held). Each press spawns a
+        // brief AttachedDamageZone in front; holding the button keeps
+        // the cone alive continuously. .ini Weapon: Damage=20,
+        // DamageType=2. We model Damage=20 SC2-frames-per-tick at
+        // 20 Hz → 20 dmg / 0.05 s ≈ 400 dps; the canonical DamageType=2
+        // ramping behaviour is left for a future tuning pass.
         ShipClass::Umgdr => Some(ShipAbilities {
             primary: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "Umgah attached cone (shpumgdr.cpp:UmgahCone)" },
+                kind: AbilityKind::SpawnAttachedDamageZone {
+                    local_offset: Vec2::new(0.0, 40.0),
+                    radius: 30.0,
+                    damage_per_sec: 400.0,
+                    duration_s: 1.0 / 20.0,
+                    color: Color::srgba(0.5, 1.0, 0.7, 0.45),
+                },
                 cooldown_s: 1.0 / 20.0,
             },
             special: AbilitySpec {
@@ -2156,6 +2220,63 @@ fn tick_point_defense(
                 .entity(firer_entity)
                 .remove::<PointDefenseActive>();
             info!("P{} point defense offline", firer.player_slot + 1);
+        }
+    }
+}
+
+/// Reposition each attached zone to follow its owner, then apply
+/// damage to any non-friendly ship inside it. Zones whose owner has
+/// died despawn (no orphan damage continuing in dead space).
+fn tick_attached_damage_zones(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut zones: Query<(Entity, &mut AttachedDamageZone, &mut Transform, &mut Sprite)>,
+    owners: Query<(&Ship, &Position, &Rotation)>,
+    mut ships: Query<(Entity, &Ship, &Position, &mut Crew)>,
+    shields: Query<&ShieldActive>,
+) {
+    let dt = time.delta_secs();
+    for (zone_entity, mut zone, mut zone_xf, mut zone_sprite) in &mut zones {
+        let Ok((owner_ship, owner_pos, owner_rot)) = owners.get(zone.owner) else {
+            commands.entity(zone_entity).despawn();
+            continue;
+        };
+        // Ship-local offset → world.
+        let world_offset = Vec2::new(
+            zone.local_offset.x * owner_rot.cos - zone.local_offset.y * owner_rot.sin,
+            zone.local_offset.x * owner_rot.sin + zone.local_offset.y * owner_rot.cos,
+        );
+        let zone_pos = owner_pos.0 + world_offset;
+        zone_xf.translation = zone_pos.extend(0.2);
+        // Keep sprite size in sync (radius can change frame-to-frame
+        // in the future without re-spawning the entity).
+        zone_sprite.custom_size = Some(Vec2::splat(zone.radius * 2.0));
+        zone_sprite.color = zone.color;
+
+        if zone.damage_per_sec > 0.0 && dt > 0.0 {
+            let r2 = zone.radius * zone.radius;
+            for (ship_e, ship, ship_pos, mut crew) in &mut ships {
+                // Don't damage the owner with its own attached zone.
+                if ship.player_slot == owner_ship.player_slot {
+                    continue;
+                }
+                if (ship_pos.0 - zone_pos).length_squared() > r2 {
+                    continue;
+                }
+                let factor = shields
+                    .get(ship_e)
+                    .map(|s| s.damage_factor)
+                    .unwrap_or(1.0);
+                let dmg = (zone.damage_per_sec * dt * factor).ceil().max(0.0) as i32;
+                if dmg > 0 {
+                    crew.current = (crew.current - dmg).max(0);
+                }
+            }
+        }
+
+        zone.lifetime -= dt;
+        if zone.lifetime <= 0.0 {
+            commands.entity(zone_entity).despawn();
         }
     }
 }

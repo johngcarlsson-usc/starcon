@@ -20,8 +20,8 @@ use bevy::prelude::*;
 
 use crate::input;
 use crate::ship::{
-    spawn_beam, spawn_damage_zone, Barrel, Battery, Crew, Homing, Limpet, PointDefenseActive,
-    Projectile, ShieldActive, Ship, SpecialCooldown, WeaponCooldown,
+    spawn_attached_damage_zone, spawn_beam, spawn_damage_zone, Barrel, Battery, Crew, Homing,
+    Limpet, PointDefenseActive, Projectile, ShieldActive, Ship, SpecialCooldown, WeaponCooldown,
 };
 
 /// Per-ship behaviour manifest. Present on entities that have been
@@ -119,6 +119,19 @@ pub enum AbilityKind {
         damage_per_sec: f32,
         duration_s: f32,
         source_self: bool,
+        color: Color,
+    },
+
+    /// Spawn an owner-attached damage zone — like `SpawnDamageZone`
+    /// but the zone follows the firer each tick rather than staying
+    /// where it was spawned. Canonical Umgah cone (`shpumgdr.cpp`)
+    /// and ZFP tongue (`shpzfpst.cpp`). Friendly-fire immune to the
+    /// owner unconditionally.
+    SpawnAttachedDamageZone {
+        local_offset: Vec2,
+        radius: f32,
+        damage_per_sec: f32,
+        duration_s: f32,
         color: Color,
     },
 
@@ -414,6 +427,23 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
                 ctx.commands,
                 source_self.then_some(ctx.entity),
                 ctx.pos.0 + world_offset,
+                *radius,
+                *damage_per_sec,
+                *duration_s,
+                *color,
+            );
+        }
+        AbilityKind::SpawnAttachedDamageZone {
+            local_offset,
+            radius,
+            damage_per_sec,
+            duration_s,
+            color,
+        } => {
+            spawn_attached_damage_zone(
+                ctx.commands,
+                ctx.entity,
+                *local_offset,
                 *radius,
                 *damage_per_sec,
                 *duration_s,
