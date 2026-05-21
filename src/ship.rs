@@ -325,7 +325,13 @@ pub struct Battery {
 /// A `recharge_rate` of 0 means "no natural recharge" (Slylandro).
 #[derive(Component, Debug)]
 pub struct RechargeTimer {
-    pub remaining_frames: i32,
+    /// Seconds until the next `recharge_amount` is added to battery.
+    /// Kept in seconds (not SC2 frames) so the FixedUpdate dt
+    /// integrates naturally — the previous `remaining_frames: i32`
+    /// arithmetic rounded a 60 Hz step's `0.33 frames` to zero each
+    /// tick, so the timer never decremented and batteries never
+    /// regenerated.
+    pub remaining_s: f32,
 }
 
 /// Time (in seconds) until the ship's primary weapon can fire again.
@@ -382,9 +388,12 @@ impl ShipPhysicsDerived {
         let target_omega_mag =
             (std::f32::consts::TAU / 16.0) / (stats.turn_rate + 1.0) / TIME_RATIO_S;
 
-        // For a constant thrust to stabilise at speed_max:
-        //   F = damping · m · v   →   damping = F / (m · v) = a / v
-        let linear_damping = if speed_max > 0.0 { accel / speed_max } else { 0.0 };
+        // No linear damping — original SC2 / TW physics is Asteroids-
+        // style: ships coast indefinitely until they hit something or
+        // burn against their own thrust. Speed-cap enforcement happens
+        // via `cap_velocity` clamping `LinearVelocity` to `speed_max`
+        // each tick, NOT via a damping term that bleeds momentum.
+        let linear_damping = 0.0;
         let thrust_force = stats.mass * accel;
 
         // Disk moment of inertia: I = ½ m r²
@@ -572,6 +581,7 @@ impl Plugin for ShipPlugin {
             FixedUpdate,
             (
                 apply_player_input,
+                cap_velocity,
                 tick_weapon_cooldown,
                 tick_special_cooldown,
                 tick_shield,
@@ -780,7 +790,9 @@ fn spawn_ship(
             max: stats.batt_max,
         },
         RechargeTimer {
-            remaining_frames: stats.recharge_rate,
+            // RechargeRate is in SC2 frames; convert to seconds for
+            // FixedUpdate integration (50 ms per SC2 frame).
+            remaining_s: stats.recharge_rate as f32 * 0.050,
         },
         WeaponCooldown::default(),
         SpecialCooldown::default(),
@@ -1718,6 +1730,26 @@ fn swap_rotation_frame(mut q: Query<(&Rotation, &ShipFrames, &mut Sprite, &mut T
     }
 }
 
+/// Speed-cap enforcement. Without linear damping, the constant thrust
+/// force would accelerate the ship indefinitely; this clamps each
+/// ship's `LinearVelocity` magnitude to `speed_max`. Coasting below
+/// the cap is preserved (no bleed-off — Asteroids-style inertia,
+/// matching the canonical SC2 / TW behaviour where the ship keeps
+/// drifting at whatever velocity you stopped thrusting at).
+///
+/// Doesn't touch direction — a ship moving forward at cap who turns
+/// 90° and thrusts will still get force applied perpendicular to its
+/// current velocity, curving the trajectory without ever exceeding
+/// the magnitude cap.
+fn cap_velocity(mut q: Query<(&ShipPhysicsDerived, &mut LinearVelocity)>) {
+    for (derived, mut vel) in &mut q {
+        let speed = vel.0.length();
+        if speed > derived.speed_max && derived.speed_max > 0.0 {
+            vel.0 = vel.0 / speed * derived.speed_max;
+        }
+    }
+}
+
 fn tick_weapon_cooldown(time: Res<Time<Physics>>, mut q: Query<&mut WeaponCooldown>) {
     let dt = time.delta_secs();
     for mut cd in &mut q {
@@ -1738,17 +1770,20 @@ fn tick_battery_recharge(
     time: Res<Time<Physics>>,
     mut q: Query<(&Ship, &mut Battery, &mut RechargeTimer)>,
 ) {
-    let dt_frames = time.delta_secs() / 0.050;
+    let dt = time.delta_secs();
     for (ship, mut battery, mut timer) in &mut q {
         if ship.stats.recharge_rate <= 0 || ship.stats.recharge_amount <= 0 {
             continue;
         }
-        // RechargeTimer is integer frames, but dt may not align exactly;
-        // accumulate by subtracting and topping up when we cross zero.
-        timer.remaining_frames -= dt_frames.round() as i32;
-        while timer.remaining_frames <= 0 {
+        // Period between recharge ticks in seconds: SC2 RechargeRate
+        // (a frame count) × 50 ms/frame.
+        let period_s = ship.stats.recharge_rate as f32 * 0.050;
+        timer.remaining_s -= dt;
+        // Catch up if we accumulated more than one period in a slow
+        // frame — won't normally fire but guards against pauses.
+        while timer.remaining_s <= 0.0 {
             battery.current = (battery.current + ship.stats.recharge_amount).min(battery.max);
-            timer.remaining_frames += ship.stats.recharge_rate;
+            timer.remaining_s += period_s;
         }
     }
 }

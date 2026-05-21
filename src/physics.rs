@@ -19,6 +19,19 @@ impl Plugin for PhysicsPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(PhysicsPlugins::default())
             .insert_resource(Gravity(Vec2::ZERO))
+            // Avian's default `transform_to_position: true` reads
+            // `Transform` back into `Position+Rotation` each step. We
+            // explicitly set `transform.rotation = Quat::IDENTITY` in
+            // `swap_rotation_frame` (so the pre-rotated sprite image
+            // isn't double-rotated by Avian's Transform sync) — without
+            // disabling the back-sync, that zero gets pulled into the
+            // ship's `Rotation` every frame, resetting the player's
+            // turning input. Disabling the read-back keeps Avian
+            // authoritative on Rotation; Transform is render-only.
+            .insert_resource(avian2d::physics_transform::PhysicsTransformConfig {
+                transform_to_position: false,
+                ..default()
+            })
             .add_systems(
                 PhysicsSchedule,
                 wrap_arena.in_set(PhysicsStepSystems::Last),
