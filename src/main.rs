@@ -1,4 +1,5 @@
 mod ability;
+mod collider;
 mod hud;
 mod input;
 mod netplay;
@@ -53,6 +54,7 @@ fn main() {
         .add_plugins((
             ship::ShipPlugin,
             ability::AbilityPlugin,
+            collider::ColliderPlugin,
             physics::PhysicsPlugin,
             input::InputPlugin,
             netplay::NetplayPlugin,

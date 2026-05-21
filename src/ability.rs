@@ -346,6 +346,8 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
                 spawn_beam(
                     ctx.commands,
                     ctx.entity,
+                    ctx.pos.0,
+                    ctx.rot,
                     b.local_origin,
                     b.local_dir,
                     b.range,
@@ -368,6 +370,8 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
             spawn_tractor(
                 ctx.commands,
                 ctx.entity,
+                ctx.pos.0,
+                ctx.rot,
                 *local_origin,
                 *range,
                 *force_per_tick,
@@ -499,6 +503,8 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
             spawn_attached_damage_zone(
                 ctx.commands,
                 ctx.entity,
+                ctx.pos.0,
+                ctx.rot,
                 *local_offset,
                 *radius,
                 *damage_per_sec,

@@ -540,12 +540,21 @@ pub struct AttachedDamageZone {
 pub(crate) fn spawn_attached_damage_zone(
     commands: &mut Commands,
     owner: Entity,
+    owner_pos: Vec2,
+    owner_rot: &Rotation,
     local_offset: Vec2,
     radius: f32,
     damage_per_sec: f32,
     lifetime: f32,
     color: Color,
 ) {
+    // Initial world pose so the zone renders in the right place on
+    // its first render frame (before tick_attached_damage_zones runs).
+    let world_offset = Vec2::new(
+        local_offset.x * owner_rot.cos - local_offset.y * owner_rot.sin,
+        local_offset.x * owner_rot.sin + local_offset.y * owner_rot.cos,
+    );
+    let world_pos = owner_pos + world_offset;
     commands.spawn((
         AttachedDamageZone {
             owner,
@@ -556,7 +565,7 @@ pub(crate) fn spawn_attached_damage_zone(
             color,
         },
         Sprite::from_color(color, Vec2::splat(radius * 2.0)),
-        Transform::from_translation(Vec3::ZERO),
+        Transform::from_translation(world_pos.extend(0.2)),
     ));
 }
 
@@ -625,6 +634,7 @@ pub fn load_ship_catalog(mut commands: Commands) {
     info!("  Digits 1..0            — direct-pick P1 (Shift/Ctrl = banks 11-20, 21-25)");
     info!("  F1..F10                — direct-pick P2 (same modifier banks)");
     info!("  M                      — cycle angular control: Classic / Inertial");
+    info!("  F3                     — toggle collider debug overlay (polygon outlines)");
     info!("  R (only post-match)    — rematch");
     info!("------------------------------------------------------------");
     commands.insert_resource(ShipCatalog { ships });
@@ -638,6 +648,7 @@ pub fn spawn_match(
     catalog: Res<ShipCatalog>,
     assets: Res<AssetServer>,
     config: Res<MatchConfig>,
+    ship_colliders: Res<crate::collider::ShipColliders>,
 ) {
     // Rotation convention: 0 rad = ship facing +Y (up); positive
     // rotation is CCW. To face right (+X) we want -π/2 (CW 90°), and
@@ -651,6 +662,7 @@ pub fn spawn_match(
         Vec2::new(-300.0, 0.0),
         -std::f32::consts::FRAC_PI_2,
         0,
+        &ship_colliders,
     );
     spawn_class(
         &mut commands,
@@ -660,6 +672,7 @@ pub fn spawn_match(
         Vec2::new(300.0, 0.0),
         std::f32::consts::FRAC_PI_2,
         1,
+        &ship_colliders,
     );
 }
 
@@ -804,6 +817,7 @@ fn spawn_class(
     position: Vec2,
     rotation_rad: f32,
     slot: usize,
+    ship_colliders: &crate::collider::ShipColliders,
 ) {
     let code = class.code();
     let Some(stats) = catalog.ships.get(code).cloned() else {
@@ -815,7 +829,16 @@ fn spawn_class(
         error!("no rotation frames found for {code}");
         return;
     }
-    spawn_ship(commands, class, &stats, &frames, position, rotation_rad, slot);
+    spawn_ship(
+        commands,
+        class,
+        &stats,
+        &frames,
+        position,
+        rotation_rad,
+        slot,
+        ship_colliders,
+    );
     info!("spawned P{} as {}", slot + 1, stats.name);
 }
 
@@ -834,6 +857,7 @@ fn spawn_ship(
     position: Vec2,
     rotation_rad: f32,
     slot: usize,
+    ship_colliders: &crate::collider::ShipColliders,
 ) {
     let initial = frames.first().cloned().unwrap_or_default();
     let phys = physics_spec(class);
@@ -869,9 +893,18 @@ fn spawn_ship(
         Sprite::from_image(initial),
         Transform::from_translation(position.extend(0.0)),
     );
+    // Prefer the auto-extracted polygon collider; fall back to the
+    // hand-tuned circle radius if the polygon isn't ready yet (race
+    // between the asset loader and the very first spawn on page load).
+    let collider = ship_colliders
+        .polys
+        .get(&class)
+        .and_then(|poly| Collider::convex_hull(poly.clone()))
+        .unwrap_or_else(|| Collider::circle(phys.collider_radius));
+
     let physics = (
         RigidBody::Dynamic,
-        Collider::circle(phys.collider_radius),
+        collider,
         Mass(stats.mass),
         // `Position` is now mandatory because we disabled
         // `PhysicsTransformConfig::transform_to_position` — Avian no
@@ -1949,6 +1982,8 @@ pub struct TractorBeam {
 pub(crate) fn spawn_tractor(
     commands: &mut Commands,
     owner: Entity,
+    owner_pos: Vec2,
+    owner_rot: &Rotation,
     local_origin: Vec2,
     range: f32,
     force_per_tick: f32,
@@ -1956,6 +1991,14 @@ pub(crate) fn spawn_tractor(
     width: f32,
     duration_s: f32,
 ) {
+    // Same anti-ghost-spawn pose computation as spawn_beam.
+    let world_origin = owner_pos
+        + Vec2::new(
+            local_origin.x * owner_rot.cos - local_origin.y * owner_rot.sin,
+            local_origin.x * owner_rot.sin + local_origin.y * owner_rot.cos,
+        );
+    let endpoint = world_origin + Vec2::new(0.0, range);
+    let midpoint = (world_origin + endpoint) * 0.5;
     commands.spawn((
         TractorBeam {
             owner,
@@ -1967,7 +2010,7 @@ pub(crate) fn spawn_tractor(
             remaining: duration_s,
         },
         Sprite::from_color(color, Vec2::new(width * 2.0, range)),
-        Transform::from_translation(Vec3::ZERO),
+        Transform::from_translation(midpoint.extend(0.3)),
     ));
 }
 
@@ -2022,6 +2065,8 @@ pub struct Beam {
 pub(crate) fn spawn_beam(
     commands: &mut Commands,
     owner: Entity,
+    owner_pos: Vec2,
+    owner_rot: &Rotation,
     local_origin: Vec2,
     local_dir: Vec2,
     range: f32,
@@ -2031,6 +2076,22 @@ pub(crate) fn spawn_beam(
     duration_s: f32,
     width: f32,
 ) {
+    // Compute the initial world pose so the first render frame after
+    // spawn shows the beam at the owner's muzzle, not at world origin.
+    // tick_beams updates it every FixedUpdate after that. Without this,
+    // there's a brief "ghost beam" at (0, 0) flashing every shot.
+    let world_origin = owner_pos
+        + Vec2::new(
+            local_origin.x * owner_rot.cos - local_origin.y * owner_rot.sin,
+            local_origin.x * owner_rot.sin + local_origin.y * owner_rot.cos,
+        );
+    let world_dir = Vec2::new(
+        local_dir.x * owner_rot.cos - local_dir.y * owner_rot.sin,
+        local_dir.x * owner_rot.sin + local_dir.y * owner_rot.cos,
+    );
+    let midpoint = world_origin + world_dir * (range * 0.5);
+    let angle = world_dir.y.atan2(world_dir.x) - std::f32::consts::FRAC_PI_2;
+
     commands.spawn((
         Beam {
             owner,
@@ -2043,10 +2104,9 @@ pub(crate) fn spawn_beam(
             remaining: duration_s,
             width,
         },
-        // Sprite is sized/positioned each tick by `tick_beams`; this
-        // initial transform is just so it has a place to start.
         Sprite::from_color(color, Vec2::new(width * 2.0, range)),
-        Transform::from_translation(Vec3::ZERO),
+        Transform::from_translation(midpoint.extend(0.3))
+            .with_rotation(Quat::from_rotation_z(angle)),
     ));
 }
 
