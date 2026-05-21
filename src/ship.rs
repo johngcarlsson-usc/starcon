@@ -533,6 +533,7 @@ impl Plugin for ShipPlugin {
                 steer_homing_projectiles,
                 orient_projectiles,
                 tick_damage_zones,
+                tick_beams,
                 handle_projectile_hits,
                 handle_ship_collisions,
             ),
@@ -896,22 +897,22 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
         // `Todo { ident: "..." }` so the dispatcher logs them but
         // doesn't pretend to do something it can't.
 
-        // Chmmr Avatar — continuous laser (TODO Beam) + tractor beam
-        // (TODO AppliedForce). Primary fires a fast straight bolt as
-        // a placeholder for the canonical Laser.
+        // Chmmr Avatar — canonical ChmmrLaser from Vector2(0, 25)
+        // forward. .ini Weapon: Range=10 → 400 u, Damage=2.
         ShipClass::Chmav => Some(ShipAbilities {
             primary: AbilitySpec {
-                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
-                    barrels: single_barrel(forward, 30.0),
-                    random_spread_rad: 0.0,
-                    speed: 1500.0,
-                    lifetime: (10.0 * SC2_RANGE_SCALE) / 1500.0,
-                    color: Color::srgb(1.0, 0.3, 0.3),
-                    sprite_size: 4.0,
-                    sprite_path: Some("ships/chmav/sprites/shot_a1_00_bmp.png".into()),
-                    homing_turn_rate: 0.0,
-                    is_limpet: false,
-                    recoil_impulse: 0.0,
+                kind: AbilityKind::SpawnBeams { beams: vec![crate::ability::BeamSpec {
+                    local_origin: Vec2::new(0.0, 25.0),
+                    local_dir: forward,
+                    range: 10.0 * SC2_RANGE_SCALE,
+                    damage_per_tick: 2,
+                    color: Color::srgb(1.0, 0.4, 0.4),
+                    auto_aim: false,
+                    // Lives just long enough that a 0.05 s re-fire
+                    // makes it look continuous while the player
+                    // holds the button.
+                    duration_s: 1.0 / 20.0,
+                    width: 2.0,
                 }]},
                 cooldown_s: 1.0 / 20.0,
             },
@@ -1006,20 +1007,19 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             },
         }),
 
-        // Arilou Skiff — auto-aim laser (TODO Beam) + random teleport.
+        // Arilou Skiff — canonical Laser auto-aimed at nearest non-
+        // invisible target. .ini Weapon: Range=5.5 → 220 u, Damage=1.
         ShipClass::Arisk => Some(ShipAbilities {
             primary: AbilitySpec {
-                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
-                    barrels: single_barrel(forward, 22.0),
-                    random_spread_rad: 0.0,
-                    speed: 2400.0,
-                    lifetime: (5.5 * SC2_RANGE_SCALE) / 2400.0,
-                    color: Color::srgb(0.6, 1.0, 0.8),
-                    sprite_size: 5.0,
-                    sprite_path: Some("ships/arisk/sprites/shot_a01.png".into()),
-                    homing_turn_rate: 0.0,
-                    is_limpet: false,
-                    recoil_impulse: 0.0,
+                kind: AbilityKind::SpawnBeams { beams: vec![crate::ability::BeamSpec {
+                    local_origin: Vec2::ZERO,
+                    local_dir: forward,
+                    range: 5.5 * SC2_RANGE_SCALE,
+                    damage_per_tick: 1,
+                    color: Color::srgb(0.5, 1.0, 0.9),
+                    auto_aim: true,
+                    duration_s: 1.0 / 20.0,
+                    width: 1.5,
                 }]},
                 cooldown_s: 1.0 / 20.0,
             },
@@ -1121,22 +1121,19 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             },
         }),
 
-        // VUX Intruder — laser placeholder + backward limpet special.
-        // Real laser is TODO (Beam primitive); limpet uses existing
-        // pipeline via VolleySpec.is_limpet=true.
+        // VUX Intruder — canonical Laser from Vector2(size.x/11,
+        // size.y/2.07). .ini Weapon: Range=9 → 360 u, Damage=1.
         ShipClass::Vuxin => Some(ShipAbilities {
             primary: AbilitySpec {
-                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
-                    barrels: single_barrel(forward, 22.0),
-                    random_spread_rad: 0.0,
-                    speed: 2400.0,
-                    lifetime: (9.0 * SC2_RANGE_SCALE) / 2400.0,
-                    color: Color::srgb(0.6, 1.0, 0.4),
-                    sprite_size: 6.0,
-                    sprite_path: Some("ships/vuxin/sprites/shot_a01.png".into()),
-                    homing_turn_rate: 0.0,
-                    is_limpet: false,
-                    recoil_impulse: 0.0,
+                kind: AbilityKind::SpawnBeams { beams: vec![crate::ability::BeamSpec {
+                    local_origin: Vec2::new(2.0, 11.0),
+                    local_dir: forward,
+                    range: 9.0 * SC2_RANGE_SCALE,
+                    damage_per_tick: 1,
+                    color: Color::srgb(0.5, 1.0, 0.3),
+                    auto_aim: false,
+                    duration_s: 1.0 / 20.0,
+                    width: 1.5,
                 }]},
                 cooldown_s: 1.0 / 20.0,
             },
@@ -1741,6 +1738,64 @@ pub struct Barrel {
     pub direction: Vec2,
 }
 
+/// Sustained-line damage primitive — Chmmr / Arilou / VUX laser.
+/// Owned by a firing ship; while the component exists, every tick
+/// `tick_beams` casts a ray from `local_origin` (in the owner's
+/// ship-local frame) along `local_dir` up to `range`, damaging the
+/// nearest non-friendly ship intersected. The beam entity also
+/// carries a Sprite so it visibly renders as a coloured line.
+///
+/// `auto_aim` switches the world direction each tick to point at the
+/// nearest enemy in range (Arilou's canonical auto-targeting halo).
+#[derive(Component, Debug)]
+pub struct Beam {
+    pub owner: Entity,
+    pub local_origin: Vec2,
+    pub local_dir: Vec2,
+    pub range: f32,
+    pub damage_per_tick: i32,
+    pub color: Color,
+    pub auto_aim: bool,
+    pub remaining: f32,
+    /// Visual half-thickness of the beam in world units.
+    pub width: f32,
+}
+
+/// Spawn a beam entity owned by `owner`. The beam follows the owner
+/// each tick (its world pose is recomputed from the owner's transform),
+/// damages the nearest non-friendly ship along its ray, and despawns
+/// when `duration_s` elapses.
+pub(crate) fn spawn_beam(
+    commands: &mut Commands,
+    owner: Entity,
+    local_origin: Vec2,
+    local_dir: Vec2,
+    range: f32,
+    damage_per_tick: i32,
+    color: Color,
+    auto_aim: bool,
+    duration_s: f32,
+    width: f32,
+) {
+    commands.spawn((
+        Beam {
+            owner,
+            local_origin,
+            local_dir,
+            range,
+            damage_per_tick,
+            color,
+            auto_aim,
+            remaining: duration_s,
+            width,
+        },
+        // Sprite is sized/positioned each tick by `tick_beams`; this
+        // initial transform is just so it has a place to start.
+        Sprite::from_color(color, Vec2::new(width * 2.0, range)),
+        Transform::from_translation(Vec3::ZERO),
+    ));
+}
+
 /// Marker on a projectile spawned from a VUX-style limpet weapon. When
 /// such a projectile hits a non-owner ship, that ship's Avian Mass is
 /// incremented by `LIMPET_MASS` and the projectile despawns. No joint,
@@ -2101,6 +2156,119 @@ fn tick_point_defense(
                 .entity(firer_entity)
                 .remove::<PointDefenseActive>();
             info!("P{} point defense offline", firer.player_slot + 1);
+        }
+    }
+}
+
+/// Cast each beam, damage what it hits, position the sprite so it
+/// visibly connects owner → hit point (or owner → full range when it
+/// misses). Beams whose owner has died despawn cleanly.
+fn tick_beams(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut beams: Query<(Entity, &mut Beam, &mut Transform, &mut Sprite)>,
+    owners: Query<(&Ship, &Position, &Rotation)>,
+    mut ships: Query<(Entity, &Ship, &Position, &mut Crew)>,
+    shields: Query<&ShieldActive>,
+) {
+    let dt = time.delta_secs();
+    for (beam_entity, mut beam, mut beam_xf, mut beam_sprite) in &mut beams {
+        // Owner gone → beam goes with it.
+        let Ok((owner_ship, owner_pos, owner_rot)) = owners.get(beam.owner) else {
+            commands.entity(beam_entity).despawn();
+            continue;
+        };
+        // Rotate local origin and direction into world space.
+        let world_origin = owner_pos.0
+            + Vec2::new(
+                beam.local_origin.x * owner_rot.cos - beam.local_origin.y * owner_rot.sin,
+                beam.local_origin.x * owner_rot.sin + beam.local_origin.y * owner_rot.cos,
+            );
+        let mut world_dir = Vec2::new(
+            beam.local_dir.x * owner_rot.cos - beam.local_dir.y * owner_rot.sin,
+            beam.local_dir.x * owner_rot.sin + beam.local_dir.y * owner_rot.cos,
+        );
+
+        // Auto-aim: swing the beam to point at the nearest enemy in
+        // range. Canonical Arilou auto-target (shparisk.cpp:78).
+        if beam.auto_aim {
+            let mut best: Option<(Entity, Vec2, f32)> = None;
+            for (e, s, p, _) in &ships {
+                if s.player_slot == owner_ship.player_slot {
+                    continue;
+                }
+                let d2 = (p.0 - world_origin).length_squared();
+                if d2 > beam.range * beam.range {
+                    continue;
+                }
+                if best.map_or(true, |(_, _, b)| d2 < b) {
+                    best = Some((e, p.0, d2));
+                }
+            }
+            if let Some((_, target, _)) = best {
+                let delta = target - world_origin;
+                if delta.length_squared() > 1e-6 {
+                    world_dir = delta.normalize();
+                }
+            }
+        }
+
+        // Cast: find the nearest enemy whose centre is within
+        // `beam.width` of the ray, with ray-parameter t ∈ [0, range].
+        // Cheap projection: t = (p - o) · dir; perp = |(p - o) - t·dir|.
+        let mut hit_t = beam.range;
+        let mut hit_target: Option<Entity> = None;
+        for (e, s, p, _) in &ships {
+            if s.player_slot == owner_ship.player_slot {
+                continue;
+            }
+            let to_ship = p.0 - world_origin;
+            let t = to_ship.dot(world_dir);
+            if t < 0.0 || t > beam.range {
+                continue;
+            }
+            let perp = to_ship - world_dir * t;
+            // Use a generous hit thickness so a beam visibly grazing a
+            // ship registers. The ship's collider radius is 12–34;
+            // anything within `beam.width + 18` reads as "the beam
+            // touched the hull".
+            if perp.length_squared() > (beam.width + 18.0).powi(2) {
+                continue;
+            }
+            if t < hit_t {
+                hit_t = t;
+                hit_target = Some(e);
+            }
+        }
+
+        // Apply damage to the nearest target (shield-aware).
+        if let Some(target) = hit_target {
+            if let Ok((_, _, _, mut crew)) = ships.get_mut(target) {
+                let factor = shields
+                    .get(target)
+                    .map(|s| s.damage_factor)
+                    .unwrap_or(1.0);
+                let dmg = ((beam.damage_per_tick as f32 * factor).round() as i32).max(0);
+                if dmg > 0 {
+                    crew.current = (crew.current - dmg).max(0);
+                }
+            }
+        }
+
+        // Position the sprite to span owner → hit (or full range when
+        // missing). Sprite default y-up axis, custom_size = (w, len)
+        // means we rotate by atan2(dy, dx) - π/2 to align long-axis
+        // with the world direction.
+        let midpoint = world_origin + world_dir * (hit_t * 0.5);
+        let angle = world_dir.y.atan2(world_dir.x) - std::f32::consts::FRAC_PI_2;
+        beam_xf.translation = midpoint.extend(0.3);
+        beam_xf.rotation = Quat::from_rotation_z(angle);
+        beam_sprite.custom_size = Some(Vec2::new(beam.width * 2.0, hit_t.max(1.0)));
+        beam_sprite.color = beam.color;
+
+        beam.remaining -= dt;
+        if beam.remaining <= 0.0 {
+            commands.entity(beam_entity).despawn();
         }
     }
 }

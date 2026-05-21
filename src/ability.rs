@@ -20,8 +20,8 @@ use bevy::prelude::*;
 
 use crate::input;
 use crate::ship::{
-    spawn_damage_zone, Barrel, Battery, Crew, Homing, Limpet, PointDefenseActive, Projectile,
-    ShieldActive, Ship, SpecialCooldown, WeaponCooldown,
+    spawn_beam, spawn_damage_zone, Barrel, Battery, Crew, Homing, Limpet, PointDefenseActive,
+    Projectile, ShieldActive, Ship, SpecialCooldown, WeaponCooldown,
 };
 
 /// Per-ship behaviour manifest. Present on entities that have been
@@ -103,6 +103,12 @@ pub enum AbilityKind {
     /// and similar.
     BrakeImpulse { max_dv: f32 },
 
+    /// Fire one or more beams (sustained line damage). Each beam is
+    /// owned by the firer and follows its pose; lives for `duration_s`,
+    /// damaging the nearest enemy along its ray per tick. Canonical
+    /// Chmmr laser, VUX laser, Arilou auto-aim halo.
+    SpawnBeams { beams: Vec<BeamSpec> },
+
     /// Spawn a stationary damage zone at the firer's pose. `offset` is
     /// ship-local. `source_self` makes the zone immune to the firer
     /// (DOGI / Kohr-Ah blades use this); `false` is a self-damaging
@@ -129,6 +135,21 @@ pub enum AbilityKind {
     /// every primitive to land — the missing one becomes a focused
     /// follow-up PR. See `docs/EXTENSIBILITY.md` for the list.
     Todo { ident: &'static str },
+}
+
+/// One beam emitted by a `SpawnBeams` ability. World pose is derived
+/// from the owner's transform each tick; this just specifies what to
+/// emit.
+#[derive(Debug, Clone)]
+pub struct BeamSpec {
+    pub local_origin: Vec2,
+    pub local_dir: Vec2,
+    pub range: f32,
+    pub damage_per_tick: i32,
+    pub color: Color,
+    pub auto_aim: bool,
+    pub duration_s: f32,
+    pub width: f32,
 }
 
 /// Shared projectile parameters for a single volley. One volley
@@ -284,6 +305,22 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
         AbilityKind::SpawnProjectiles { volleys } => {
             for volley in volleys {
                 spawn_volley(ctx, volley);
+            }
+        }
+        AbilityKind::SpawnBeams { beams } => {
+            for b in beams {
+                spawn_beam(
+                    ctx.commands,
+                    ctx.entity,
+                    b.local_origin,
+                    b.local_dir,
+                    b.range,
+                    b.damage_per_tick,
+                    b.color,
+                    b.auto_aim,
+                    b.duration_s,
+                    b.width,
+                );
             }
         }
         AbilityKind::GrantPointDefense {
