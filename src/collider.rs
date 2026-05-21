@@ -123,42 +123,45 @@ fn process_pending_polygons(
     }
 }
 
-/// Extract a simplified convex-hull polygon from a sprite. Returns
-/// `None` if the image's CPU-side pixel buffer isn't available (some
-/// platforms drop it after GPU upload) or no non-transparent pixels
-/// were found.
+/// Extract a simplified outline polygon from a sprite. Returns the
+/// vertices of the ship's actual silhouette (concavities preserved),
+/// not a convex hull — fed to `Collider::convex_decomposition` at
+/// spawn time so concave shapes are decomposed into multiple convex
+/// pieces internally by Avian.
+///
+/// Returns `None` if the image's CPU-side pixel buffer isn't
+/// available (some platforms drop it after GPU upload) or no
+/// non-transparent pixels were found.
 pub fn compute_polygon(image: &Image) -> Option<Vec<Vec2>> {
     let data = image.data.as_ref()?;
     let size = image.texture_descriptor.size;
-    let width = size.width as usize;
-    let height = size.height as usize;
-    if data.len() < width * height * 4 {
+    let width = size.width as i32;
+    let height = size.height as i32;
+    let total = (width * height) as usize;
+    if data.len() < total * 4 {
         return None;
     }
-    // Collect every non-transparent pixel. Threshold > 16 to ignore
-    // the soft anti-aliased halo at the sprite edge (which would
-    // bloat the hull by a few pixels in every direction).
-    let mut points: Vec<Vec2> = Vec::new();
-    for y in 0..height {
-        for x in 0..width {
-            let i = (y * width + x) * 4;
-            let alpha = data[i + 3];
-            if alpha > 16 {
-                points.push(Vec2::new(x as f32, y as f32));
-            }
-        }
-    }
-    if points.is_empty() {
+    // Binary alpha mask. Threshold > 16/255 ignores the soft AA halo
+    // at the sprite edge so the boundary tracks the visible hull, not
+    // its blurred outline.
+    let mask: Vec<bool> = (0..total)
+        .map(|i| data[i * 4 + 3] > 16)
+        .collect();
+    let contour = trace_boundary(&mask, width, height)?;
+    if contour.len() < 3 {
         return None;
     }
-    // Convex hull, then Douglas-Peucker simplification. epsilon=1.0
-    // means we drop any hull vertex whose perpendicular distance to
-    // the polyline is under one pixel — generally cuts a 64-pixel
-    // hull from ~30 verts to ~12 without visible loss.
-    let hull = convex_hull(&points);
-    let simplified = douglas_peucker(&hull, 1.0);
-    // Sprite space → ship-local space: origin at sprite centre, +Y
-    // up (sprite source is +Y down).
+    // Douglas-Peucker simplification — drops collinear / near-collinear
+    // vertices. epsilon = 1 pixel keeps the polygon faithful to the
+    // sprite while dropping a ~60-vert contour to ~16-24 verts (which
+    // gives Avian's decomposition pleasant pieces to work with).
+    let simplified = douglas_peucker_closed(&contour, 1.0);
+    if simplified.len() < 3 {
+        return None;
+    }
+    // Sprite-space (origin top-left, +Y down) → ship-local (origin
+    // sprite centre, +Y up) so the collider lines up with the
+    // ship's render-space orientation.
     let cx = width as f32 * 0.5;
     let cy = height as f32 * 0.5;
     Some(
@@ -169,54 +172,125 @@ pub fn compute_polygon(image: &Image) -> Option<Vec<Vec2>> {
     )
 }
 
-/// Andrew's monotone chain convex hull. Returns vertices in CCW order
-/// with no duplicate start/end vertex.
-fn convex_hull(points: &[Vec2]) -> Vec<Vec2> {
-    if points.len() <= 2 {
+/// Moore-Neighbor boundary tracing. Returns the outer contour of the
+/// first foreground component in CW order (no duplicate start at end).
+///
+/// `mask` is row-major (`mask[y * width + x]`). The contour follows
+/// pixel centres — anti-aliased edges should be pre-thresholded.
+fn trace_boundary(mask: &[bool], width: i32, height: i32) -> Option<Vec<Vec2>> {
+    // 8-neighbor offsets in clockwise order starting at "west".
+    const CW: [(i32, i32); 8] = [
+        (-1, 0),
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+        (0, 1),
+        (-1, 1),
+    ];
+    let is_fg = |x: i32, y: i32| -> bool {
+        if x < 0 || y < 0 || x >= width || y >= height {
+            return false;
+        }
+        mask[(y * width + x) as usize]
+    };
+    // Find topmost-leftmost foreground pixel as the starting point.
+    let mut start: Option<(i32, i32)> = None;
+    'outer: for y in 0..height {
+        for x in 0..width {
+            if is_fg(x, y) {
+                start = Some((x, y));
+                break 'outer;
+            }
+        }
+    }
+    let (sx, sy) = start?;
+    let mut boundary: Vec<(i32, i32)> = vec![(sx, sy)];
+    let mut p = (sx, sy);
+    // entry_idx is the direction we came FROM, expressed as an index
+    // into CW. The topmost-leftmost start has no NW/N/NE/W foreground
+    // neighbours, so entering "from west" (CW[0]) is always safe.
+    let mut entry_idx: usize = 0;
+
+    let safety_cap = (width * height) as usize + 8;
+    loop {
+        let mut found = false;
+        for k in 1..=8 {
+            let i = (entry_idx + k) % 8;
+            let (dx, dy) = CW[i];
+            let q = (p.0 + dx, p.1 + dy);
+            if is_fg(q.0, q.1) {
+                // Moving p → q in direction CW[i]; from q's frame we
+                // arrived from the opposite direction, CW[(i + 4) % 8].
+                p = q;
+                entry_idx = (i + 4) % 8;
+                if p == (sx, sy) {
+                    // Loop closed.
+                    return Some(
+                        boundary
+                            .into_iter()
+                            .map(|(x, y)| Vec2::new(x as f32, y as f32))
+                            .collect(),
+                    );
+                }
+                boundary.push(p);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            // Isolated foreground pixel.
+            break;
+        }
+        if boundary.len() > safety_cap {
+            warn!("trace_boundary: safety cap hit ({} pts), shape may be malformed", boundary.len());
+            break;
+        }
+    }
+    Some(
+        boundary
+            .into_iter()
+            .map(|(x, y)| Vec2::new(x as f32, y as f32))
+            .collect(),
+    )
+}
+
+/// Douglas-Peucker simplification for *closed* polygons. The standard
+/// DP is for open polylines; for a closed contour we anchor the two
+/// most-distant vertices (which act as the polyline endpoints) so the
+/// algorithm doesn't accidentally collapse one side of the loop.
+fn douglas_peucker_closed(points: &[Vec2], epsilon: f32) -> Vec<Vec2> {
+    if points.len() <= 3 {
         return points.to_vec();
     }
-    let mut sorted: Vec<Vec2> = points.to_vec();
-    sorted.sort_by(|a, b| {
-        a.x.partial_cmp(&b.x)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
-    });
-    let mut hull: Vec<Vec2> = Vec::with_capacity(2 * sorted.len());
-    // Lower hull.
-    for &p in &sorted {
-        while hull.len() >= 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
-            hull.pop();
+    // Find the vertex farthest from points[0] — use that as the second
+    // anchor so DP runs on two open chains that cover the full loop.
+    let mut far_idx = 0;
+    let mut far_d2 = 0.0;
+    for (i, p) in points.iter().enumerate() {
+        let d2 = (*p - points[0]).length_squared();
+        if d2 > far_d2 {
+            far_d2 = d2;
+            far_idx = i;
         }
-        hull.push(p);
     }
-    let lower_count = hull.len() + 1;
-    // Upper hull.
-    for &p in sorted.iter().rev().skip(1) {
-        while hull.len() >= lower_count
-            && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
-        {
-            hull.pop();
-        }
-        hull.push(p);
-    }
-    hull.pop(); // last point is the same as the first
-    hull
+    let mut out = Vec::new();
+    let first_chain = douglas_peucker_open(&points[0..=far_idx], epsilon);
+    let second_chain = douglas_peucker_open(&points[far_idx..], epsilon);
+    out.extend_from_slice(&first_chain[..first_chain.len() - 1]);
+    out.extend_from_slice(&second_chain[..second_chain.len() - 1]);
+    out
 }
 
-fn cross(o: Vec2, a: Vec2, b: Vec2) -> f32 {
-    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
-}
-
-/// Iterative Douglas-Peucker — drops any vertex whose perpendicular
-/// distance to the polyline is below `epsilon`.
-fn douglas_peucker(points: &[Vec2], epsilon: f32) -> Vec<Vec2> {
+fn douglas_peucker_open(points: &[Vec2], epsilon: f32) -> Vec<Vec2> {
     if points.len() <= 2 {
         return points.to_vec();
     }
     let mut keep = vec![false; points.len()];
     keep[0] = true;
     keep[points.len() - 1] = true;
-    let mut stack = vec![(0, points.len() - 1)];
+    let mut stack = vec![(0_usize, points.len() - 1)];
     while let Some((start, end)) = stack.pop() {
         let mut max_dist = 0.0_f32;
         let mut max_idx = start;

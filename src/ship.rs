@@ -896,10 +896,22 @@ fn spawn_ship(
     // Prefer the auto-extracted polygon collider; fall back to the
     // hand-tuned circle radius if the polygon isn't ready yet (race
     // between the asset loader and the very first spawn on page load).
+    //
+    // `convex_decomposition` (vs `convex_hull`) preserves the sprite's
+    // concavities — fed a closed polyline of N vertices and N edge
+    // indices, Avian internally splits the enclosed region into a
+    // bag of convex pieces. Two ships in a "C" / "L" silhouette
+    // actually fit into each other instead of pretending they're both
+    // smooth ovals.
     let collider = ship_colliders
         .polys
         .get(&class)
-        .and_then(|poly| Collider::convex_hull(poly.clone()))
+        .map(|poly| {
+            let verts = poly.clone();
+            let n = verts.len() as u32;
+            let indices: Vec<[u32; 2]> = (0..n).map(|i| [i, (i + 1) % n]).collect();
+            Collider::convex_decomposition(verts, indices)
+        })
         .unwrap_or_else(|| Collider::circle(phys.collider_radius));
 
     let physics = (
