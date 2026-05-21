@@ -3,14 +3,8 @@
 //! A ship's primary + special are expressed as `AbilitySpec` data
 //! structures; one generic dispatcher (`dispatch_primary` /
 //! `dispatch_special`) reads them and produces the right ECS spawns.
-//! This is the alternative to the per-class match arms in
-//! `fire_weapons` / `trigger_specials`.
-//!
-//! During the migration the two layers coexist: a ship has match-arm
-//! behaviour by default, and opts in to data-driven by being given a
-//! `ShipAbilities` component at spawn. The match-arm queries filter
-//! `Without<ShipAbilities>` so a converted ship goes through the
-//! dispatcher exclusively (no double-firing).
+//! Every ship in the roster goes through this layer — there is no
+//! per-class match arm anywhere in the gameplay loop.
 //!
 //! See `docs/EXTENSIBILITY.md` — section "1. Composable abilities".
 //!
