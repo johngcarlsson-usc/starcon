@@ -60,11 +60,11 @@ Class index (same number = same ship for both players):
 | # | Class | Note |
 | - | ----- | ---- |
 | 1 / F1  | Earthling Cruiser   | Forward gun, dash special |
-| 2 / F2  | Spathi Eluder       | Fast forward cannon, BUTT (backward tracking torpedo) special |
+| 2 / F2  | Spathi Eluder       | Fast forward cannon, BUTT (**homing** backward torpedo) special |
 | 3 / F3  | Yehat Terminator    | Twin cannons, energy shield (25% incoming damage) |
 | 4 / F4  | Chmmr Avatar        | Forward laser, brake (placeholder special) |
 | 5 / F5  | Ur-Quan Dreadnought | Heavy bolt, brake (placeholder) |
-| 6 / F6  | Mycon Podship       | Slow projectile, brake (placeholder) |
+| 6 / F6  | Mycon Podship       | **Homing plasmoid**, brake (placeholder) |
 | 7 / F7  | Shofixti Scout      | Fast gun, Glory-charge dash |
 | 8 / F8  | Arilou Skiff        | Halo shot, perpendicular hyperspace teleport |
 | 9 / F9  | Pkunk Fury          | Fast forward fire, phase-shift invuln (1 s) |

@@ -378,6 +378,23 @@ pub struct Projectile {
     pub lifetime: f32,
 }
 
+/// Tracking-projectile state. While present on a projectile, a system
+/// nudges the projectile's velocity each tick toward the nearest enemy
+/// ship, capped at `turn_rate` rad/s. Without this component a
+/// projectile flies in a straight line.
+///
+/// `target` is cached across ticks for stability and zeroed out if the
+/// targeted entity is despawned (the ship was destroyed); the next tick
+/// re-acquires the nearest survivor.
+#[derive(Component, Debug)]
+pub struct Homing {
+    pub target: Option<Entity>,
+    /// Max rad/sec the projectile can re-aim. Comes from a WeaponSpec
+    /// field so designers can give light tracking missiles a tight
+    /// turn rate and heavy plasma bolts a slow drift toward target.
+    pub turn_rate: f32,
+}
+
 /// All 64 rotation frames preloaded so the renderer can pick by heading
 /// without hitting the asset server hot path.
 #[derive(Component)]
@@ -405,6 +422,7 @@ impl Plugin for ShipPlugin {
                 fire_weapons.after(tick_weapon_cooldown),
                 trigger_specials.after(tick_special_cooldown),
                 tick_projectile_lifetime,
+                steer_homing_projectiles,
                 handle_projectile_hits,
                 handle_ship_collisions,
             ),
@@ -837,7 +855,7 @@ fn spawn_projectile(
     );
     let muzzle = pos + world_dir * spec.muzzle_offset;
     let projectile_vel = ship_vel + world_dir * spec.speed;
-    commands.spawn((
+    let mut ent = commands.spawn((
         Projectile {
             owner,
             damage,
@@ -855,6 +873,12 @@ fn spawn_projectile(
         AngularDamping(0.0),
         CollisionEventsEnabled,
     ));
+    if spec.homing_turn_rate > 0.0 {
+        ent.insert(Homing {
+            target: None,
+            turn_rate: spec.homing_turn_rate,
+        });
+    }
     world_dir
 }
 
@@ -922,6 +946,12 @@ struct WeaponSpec {
     /// (Newton's third law). Zero for low-recoil weapons (point defense,
     /// lasers, projectile launchers with internal compensators).
     recoil_impulse: f32,
+    /// If > 0, the spawned projectile gets a `Homing` component with
+    /// this rad/sec turn cap, so it steers toward the nearest enemy.
+    /// Derived from the legacy `.ini` `TurnRate` of the relevant
+    /// [Weapon] or [Special] section, scaled the same way the ship's
+    /// hull turn rate is (`scale_turning` in mhelpers.cpp).
+    homing_turn_rate: f32,
 }
 
 fn primary_weapon(class: ShipClass) -> WeaponSpec {
@@ -936,6 +966,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(1.0, 0.9, 0.4),
             sprite_size: 6.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Spael => WeaponSpec {
             // Spathi primary is canonically a short-range fast-firing
@@ -950,6 +981,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(1.0, 0.5, 0.7),
             sprite_size: 5.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Yehte => WeaponSpec {
             local_direction: forward,
@@ -959,6 +991,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.8, 1.0, 0.4),
             sprite_size: 5.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Chmav => WeaponSpec {
             local_direction: forward,
@@ -968,6 +1001,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.4, 0.9, 1.0),
             sprite_size: 4.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Kzedr => WeaponSpec {
             // Fusion bolt is a slow heavy shot with mild recoil
@@ -979,8 +1013,12 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.6, 1.0, 0.6),
             sprite_size: 10.0,
             recoil_impulse: 800.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Mycpo => WeaponSpec {
+            // Mycon plasmoid — the iconic slow homing shot. Turn
+            // rate is the headline ability; without it the plasmoid
+            // is just a fat slow ball that misses everything.
             local_direction: forward,
             muzzle_offset: 26.0,
             speed: 400.0,
@@ -988,6 +1026,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(1.0, 0.5, 0.3),
             sprite_size: 9.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 1.5,
         },
         ShipClass::Shosc => WeaponSpec {
             // Shofixti gun — fast, low damage. Compensates for the
@@ -999,6 +1038,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.6, 1.0, 1.0),
             sprite_size: 4.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Arisk => WeaponSpec {
             // Arilou's auto-aiming halo. Approximated as a fast straight
@@ -1011,6 +1051,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.5, 1.0, 0.5),
             sprite_size: 5.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Pkufu => WeaponSpec {
             // Pkunk fires a fast forward cone in the original. For now
@@ -1023,6 +1064,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(1.0, 0.6, 1.0),
             sprite_size: 5.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Ilwav => WeaponSpec {
             // Ilwrath's flamethrower — short range, big damage.
@@ -1033,6 +1075,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(1.0, 0.4, 0.2),
             sprite_size: 8.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Thrto => WeaponSpec {
             // Thraddash bullet — small, fast, modest damage.
@@ -1043,6 +1086,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(1.0, 0.7, 0.2),
             sprite_size: 5.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Vuxin => WeaponSpec {
             // VUX limpet — slow, sticky in canon; we treat it as a
@@ -1055,6 +1099,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.4, 0.9, 0.3),
             sprite_size: 9.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Supbl => WeaponSpec {
             // Supox plasma grenade — slow lob in canon; here a fast
@@ -1066,6 +1111,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.5, 0.8, 1.0),
             sprite_size: 7.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Kohma => WeaponSpec {
             // Kohr-Ah cleansing flames — wide spread in canon; for
@@ -1078,6 +1124,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(1.0, 0.55, 0.15),
             sprite_size: 9.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Syrpe => WeaponSpec {
             // Syreen razor — fast straight shot. The siren song
@@ -1089,6 +1136,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(1.0, 0.85, 0.95),
             sprite_size: 5.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Andgu => WeaponSpec {
             // Androsynth bubble shot — slow, big, persistent.
@@ -1099,6 +1147,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.7, 0.7, 1.0),
             sprite_size: 8.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Chebr => WeaponSpec {
             // Chenjesu crystal shard cluster — single shot for now.
@@ -1109,6 +1158,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.9, 0.8, 1.0),
             sprite_size: 6.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Druma => WeaponSpec {
             // Druuge cannon — slow heavy shell. The classic Druuge
@@ -1124,6 +1174,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(1.0, 0.3, 0.1),
             sprite_size: 10.0,
             recoil_impulse: 2000.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Utwju => WeaponSpec {
             // Utwig dual prong — fast forward shot.
@@ -1134,6 +1185,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.8, 0.7, 1.0),
             sprite_size: 5.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Zfpst => WeaponSpec {
             // Zoq-Fot-Pik tongue lash — short, fast. Real tongue is a
@@ -1146,6 +1198,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(1.0, 0.7, 0.5),
             sprite_size: 4.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Mmrxf => WeaponSpec {
             // X-Form lasers — fast forward beam shot.
@@ -1156,6 +1209,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.6, 0.8, 1.0),
             sprite_size: 4.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Orzne => WeaponSpec {
             // Orz "flexible arm" — extendable cannon. For now a
@@ -1167,6 +1221,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.8, 0.9, 0.6),
             sprite_size: 6.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Slypr => WeaponSpec {
             // Slylandro lightning — homes in canon; straight-line
@@ -1179,6 +1234,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(1.0, 1.0, 0.5),
             sprite_size: 5.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Umgdr => WeaponSpec {
             // Umgah anti-grav cone — fan of short-range projectiles
@@ -1190,6 +1246,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.5, 1.0, 0.7),
             sprite_size: 7.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
         ShipClass::Meltr => WeaponSpec {
             // Melnorme chargeable plasma — held-fire charges in canon.
@@ -1202,6 +1259,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             color: Color::srgb(0.9, 0.5, 1.0),
             sprite_size: 6.0,
             recoil_impulse: 0.0,
+            homing_turn_rate: 0.0,
         },
     }
 }
@@ -1217,6 +1275,78 @@ fn tick_projectile_lifetime(
         if proj.lifetime <= 0.0 {
             commands.entity(entity).despawn();
         }
+    }
+}
+
+/// Steer each `Homing` projectile toward the nearest enemy ship (an
+/// enemy is "ship whose `player_slot` ≠ projectile owner's slot").
+///
+/// The projectile's speed is preserved; only its direction is rotated
+/// toward the target, capped at `turn_rate * dt` radians per tick. This
+/// is the standard 2D missile-tracking model: light-tracking missiles
+/// (Spathi BUTT at ~3.9 rad/s) can chase a fighter, heavy plasma
+/// (Mycon plasmoid at 1.5 rad/s) only nudges toward its target and is
+/// dodgeable. Target is cached and re-acquired when the previous one
+/// dies (its `Ship` component disappears from the query).
+fn steer_homing_projectiles(
+    time: Res<Time<Physics>>,
+    mut projectiles: Query<(&Projectile, &Position, &mut LinearVelocity, &mut Homing)>,
+    ships: Query<(Entity, &Ship, &Position), Without<Projectile>>,
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    for (proj, proj_pos, mut vel, mut homing) in &mut projectiles {
+        // Owner's slot tells us which side is friendly (skip in target search).
+        let owner_slot = ships.get(proj.owner).ok().map(|(_, s, _)| s.player_slot);
+
+        // Acquire / re-acquire target.
+        let target_lost = homing
+            .target
+            .map(|t| ships.get(t).is_err())
+            .unwrap_or(true);
+        if target_lost {
+            let mut best: Option<(Entity, f32)> = None;
+            for (e, s, p) in &ships {
+                if Some(s.player_slot) == owner_slot {
+                    continue;
+                }
+                let d2 = (p.0 - proj_pos.0).length_squared();
+                if best.map(|(_, bd)| d2 < bd).unwrap_or(true) {
+                    best = Some((e, d2));
+                }
+            }
+            homing.target = best.map(|(e, _)| e);
+        }
+
+        let Some(target) = homing.target else {
+            continue;
+        };
+        let Ok((_, _, target_pos)) = ships.get(target) else {
+            continue;
+        };
+
+        let to_target = target_pos.0 - proj_pos.0;
+        let speed = vel.0.length();
+        if speed <= 0.0 || to_target.length_squared() == 0.0 {
+            continue;
+        }
+        let current_dir = vel.0 / speed;
+        let target_dir = to_target.normalize();
+
+        // Signed angle from current_dir to target_dir, in (-π, π].
+        let angle = current_dir.perp_dot(target_dir).atan2(current_dir.dot(target_dir));
+        let max_delta = homing.turn_rate * dt;
+        let delta = angle.clamp(-max_delta, max_delta);
+
+        // Rotate current_dir by `delta`, keep magnitude.
+        let (s, c) = delta.sin_cos();
+        let new_dir = Vec2::new(
+            current_dir.x * c - current_dir.y * s,
+            current_dir.x * s + current_dir.y * c,
+        );
+        vel.0 = new_dir * speed;
     }
 }
 
@@ -1408,6 +1538,9 @@ fn trigger_specials(
                     color: Color::srgb(1.0, 0.5, 0.7),
                     sprite_size: 7.0,
                     recoil_impulse: 0.0,
+                    // .ini Special TurnRate=1 → scale_turning gives
+                    // (2π/16) / (1+1) / 0.05 ≈ 3.93 rad/s.
+                    homing_turn_rate: 3.93,
                 };
                 spawn_projectile(&mut commands, entity, pos.0, rot, vel.0, &butt, 2);
                 cooldown.0 = 1.2;
