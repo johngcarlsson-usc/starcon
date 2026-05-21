@@ -34,6 +34,10 @@ avian2d = { version = "0.6", default-features = false, features = ["2d", "f32", 
 serde = { version = "1", features = ["derive"] }
 rust-ini = "0.21"
 bytemuck = { version = "1", features = ["derive"] }
+# Small fast PRNG for one-shot per-frame jitter (Zoq-Fot-Pik shot
+# spread, etc). Non-deterministic across runs; when M4 rollback
+# netcode lands, replace with a seeded RNG resource.
+fastrand = "2"
 
 # Only pulled in for the offline asset extractor (`cargo run --bin extract_dat`).
 # Activated via the `tools` feature so the game binary stays lean.

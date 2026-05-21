@@ -979,15 +979,58 @@ fn fire_weapons(
         cooldown.0 = cooldown_secs;
 
         let damage = ship.stats.weapon_damage.max(1);
-        let world_dir =
-            spawn_projectile(&mut commands, &assets, entity, pos.0, rot, vel.0, &spec, damage);
 
-        // Recoil from firing: applied here (not in spawn_projectile)
-        // because it's specifically the *firer's* reaction to the
-        // launch impulse. Δv = recoil_impulse / mass keeps it
-        // Newton-third-law correct across ship masses.
-        if spec.recoil_impulse > 0.0 {
-            vel.0 -= world_dir * spec.recoil_impulse / ship.stats.mass;
+        // Default single-barrel fallback when no explicit barrels are
+        // declared. Most ships fall through this path.
+        let single = [Barrel {
+            local_pos: spec.local_direction * spec.muzzle_offset,
+            direction: spec.local_direction,
+        }];
+        let barrels: &[Barrel] = if spec.barrels.is_empty() {
+            &single
+        } else {
+            spec.barrels
+        };
+
+        for barrel in barrels {
+            // Rotate the barrel's local position + direction into world
+            // space by the ship's current rotation.
+            let world_pos_offset = Vec2::new(
+                barrel.local_pos.x * rot.cos - barrel.local_pos.y * rot.sin,
+                barrel.local_pos.x * rot.sin + barrel.local_pos.y * rot.cos,
+            );
+            let mut world_dir = Vec2::new(
+                barrel.direction.x * rot.cos - barrel.direction.y * rot.sin,
+                barrel.direction.x * rot.sin + barrel.direction.y * rot.cos,
+            );
+            // Random per-shot spread (Zoq-Fot-Pik wobble): a small
+            // angle jitter centred on the firing direction.
+            if spec.random_spread_rad > 0.0 {
+                let jitter = (fastrand::f32() * 2.0 - 1.0) * spec.random_spread_rad;
+                let (s, c) = jitter.sin_cos();
+                world_dir = Vec2::new(
+                    world_dir.x * c - world_dir.y * s,
+                    world_dir.x * s + world_dir.y * c,
+                );
+            }
+
+            spawn_projectile_world(
+                &mut commands,
+                &assets,
+                entity,
+                pos.0 + world_pos_offset,
+                world_dir,
+                vel.0,
+                &spec,
+                damage,
+            );
+
+            // Recoil applies once per barrel — heavy guns with many
+            // barrels (no canonical examples yet) recoil correspondingly
+            // more, which is correct under Newton's third law.
+            if spec.recoil_impulse > 0.0 {
+                vel.0 -= world_dir * spec.recoil_impulse / ship.stats.mass;
+            }
         }
     }
 }
@@ -995,6 +1038,10 @@ fn fire_weapons(
 /// Spawn a projectile from a WeaponSpec, given the firing ship's pose
 /// and velocity. Returns the world-space firing direction so callers
 /// can apply recoil to the firer if the spec requests it.
+/// High-level: spawn from a ship pose + spec. Single forward shot,
+/// pre-`barrels` callers still use this for convenience (e.g. the
+/// Spathi BUTT special). For multi-barrel weapons fire_weapons calls
+/// `spawn_projectile_world` directly per barrel.
 fn spawn_projectile(
     commands: &mut Commands,
     assets: &AssetServer,
@@ -1011,6 +1058,22 @@ fn spawn_projectile(
         local_dir.x * rot.sin + local_dir.y * rot.cos,
     );
     let muzzle = pos + world_dir * spec.muzzle_offset;
+    spawn_projectile_world(commands, assets, owner, muzzle, world_dir, ship_vel, spec, damage);
+    world_dir
+}
+
+/// Low-level: spawn at an explicit world position + direction. Used by
+/// `fire_weapons` once it has rotated each `Barrel` into world space.
+fn spawn_projectile_world(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    owner: Entity,
+    muzzle: Vec2,
+    world_dir: Vec2,
+    ship_vel: Vec2,
+    spec: &WeaponSpec,
+    damage: i32,
+) {
     let projectile_vel = ship_vel + world_dir * spec.speed;
     // Initial rotation matches velocity direction so the canonical
     // up-facing sprite frame visually points the right way at spawn;
@@ -1025,12 +1088,10 @@ fn spawn_projectile(
             ..default()
         }
     } else {
-        // Placeholder: solid-color square via the WhitePixel pattern
-        // isn't available here without threading the resource through,
-        // so use Sprite::from_color which works for *colour-only*
-        // projectiles even though it would render nothing without an
-        // image — projectiles missing canonical art aren't strictly
-        // intended to render, this just keeps the spawn from panicking.
+        // Fallback: tinted square. Works on native but renders nothing
+        // in browsers via the empty-handle path in Bevy 0.18 — ships
+        // without canonical sprite paths show invisible projectiles
+        // on web. Wire `projectile_sprite: Some(...)` for the real art.
         Sprite::from_color(spec.color, Vec2::splat(spec.sprite_size))
     };
 
@@ -1062,7 +1123,6 @@ fn spawn_projectile(
     if spec.is_limpet {
         ent.insert(Limpet);
     }
-    world_dir
 }
 
 /// Per-class physics knobs. Defaults come from `ShipStats.mass`; this
@@ -1114,11 +1174,38 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
     }
 }
 
+/// One projectile-spawn descriptor inside a `WeaponSpec`. A WeaponSpec
+/// with multiple barrels fires one projectile per barrel per shot,
+/// independently positioned and aimed in ship-local space.
+///
+/// Local-space convention: `(0, 1)` = the ship's forward direction
+/// (matches the rotation-0 sprite frame which points +Y). For the
+/// Yehat Terminator's twin guns at canon-position `Vector2(±24, 14)`,
+/// the corresponding barrels are
+/// `Barrel { local_pos: Vec2::new(±24.0, 14.0), direction: Vec2::new(0.0, 1.0) }`.
+/// For the Pkunk Fury's lateral shots at `±π/2`, the directions become
+/// `Vec2::new(±1.0, 0.0)`.
+#[derive(Clone, Copy, Debug)]
+pub struct Barrel {
+    pub local_pos: Vec2,
+    pub direction: Vec2,
+}
+
 /// Per-class primary-weapon shape. The fields stay generic on purpose so
 /// adding a class doesn't reshape callers — just add a match arm.
 struct WeaponSpec {
     local_direction: Vec2,
     muzzle_offset: f32,
+    /// Multi-barrel weapons (Yehat twin missiles, Pkunk triple, etc.)
+    /// list each barrel here. When non-empty this overrides the
+    /// `local_direction` + `muzzle_offset` single-shot defaults — one
+    /// projectile spawns per `Barrel`. Empty means "single forward
+    /// shot at `local_direction × muzzle_offset`", the common case.
+    barrels: &'static [Barrel],
+    /// Random angle jitter per shot, in radians. Used by Zoq-Fot-Pik
+    /// (`angle + ANGLE_RATIO * random(-10.0, 10.0)` in the legacy).
+    /// Zero for everything else.
+    random_spread_rad: f32,
     speed: f32,
     lifetime: f32,
     color: Color,
@@ -1172,340 +1259,500 @@ pub struct Limpet;
 /// (mass 16 kg) is a 60 % heavier ship.
 pub const LIMPET_MASS: f32 = 3.0;
 
+// SC2 unit conversion helpers (mirror mhelpers.cpp).
+//
+//   distance_ratio = 0.48 TW-pixels / SC2-pixel
+//   time_ratio     = 50 ms / SC2 frame
+//
+// so   scale_velocity(v) = v · 0.48 / 0.050 = v · 9.6   (world u/s)
+//      scale_range(r)    = r · 40                       (world u)
+//      scale_turning(t)  = (2π/16) / (t+1) / 0.050      (rad/s)
+//
+// Per-projectile lifetime falls out of canonical `range / velocity`
+// (the original Missile constructor takes a range and dies at d >= range).
+const SC2_VEL_SCALE: f32 = 9.6;
+const SC2_RANGE_SCALE: f32 = 40.0;
+fn sc2_turning(t: f32) -> f32 {
+    (std::f32::consts::TAU / 16.0) / (t + 1.0) / 0.050
+}
+
+// Multi-barrel layouts kept as `const` arrays so the `&'static [Barrel]`
+// references in `WeaponSpec` are actually static. Coordinates come
+// straight from the legacy `shp*.cpp activate_weapon` / `calculate_fire_weapon`
+// add(new Missile(this, Vector2(x, y), angle ± offset, ...)) calls.
+
+/// Yehat Terminator — twin forward missiles from (±24, 14).
+const YEHAT_BARRELS: [Barrel; 2] = [
+    Barrel { local_pos: Vec2::new(-24.0, 14.0), direction: Vec2::new(0.0, 1.0) },
+    Barrel { local_pos: Vec2::new( 24.0, 14.0), direction: Vec2::new(0.0, 1.0) },
+];
+
+/// Pkunk Fury — forward shot + lateral ±90° shots from the wingtips.
+const PKUNK_BARRELS: [Barrel; 3] = [
+    Barrel { local_pos: Vec2::new(  0.0, 16.0), direction: Vec2::new( 0.0,  1.0) },
+    Barrel { local_pos: Vec2::new(-16.0,  0.0), direction: Vec2::new(-1.0,  0.0) },
+    Barrel { local_pos: Vec2::new( 16.0,  0.0), direction: Vec2::new( 1.0,  0.0) },
+];
+
+/// Utwig Jugger — six forward missiles in a sweeping arc.
+const UTWIG_BARRELS: [Barrel; 6] = [
+    Barrel { local_pos: Vec2::new(-34.0, 11.0), direction: Vec2::new(0.0, 1.0) },
+    Barrel { local_pos: Vec2::new( 34.0, 11.0), direction: Vec2::new(0.0, 1.0) },
+    Barrel { local_pos: Vec2::new(-18.0, 20.0), direction: Vec2::new(0.0, 1.0) },
+    Barrel { local_pos: Vec2::new( 18.0, 20.0), direction: Vec2::new(0.0, 1.0) },
+    Barrel { local_pos: Vec2::new( -6.0, 27.0), direction: Vec2::new(0.0, 1.0) },
+    Barrel { local_pos: Vec2::new(  6.0, 27.0), direction: Vec2::new(0.0, 1.0) },
+];
+
+/// Mmrnmhrm Y-Form — twin homing missiles toed out ±25° from forward.
+///
+/// 25° = 25·(2π/64) rad in canon (ANGLE_RATIO = 2π/64). The barrel
+/// direction = rotate (0,1) by ±25°. We hard-code the resulting components
+/// because `f32::sin`/`cos` are not const.
+const MMRX_Y_BARRELS: [Barrel; 2] = [
+    Barrel {
+        local_pos: Vec2::new(-13.0, 2.0),
+        direction: Vec2::new(-0.42261826, 0.9063078),
+    },
+    Barrel {
+        local_pos: Vec2::new(13.0, 2.0),
+        direction: Vec2::new(0.42261826, 0.9063078),
+    },
+];
+
 fn primary_weapon(class: ShipClass) -> WeaponSpec {
     let forward = Vec2::new(0.0, 1.0);
-    let backward = Vec2::new(0.0, -1.0);
     match class {
         ShipClass::Earcr => WeaponSpec {
-            // Canonical EarthlingMissile (extends HomingMissile) — a
-            // slow-turning forward nuke. .ini: Velocity=80 → 768 u/s,
-            // Range=60 → 2400 u travel → 3.125 s lifetime, Damage=4
-            // (read from stats.weapon_damage at spawn), TurnRate=3 →
-            // (2π/16) / (3+1) / time_ratio = 1.96 rad/s. Slow enough
-            // to dodge but tracks once committed.
+            // shpearcr.cpp activate_weapon: spawns EarthlingMissile from
+            // Vector2(0, size.y/2) forward. EarthlingMissile is a
+            // HomingMissile with TurnRate from [Weapon] TurnRate=3.
+            // .ini: Velocity=80, Range=60, Damage=4, TurnRate=3.
             local_direction: forward,
             muzzle_offset: 28.0,
-            speed: 768.0,
-            lifetime: 3.125,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 80.0 * SC2_VEL_SCALE,
+            lifetime: (60.0 * SC2_RANGE_SCALE) / (80.0 * SC2_VEL_SCALE),
             color: Color::srgb(1.0, 1.0, 1.0),
             sprite_size: 16.0,
             // Canonical EarthlingMissile sprite from shot_a (= WeaponSprites).
             projectile_sprite: Some("ships/earcr/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
-            homing_turn_rate: 1.96,
+            homing_turn_rate: sc2_turning(3.0),
             is_limpet: false,
         },
         ShipClass::Spael => WeaponSpec {
-            // Spathi primary is canonically a short-range fast-firing
-            // forward cannon — *not* the backward missile. The famous
-            // BUTT (Backward Utilizing Tracking Torpedo) is the
-            // *special*, see trigger_specials. .ini stat: Velocity=96
-            // (≈ 921 world units/s).
+            // shpspael.cpp activate_weapon: forward Missile from
+            // Vector2(0, size.y/2). .ini: Velocity=96, Range=17, Damage=1.
+            // WeaponRate=0 → fires every frame (machine gun).
             local_direction: forward,
             muzzle_offset: 22.0,
-            speed: 920.0,
-            lifetime: 0.7,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 96.0 * SC2_VEL_SCALE,
+            lifetime: (17.0 * SC2_RANGE_SCALE) / (96.0 * SC2_VEL_SCALE),
             color: Color::srgb(1.0, 1.0, 1.0),
             sprite_size: 8.0,
-            // Canonical Spathi cannon shot (WeaponSprites = shot_a).
             projectile_sprite: Some("ships/spael/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Yehte => WeaponSpec {
+            // shpyehte.cpp activate_weapon: TWO forward Missiles from
+            // Vector2(±24, 14). .ini Weapon: Velocity=80, Range=12,
+            // Damage=1, Armour=1.
             local_direction: forward,
-            muzzle_offset: 30.0,
-            speed: 900.0,
-            lifetime: 1.2,
-            color: Color::srgb(0.8, 1.0, 0.4),
-            sprite_size: 5.0,
-            projectile_sprite: None,
+            muzzle_offset: 0.0,
+            barrels: &YEHAT_BARRELS,
+            random_spread_rad: 0.0,
+            speed: 80.0 * SC2_VEL_SCALE,
+            lifetime: (12.0 * SC2_RANGE_SCALE) / (80.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 8.0,
+            projectile_sprite: Some("ships/yehte/sprites/shot_a01_bmp.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Chmav => WeaponSpec {
+            // shpchmav.cpp activate_weapon: spawns a ChmmrLaser (Laser
+            // type — continuous beam) from Vector2(0, 25). Beam
+            // primitive doesn't exist yet → fire a fast short-lived
+            // projectile placeholder. .ini Weapon: Range=10, Damage=2.
+            // TODO: implement Laser primitive (shpchmav.cpp:64).
             local_direction: forward,
             muzzle_offset: 30.0,
-            speed: 1200.0,
-            lifetime: 0.8,
-            color: Color::srgb(0.4, 0.9, 1.0),
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 1500.0,
+            lifetime: (10.0 * SC2_RANGE_SCALE) / 1500.0,
+            color: Color::srgb(1.0, 0.3, 0.3),
             sprite_size: 4.0,
-            projectile_sprite: None,
+            projectile_sprite: Some("ships/chmav/sprites/shot_a1_00_bmp.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Kzedr => WeaponSpec {
-            // Fusion bolt is a slow heavy shot with mild recoil
-            // (≈ 25 m/s on a mass-32 Dreadnought).
+            // shpkzedr.cpp activate_weapon: forward KzerZaMissile from
+            // Vector2(0, size.y/2). .ini Weapon: Velocity=80, Range=22,
+            // Damage=6, Armour=6.
             local_direction: forward,
             muzzle_offset: 36.0,
-            speed: 500.0,
-            lifetime: 2.5,
-            color: Color::srgb(0.6, 1.0, 0.6),
-            sprite_size: 10.0,
-            projectile_sprite: None,
-            recoil_impulse: 800.0,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 80.0 * SC2_VEL_SCALE,
+            lifetime: (22.0 * SC2_RANGE_SCALE) / (80.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 12.0,
+            projectile_sprite: Some("ships/kzedr/sprites/shot_a01.png"),
+            recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Mycpo => WeaponSpec {
-            // Mycon plasmoid — the iconic slow homing shot. Turn
-            // rate is the headline ability; without it the plasmoid
-            // is just a fat slow ball that misses everything.
+            // shpmycpo.cpp activate_weapon: spawns MyconPlasma (extends
+            // HomingMissile) from Vector2(0, size.y). .ini Weapon:
+            // Velocity=35, Range=60, Damage=10, Homing=1 →
+            // scale_turning(1) ≈ 3.927 rad/s.
             local_direction: forward,
             muzzle_offset: 26.0,
-            speed: 400.0,
-            lifetime: 3.5,
-            color: Color::srgb(1.0, 0.5, 0.3),
-            sprite_size: 9.0,
-            projectile_sprite: None,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 35.0 * SC2_VEL_SCALE,
+            lifetime: (60.0 * SC2_RANGE_SCALE) / (35.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 16.0,
+            projectile_sprite: Some("ships/mycpo/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
-            homing_turn_rate: 1.5,
+            homing_turn_rate: sc2_turning(1.0),
             is_limpet: false,
         },
         ShipClass::Shosc => WeaponSpec {
-            // Shofixti gun — fast, low damage. Compensates for the
-            // glass hull with shot rate, not punch.
+            // shpshosc.cpp activate_weapon: forward Missile from
+            // Vector2(0, size.y/2). .ini Weapon: Velocity=96, Range=14,
+            // Damage=1.
             local_direction: forward,
             muzzle_offset: 22.0,
-            speed: 1000.0,
-            lifetime: 1.5,
-            color: Color::srgb(0.6, 1.0, 1.0),
-            sprite_size: 4.0,
-            projectile_sprite: None,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 96.0 * SC2_VEL_SCALE,
+            lifetime: (14.0 * SC2_RANGE_SCALE) / (96.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 6.0,
+            projectile_sprite: Some("ships/shosc/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Arisk => WeaponSpec {
-            // Arilou's auto-aiming halo. Approximated as a fast straight
-            // shot for now; real homing lives in M3 alongside Mycon
-            // plasmoid logic.
+            // shparisk.cpp activate_weapon: spawns a Laser auto-aimed at
+            // the nearest non-invisible ship within weaponRange+200.
+            // .ini Weapon: Range=5.5, Frames=100, Damage=1. Laser
+            // primitive doesn't exist yet — use a very-fast forward
+            // projectile placeholder so the "instant hit" feel is
+            // preserved. The auto-aim half lands when we add the Laser
+            // primitive (TODO: shparisk.cpp:78).
             local_direction: forward,
             muzzle_offset: 22.0,
-            speed: 800.0,
-            lifetime: 1.5,
-            color: Color::srgb(0.5, 1.0, 0.5),
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 2400.0,
+            lifetime: (5.5 * SC2_RANGE_SCALE) / 2400.0,
+            color: Color::srgb(0.6, 1.0, 0.8),
             sprite_size: 5.0,
-            projectile_sprite: None,
+            projectile_sprite: Some("ships/arisk/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Pkufu => WeaponSpec {
-            // Pkunk fires a fast forward cone in the original. For now
-            // a single bolt; the cone is one match-arm change away once
-            // we add multi-projectile fire support.
+            // shppkufu.cpp activate_weapon: THREE AnimatedShots —
+            //   forward from Vector2(0, size.y/2),
+            //   left    from Vector2(-size.x/2, 0) at angle - π/2,
+            //   right   from Vector2( size.x/2, 0) at angle + π/2.
+            // .ini Weapon: Velocity=96, Range=5.5, Damage=1.
             local_direction: forward,
-            muzzle_offset: 22.0,
-            speed: 900.0,
-            lifetime: 1.5,
-            color: Color::srgb(1.0, 0.6, 1.0),
-            sprite_size: 5.0,
-            projectile_sprite: None,
+            muzzle_offset: 0.0,
+            barrels: &PKUNK_BARRELS,
+            random_spread_rad: 0.0,
+            speed: 96.0 * SC2_VEL_SCALE,
+            lifetime: (5.5 * SC2_RANGE_SCALE) / (96.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 6.0,
+            projectile_sprite: Some("ships/pkufu/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Ilwav => WeaponSpec {
-            // Ilwrath's flamethrower — short range, big damage.
+            // shpilwav.cpp activate_weapon: AnimatedShot forward from
+            // Vector2(0, size.y/2). If cloaked + target in range, the
+            // shot direction is intercept-aimed at the target; cloak
+            // drops on fire. We don't model the cloak-aim path yet.
+            // .ini Weapon: Velocity=28, Range=2.8, Damage=1.
             local_direction: forward,
             muzzle_offset: 30.0,
-            speed: 600.0,
-            lifetime: 1.0,
-            color: Color::srgb(1.0, 0.4, 0.2),
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 28.0 * SC2_VEL_SCALE,
+            lifetime: (2.8 * SC2_RANGE_SCALE) / (28.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 0.6, 0.3),
             sprite_size: 8.0,
-            projectile_sprite: None,
+            projectile_sprite: Some("ships/ilwav/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Thrto => WeaponSpec {
-            // Thraddash bullet — small, fast, modest damage.
+            // shpthrto.cpp activate_weapon: forward Missile from
+            // Vector2(0, 0.5*size.y). .ini Weapon: Velocity=120, Range=25,
+            // Damage=1, Armour=2.
             local_direction: forward,
             muzzle_offset: 22.0,
-            speed: 850.0,
-            lifetime: 1.4,
-            color: Color::srgb(1.0, 0.7, 0.2),
-            sprite_size: 5.0,
-            projectile_sprite: None,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 120.0 * SC2_VEL_SCALE,
+            lifetime: (25.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 6.0,
+            projectile_sprite: Some("ships/thrto/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Vuxin => WeaponSpec {
-            // VUX limpet — slow, sticky. On hit it transfers mass
-            // onto the target via the Limpet marker (see
-            // handle_projectile_hits). Multiple limpets stack, making
-            // the target progressively harder to accelerate and
-            // capping its top speed — exactly the canonical "you can't
-            // outrun the VUX once you're tagged" feel, emergent from
-            // the existing F = m·a physics, no special-case "slow"
-            // effect code.
+            // VUX primary is canonically a *Laser*, not a missile —
+            // shpvuxin.cpp activate_weapon spawns a Laser from
+            // Vector2(size.x/11, size.y/2.07). Laser primitive isn't
+            // wired yet; using a very fast short-range projectile so it
+            // still feels like an instant-hit beam. The limpet is the
+            // VUX *special* (see trigger_specials), not the primary —
+            // I leave is_limpet=false here. .ini Weapon: Range=9, Damage=1.
+            // TODO: replace with Laser primitive (shpvuxin.cpp:217).
             local_direction: forward,
-            muzzle_offset: 26.0,
-            speed: 350.0,
-            lifetime: 4.0,
-            color: Color::srgb(0.4, 0.9, 0.3),
-            sprite_size: 9.0,
-            projectile_sprite: None,
+            muzzle_offset: 22.0,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 2400.0,
+            lifetime: (9.0 * SC2_RANGE_SCALE) / 2400.0,
+            color: Color::srgb(0.6, 1.0, 0.4),
+            sprite_size: 6.0,
+            projectile_sprite: Some("ships/vuxin/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
-            is_limpet: true,
+            is_limpet: false,
         },
         ShipClass::Supbl => WeaponSpec {
-            // Supox plasma grenade — slow lob in canon; here a fast
-            // straight shot until we add ballistic arcs.
+            // shpsupbl.cpp activate_weapon: forward Missile from
+            // Vector2(0, 0.25*size.y). .ini Weapon: Velocity=120,
+            // Range=15, Damage=1.
             local_direction: forward,
             muzzle_offset: 24.0,
-            speed: 700.0,
-            lifetime: 1.8,
-            color: Color::srgb(0.5, 0.8, 1.0),
-            sprite_size: 7.0,
-            projectile_sprite: None,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 120.0 * SC2_VEL_SCALE,
+            lifetime: (15.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 6.0,
+            projectile_sprite: Some("ships/supbl/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Kohma => WeaponSpec {
-            // Kohr-Ah cleansing flames — wide spread in canon; for
-            // now single forward shot. Big damage to make ramming
-            // viable like the original.
+            // shpkohma.cpp activate_weapon: forward KohrAhBlade from
+            // Vector2(0, size.y/2). Persistent + max-N (MaxBlades=9 in
+            // .ini). We fire it as a normal projectile with a long
+            // life; the persistence/passive-target-tracking from the
+            // legacy KohrAhBlade isn't modelled (TODO: shpkohma.cpp:484).
+            // .ini Weapon: Velocity=64, Range=12, Damage=4, Armour=6.
             local_direction: forward,
             muzzle_offset: 34.0,
-            speed: 550.0,
-            lifetime: 1.5,
-            color: Color::srgb(1.0, 0.55, 0.15),
-            sprite_size: 9.0,
-            projectile_sprite: None,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 64.0 * SC2_VEL_SCALE,
+            lifetime: (12.0 * SC2_RANGE_SCALE) / (64.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 12.0,
+            projectile_sprite: Some("ships/kohma/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Syrpe => WeaponSpec {
-            // Syreen razor — fast straight shot. The siren song
-            // ability is on the special button, not the primary.
+            // shpsyrpe.cpp activate_weapon: forward Missile from
+            // Vector2(0, size.y/2 + 10), with collide_flag_sameship =
+            // ALL_LAYERS (i.e. the razor can hit objects spawned by
+            // its own ship — currently we don't have those). .ini
+            // Weapon: Velocity=120, Range=17, Damage=2.
             local_direction: forward,
-            muzzle_offset: 26.0,
-            speed: 800.0,
-            lifetime: 1.6,
-            color: Color::srgb(1.0, 0.85, 0.95),
-            sprite_size: 5.0,
-            projectile_sprite: None,
+            muzzle_offset: 32.0,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 120.0 * SC2_VEL_SCALE,
+            lifetime: (17.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 6.0,
+            projectile_sprite: Some("ships/syrpe/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Andgu => WeaponSpec {
-            // Androsynth bubble shot — slow, big, persistent.
+            // shpandgu.cpp activate_weapon: forward AndrosynthBubble
+            // from Vector2(0, size.y/2). Blocked while in Blazer-comet
+            // mode (specialActive). .ini Weapon: Velocity=24, Range=50,
+            // Damage=2.
             local_direction: forward,
             muzzle_offset: 24.0,
-            speed: 450.0,
-            lifetime: 2.5,
-            color: Color::srgb(0.7, 0.7, 1.0),
-            sprite_size: 8.0,
-            projectile_sprite: None,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 24.0 * SC2_VEL_SCALE,
+            lifetime: (50.0 * SC2_RANGE_SCALE) / (24.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 14.0,
+            projectile_sprite: Some("ships/andgu/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Chebr => WeaponSpec {
-            // Chenjesu crystal shard cluster — single shot for now.
+            // shpchebr.cpp activate_weapon: spawns a single ChenjesuShot
+            // forward from Vector2(0, size.y/2). On release, the
+            // crystal explodes into 8 shards radiating at PI/4 steps.
+            // We fire the crystal but the on-release-shatter isn't
+            // modelled (TODO: shpchebr.cpp:1004). .ini Weapon:
+            // Velocity=64, Damage=6, ShardRange=9, ShardDamage=2.
+            // No [Weapon] Range — the crystal flies until released.
             local_direction: forward,
             muzzle_offset: 32.0,
-            speed: 700.0,
-            lifetime: 1.5,
-            color: Color::srgb(0.9, 0.8, 1.0),
-            sprite_size: 6.0,
-            projectile_sprite: None,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 64.0 * SC2_VEL_SCALE,
+            lifetime: 4.0,
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 14.0,
+            projectile_sprite: Some("ships/chebr/sprites/shot_a_01_tga.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Druma => WeaponSpec {
-            // Druuge cannon — slow heavy shell. The classic Druuge
-            // identity is the recoil: firing physically shoves the
-            // ship backward. recoil_impulse value is in N·s, so a
-            // mass-18 Druuge gets ≈ 110 m/s of kick per shot, but a
-            // mass-2 Shofixti (if it had this cannon) would get 1000
-            // m/s — Newton's third law in action.
+            // shpdruma.cpp activate_weapon: forward DruugeMissile from
+            // Vector2(0, size.y/2). .ini Weapon: Velocity=120, Range=40,
+            // Damage=6, DriftVelocity=375 — this is the Newtonian recoil
+            // applied to the firer as `accelerate(this, angle+π,
+            // DriftVelocity/mass, MAX_SPEED)`. So the SC2 firer Δv is
+            // `DriftVelocity / mass` scaled with the same world units.
+            // We mirror this via recoil_impulse such that
+            //   Δv = recoil_impulse / mass = (375 · 9.6) / mass
+            // i.e. recoil_impulse = 375 · 9.6 ≈ 3600 N·s.
             local_direction: forward,
             muzzle_offset: 30.0,
-            speed: 600.0,
-            lifetime: 2.5,
-            color: Color::srgb(1.0, 0.3, 0.1),
-            sprite_size: 10.0,
-            projectile_sprite: None,
-            recoil_impulse: 2000.0,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 120.0 * SC2_VEL_SCALE,
+            lifetime: (40.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 12.0,
+            projectile_sprite: Some("ships/druma/sprites/shot_a01.png"),
+            recoil_impulse: 375.0 * SC2_VEL_SCALE,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Utwju => WeaponSpec {
-            // Utwig dual prong — fast forward shot.
+            // shputwju.cpp calculate_fire_weapon: SIX forward Missiles
+            // from Vector2(±34, 11), (±18, 20), (±6, 27). .ini Weapon:
+            // Velocity=120, Range=14, Damage=1.
             local_direction: forward,
-            muzzle_offset: 28.0,
-            speed: 900.0,
-            lifetime: 1.5,
-            color: Color::srgb(0.8, 0.7, 1.0),
-            sprite_size: 5.0,
-            projectile_sprite: None,
+            muzzle_offset: 0.0,
+            barrels: &UTWIG_BARRELS,
+            random_spread_rad: 0.0,
+            speed: 120.0 * SC2_VEL_SCALE,
+            lifetime: (14.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 6.0,
+            projectile_sprite: Some("ships/utwju/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Zfpst => WeaponSpec {
-            // Zoq-Fot-Pik tongue lash — short, fast. Real tongue is a
-            // melee swipe; here treated as a very short-range fast
-            // shot until we add melee-style hitboxes.
+            // shpzfpst.cpp activate_weapon: forward ZoqFotPikShot at
+            //   angle + ANGLE_RATIO * random(-10, 10)
+            // i.e. random spread of ±10·(2π/64) = ±0.982 rad. .ini
+            // Weapon: Velocity=120, Range=11, Damage=1.
             local_direction: forward,
             muzzle_offset: 20.0,
-            speed: 1100.0,
-            lifetime: 0.6,
-            color: Color::srgb(1.0, 0.7, 0.5),
-            sprite_size: 4.0,
-            projectile_sprite: None,
+            barrels: &[],
+            random_spread_rad: 10.0 * (std::f32::consts::TAU / 64.0),
+            speed: 120.0 * SC2_VEL_SCALE,
+            lifetime: (11.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 6.0,
+            projectile_sprite: Some("ships/zfpst/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Mmrxf => WeaponSpec {
-            // X-Form lasers — fast forward beam shot.
+            // shpmmrxf.cpp activate_weapon: in Y-FORM (our default at
+            // spawn), two HomingMissiles from Vector2(±13, 2) at
+            // angle ± 25° = ± 25·ANGLE_RATIO rad. .ini Weapon2:
+            // Velocity=80, Range=50, Damage=1, TurnRate=9.
+            // T-FORM (twin laser) is the *other* form — needs the
+            // transform-mode primitive to switch into (TODO:
+            // shpmmrxf.cpp:411 case T_FORM).
             local_direction: forward,
-            muzzle_offset: 24.0,
-            speed: 1100.0,
-            lifetime: 1.0,
-            color: Color::srgb(0.6, 0.8, 1.0),
-            sprite_size: 4.0,
-            projectile_sprite: None,
+            muzzle_offset: 0.0,
+            barrels: &MMRX_Y_BARRELS,
+            random_spread_rad: 0.0,
+            speed: 80.0 * SC2_VEL_SCALE,
+            lifetime: (50.0 * SC2_RANGE_SCALE) / (80.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 10.0,
+            projectile_sprite: Some("ships/mmrxf/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
-            homing_turn_rate: 0.0,
+            homing_turn_rate: sc2_turning(9.0),
             is_limpet: false,
         },
         ShipClass::Orzne => WeaponSpec {
-            // Orz "flexible arm" — extendable cannon. For now a
-            // single forward shot until we have multi-stage projectiles.
+            // shporzne.cpp activate_weapon: forward OrzMissile spawned
+            // at the turret angle (turret aim is controlled by L/R
+            // while special is held). We don't model the independent
+            // turret yet — fire straight forward. .ini Weapon:
+            // Velocity=120, Range=20, Damage=3.
+            // TODO: independent turret aim (shporzne.cpp:549).
             local_direction: forward,
             muzzle_offset: 28.0,
-            speed: 700.0,
-            lifetime: 1.5,
-            color: Color::srgb(0.8, 0.9, 0.6),
-            sprite_size: 6.0,
-            projectile_sprite: None,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 120.0 * SC2_VEL_SCALE,
+            lifetime: (20.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 8.0,
+            projectile_sprite: Some("ships/orzne/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Slypr => WeaponSpec {
-            // Slylandro lightning — homes in canon; straight-line
-            // placeholder until homing projectile lands with Mycon
-            // plasmoid in M3.
+            // shpslypr.cpp: weapon is a SlylandroLaserNew — a
+            // multi-segment "lightning" presence that snaps to the
+            // nearest target. No projectile, no canonical sprite under
+            // shot_a##. Lightning primitive doesn't exist; render a
+            // very-fast short-lived projectile placeholder until it's
+            // wired (TODO: shpslypr.cpp:SlylandroLaserNew). .ini
+            // Weapon: Segments=4, SegmentLength=125, RandomAngle=60.
             local_direction: forward,
             muzzle_offset: 18.0,
-            speed: 600.0,
-            lifetime: 2.0,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 2400.0,
+            lifetime: 0.2,
             color: Color::srgb(1.0, 1.0, 0.5),
             sprite_size: 5.0,
             projectile_sprite: None,
@@ -1514,30 +1761,45 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             is_limpet: false,
         },
         ShipClass::Umgdr => WeaponSpec {
-            // Umgah anti-grav cone — fan of short-range projectiles
-            // in canon; single forward shot placeholder.
+            // shpumgdr.cpp: weapon is a ship-attached UmgahCone — a
+            // forward-facing damage region that *moves with the ship*
+            // and only deals damage while fire_weapon is held. The
+            // canonical cone has no Velocity / Range — it lives at
+            // a fixed offset (dist=81) ahead of the ship. We don't
+            // have an "attached forward damage zone" primitive yet, so
+            // fire a fast short-range placeholder projectile.
+            // TODO: implement attached UmgahCone (shpumgdr.cpp:UmgahCone).
+            // .ini Weapon: Damage=20, DamageType=2.
             local_direction: forward,
             muzzle_offset: 18.0,
-            speed: 500.0,
-            lifetime: 0.8,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 600.0,
+            lifetime: 0.4,
             color: Color::srgb(0.5, 1.0, 0.7),
-            sprite_size: 7.0,
-            projectile_sprite: None,
+            sprite_size: 12.0,
+            projectile_sprite: Some("ships/umgdr/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
         },
         ShipClass::Meltr => WeaponSpec {
-            // Melnorme chargeable plasma — held-fire charges in canon.
-            // For now a fixed-power forward shot until we wire up
-            // press-to-charge / release-to-fire input semantics.
+            // shpmeltr.cpp activate_weapon: spawns a single MelnormeShot
+            // from Vector2(0, size.y/2). While held, the shot charges
+            // (every charge-cycle: damage×=2, armour×=2, range+=RangeUp)
+            // for up to 3 phases. We fire the base shot only; the
+            // press-to-charge / release-to-fire input model isn't
+            // wired yet (TODO: shpmeltr.cpp:MelnormeShot::calculate).
+            // .ini Weapon: Velocity=112, Range=21, RangeUp=3, Damage=2.
             local_direction: forward,
-            muzzle_offset: 26.0,
-            speed: 800.0,
-            lifetime: 1.5,
-            color: Color::srgb(0.9, 0.5, 1.0),
-            sprite_size: 6.0,
-            projectile_sprite: None,
+            muzzle_offset: 28.0,
+            barrels: &[],
+            random_spread_rad: 0.0,
+            speed: 112.0 * SC2_VEL_SCALE,
+            lifetime: (21.0 * SC2_RANGE_SCALE) / (112.0 * SC2_VEL_SCALE),
+            color: Color::srgb(1.0, 1.0, 1.0),
+            sprite_size: 10.0,
+            projectile_sprite: Some("ships/meltr/sprites/shot_a01.png"),
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
             is_limpet: false,
@@ -1904,9 +2166,12 @@ fn trigger_specials(
         &mut LinearVelocity,
         &mut SpecialCooldown,
         &mut Battery,
+        &mut Crew,
     )>,
 ) {
-    for (entity, ship, class, mut pos, rot, mut vel, mut cooldown, mut battery) in &mut q {
+    for (entity, ship, class, mut pos, rot, mut vel, mut cooldown, mut battery, mut crew) in
+        &mut q
+    {
         if cooldown.0 > 0.0 {
             continue;
         }
@@ -1968,8 +2233,12 @@ fn trigger_specials(
                 let butt = WeaponSpec {
                     local_direction: Vec2::new(0.0, -1.0),
                     muzzle_offset: 22.0,
-                    speed: 432.0, // Velocity=45 × distance_ratio / time_ratio
-                    lifetime: 1.1, // ≈ Range=12 ÷ Velocity at scale
+                    barrels: &[],
+                    random_spread_rad: 0.0,
+                    // .ini Special Velocity=45 → 45 · 9.6 ≈ 432 u/s.
+                    speed: 45.0 * SC2_VEL_SCALE,
+                    // .ini Special Range=12 → lifetime = 480/432 ≈ 1.11 s.
+                    lifetime: (12.0 * SC2_RANGE_SCALE) / (45.0 * SC2_VEL_SCALE),
                     color: Color::srgb(1.0, 1.0, 1.0),
                     sprite_size: 12.0,
                     // Canonical BUTT sprite from shot_b (= SpecialSprites
@@ -1977,9 +2246,8 @@ fn trigger_specials(
                     // its SHIP_DAT [Objects]).
                     projectile_sprite: Some("ships/spael/sprites/shot_b01.png"),
                     recoil_impulse: 0.0,
-                    // .ini Special TurnRate=1 → scale_turning gives
-                    // (2π/16) / (1+1) / 0.05 ≈ 3.93 rad/s.
-                    homing_turn_rate: 3.93,
+                    // .ini Special TurnRate=1 → scale_turning(1) ≈ 3.93 rad/s.
+                    homing_turn_rate: sc2_turning(1.0),
                     is_limpet: false,
                 };
                 spawn_projectile(&mut commands, &assets, entity, pos.0, rot, vel.0, &butt, 2);
@@ -1987,21 +2255,52 @@ fn trigger_specials(
                 info!("P{} BUTT", ship.player_slot + 1);
             }
             ShipClass::Yehte => {
+                // shpyehte.cpp activate_special: shieldFrames =
+                // (shieldFrames % frame_time) + specialFrames. .ini
+                // Special: Frames=500 → 25 s at 20 Hz. While
+                // shieldFrames > 0, handle_damage sets normal=0 — i.e.
+                // total immunity to projectile damage (collisions
+                // still hurt). SpecialDrain=3 already deducted above.
                 commands.entity(entity).insert(ShieldActive {
-                    remaining: 2.0,
-                    damage_factor: 0.25,
+                    remaining: 500.0 / 20.0,
+                    damage_factor: 0.0,
                 });
-                cooldown.0 = 5.0;
+                cooldown.0 = 0.15; // SpecialRate=2 → 2/20=0.1; small floor for safety
                 info!("P{} shield up", ship.player_slot + 1);
             }
-            ShipClass::Chmav | ShipClass::Kzedr | ShipClass::Mycpo => {
-                // Placeholder brake — 4000 N·s of drag impulse so a
-                // heavy ship needs longer to halt than a light one,
-                // which is the whole point of asking the physics to
-                // do this work. Real abilities (tractor / fighters /
-                // plasmoid) land with M3 primitives.
+            ShipClass::Chmav => {
+                // shpchmav.cpp activate_special: ChmmrBeam tractor — if
+                // a target is within specialRange and has mass, the
+                // beam *accelerates the target toward the firer* at
+                // specialForce / target.mass. Needs cross-entity force
+                // application + visible beam. TODO (shpchmav.cpp:87).
+                // Placeholder: heavy brake so the Avatar can plant.
                 drag(&mut vel, 4000.0);
                 cooldown.0 = 2.0;
+            }
+            ShipClass::Kzedr => {
+                // shpkzedr.cpp activate_special: spawn TWO KzerZaFighter
+                // sub-entities (1 crew each, costing 1-2 crew of the
+                // mother ship). Fighters fly out, fire lasers, return
+                // home. Sub-entity AI primitive doesn't exist yet —
+                // TODO (shpkzedr.cpp:55). Placeholder: brake.
+                drag(&mut vel, 4000.0);
+                cooldown.0 = 2.0;
+            }
+            ShipClass::Mycpo => {
+                // shpmycpo.cpp activate_special: damage(this, 0, -4)
+                // i.e. heal 4 crew (negative damage). Battery drain
+                // (SpecialDrain=40) already deducted above. Skip if
+                // already full.
+                if crew.current < crew.max {
+                    crew.current = (crew.current + 4).min(crew.max);
+                    cooldown.0 = 0.1;
+                    info!("P{} repair (+4 crew)", ship.player_slot + 1);
+                } else {
+                    // Refund the drain — legacy returns FALSE early
+                    // before the drain hits, so we mirror that here.
+                    battery.current = (battery.current + ship.stats.special_drain).min(battery.max);
+                }
             }
             ShipClass::Shosc => {
                 // Glory Device — the canonical suicide explosion.
@@ -2025,43 +2324,95 @@ fn trigger_specials(
                 info!("P{} GLORY DEVICE", ship.player_slot + 1);
             }
             ShipClass::Arisk => {
-                // Pure teleport — non-physical, position write is
-                // the only correct primitive. Velocity zeroed because
-                // hyperspace cancels prior momentum in lore.
-                pos.0 += perp * 350.0;
-                vel.0 = Vec2::ZERO;
-                cooldown.0 = 3.0;
+                // shparisk.cpp activate_special: translate by
+                // random(-1500..1500, -1500..1500) — pure teleport, no
+                // velocity change. The legacy code also marks
+                // just_teleported = 1 so the next collision auto-
+                // kills the Arilou (telefrag risk). We don't model
+                // that yet — TODO (shparisk.cpp:100).
+                let dx = (fastrand::f32() * 2.0 - 1.0) * 1500.0;
+                let dy = (fastrand::f32() * 2.0 - 1.0) * 1500.0;
+                pos.0 += Vec2::new(dx, dy);
+                cooldown.0 = 0.15;
                 info!("P{} hyperspace", ship.player_slot + 1);
             }
             ShipClass::Pkufu => {
-                commands.entity(entity).insert(ShieldActive {
-                    remaining: 1.0,
-                    damage_factor: 0.0,
-                });
-                cooldown.0 = 4.0;
-                info!("P{} phase shift", ship.player_slot + 1);
+                // shppkufu.cpp calculate_fire_special: refills the
+                // ship's own battery — `batt += special_drain` (clamped
+                // to batt_max), guarded by `batt < batt_max`. This is
+                // a battery-taunt: trade special_drain (already
+                // deducted above) for special_drain back, i.e. it's a
+                // no-cost rapid recharge. We refund the drain so the
+                // net effect is "top off battery".
+                battery.current = battery.max;
+                cooldown.0 = (16.0f32 / 20.0).max(0.1); // SpecialRate=16 → 0.8 s
+                info!("P{} taunt (battery full)", ship.player_slot + 1);
             }
             ShipClass::Ilwav => {
+                // shpilwav.cpp calculate_fire_special: toggles `cloak`
+                // — while cloaked, isInvisible()=true (enemies' AI and
+                // homing missiles drop lock). No projectile-damage
+                // immunity in canon, just stealth. We don't have an
+                // invisibility / target-occlusion primitive yet —
+                // approximate with a brief shield. TODO: real cloak
+                // (shpilwav.cpp:89).
                 commands.entity(entity).insert(ShieldActive {
                     remaining: 2.5,
                     damage_factor: 0.0,
                 });
-                cooldown.0 = 6.0;
+                cooldown.0 = 7.0 / 20.0; // SpecialRate=7 → 0.35 s
                 info!("P{} cloak", ship.player_slot + 1);
             }
             ShipClass::Thrto => {
-                // Afterburner burst — 3500 N·s gives a 7 kg Torch
-                // ≈ 500 m/s sprint.
-                dash(&mut vel, forward * 3500.0);
-                cooldown.0 = 2.0;
-                info!("P{} afterburner", ship.player_slot + 1);
+                // shpthrto.cpp activate_special: accelerate(this,
+                // angle, specialThrust, MAX_SPEED) — adds canonical
+                // velocity (.ini Special Thrust=8 → 8·9.6 = 76.8 u/s)
+                // and drops a stationary ThraddashFlame damage zone
+                // *behind* the ship at pos - unit_vector(angle)*size.x/2.5.
+                // Special Damage=2, Armour=2; Frames=39, frame_size=100
+                // → ~3.9 s lifetime in the legacy.
+                vel.0 += forward * (8.0 * SC2_VEL_SCALE);
+                let trail_pos = pos.0 - forward * 18.0;
+                spawn_damage_zone(
+                    &mut commands,
+                    Some(entity),
+                    trail_pos,
+                    18.0,
+                    8.0,
+                    3.9,
+                    Color::srgba(1.0, 0.5, 0.1, 0.5),
+                );
+                cooldown.0 = 0.1; // SpecialRate=0 → every frame; floor for safety
+                info!("P{} afterburner + flame", ship.player_slot + 1);
             }
             ShipClass::Vuxin => {
-                // VUX hit-and-stop — heavy drag (5000 N·s) brakes a
-                // 10 kg Intruder by ≈ 500 m/s. Limpet attachment is
-                // M3 work.
-                drag(&mut vel, 5000.0);
-                cooldown.0 = 2.0;
+                // shpvuxin.cpp activate_special: spawn VuxLimpet from
+                // Vector2(0, -size.y/2.8) — back of ship — aimed at
+                // the ship's current target (or directly backward when
+                // there is none). .ini Special: Velocity=25,
+                // Range=35, Slowdown=0.5. We don't track targets yet,
+                // so spawn backward like Spathi BUTT but with the
+                // is_limpet flag set so on-hit it sticks (extra mass)
+                // via the existing limpet pipeline.
+                let limpet = WeaponSpec {
+                    local_direction: Vec2::new(0.0, -1.0),
+                    muzzle_offset: 16.0,
+                    barrels: &[],
+                    random_spread_rad: 0.0,
+                    speed: 25.0 * SC2_VEL_SCALE,
+                    lifetime: (35.0 * SC2_RANGE_SCALE) / (25.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 10.0,
+                    // VUX SpecialSprites — Vuxin has no shot_b in its
+                    // extracted pack; fall back to the primary art.
+                    projectile_sprite: Some("ships/vuxin/sprites/shot_a01.png"),
+                    recoil_impulse: 0.0,
+                    homing_turn_rate: 0.0,
+                    is_limpet: true,
+                };
+                spawn_projectile(&mut commands, &assets, entity, pos.0, rot, vel.0, &limpet, 0);
+                cooldown.0 = 7.0 / 20.0; // SpecialRate=7 → 0.35 s
+                info!("P{} limpet", ship.player_slot + 1);
             }
             ShipClass::Supbl => {
                 // Strafe — hold L or R during the special to pick
@@ -2080,122 +2431,195 @@ fn trigger_specials(
                 cooldown.0 = 1.0;
             }
             ShipClass::Kohma => {
-                // F.R.I.E.D. sawblades — a damage ring around the
-                // Marauder. Stationary at spawn position for now;
-                // making it follow the ship needs a parent-child
-                // transform relationship which lands with the
-                // satellite/orbiter primitive for Chmmr. Source set
-                // to the firer so the Marauder can fly through its
-                // own blades. Brake first so the ship is anchored
-                // while the ring is up — matches the canon "Kohr-Ah
-                // stops to spin sawblades" stance.
-                drag(&mut vel, 20_000.0);
-                spawn_damage_zone(
-                    &mut commands,
-                    Some(entity),
-                    pos.0,
-                    95.0,
-                    20.0,
-                    1.5,
-                    Color::srgba(1.0, 0.5, 0.1, 0.4),
-                );
-                cooldown.0 = 4.0;
+                // shpkohma.cpp activate_special: F.R.I.E.D. — spawn
+                // 16 KohrAhFRIED projectiles radiating outward at
+                // i·(2π/16) - π for i in 0..16. .ini Special:
+                // Velocity=20, Range=5, Damage=3, Armour=99.
+                let speed = 20.0 * SC2_VEL_SCALE;
+                let life = (5.0 * SC2_RANGE_SCALE) / speed;
+                let fried = WeaponSpec {
+                    local_direction: forward, // unused — barrels override
+                    muzzle_offset: 0.0,
+                    barrels: &[],
+                    random_spread_rad: 0.0,
+                    speed,
+                    lifetime: life,
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 8.0,
+                    projectile_sprite: Some("ships/kohma/sprites/shot_b01.png"),
+                    recoil_impulse: 0.0,
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                };
+                for i in 0..16 {
+                    let theta = (i as f32) * std::f32::consts::TAU / 16.0 - std::f32::consts::PI;
+                    let dir = Vec2::new(theta.cos(), theta.sin());
+                    spawn_projectile_world(
+                        &mut commands,
+                        &assets,
+                        entity,
+                        pos.0 + dir * 16.0,
+                        dir,
+                        vel.0,
+                        &fried,
+                        3,
+                    );
+                }
+                cooldown.0 = 9.0 / 20.0; // SpecialRate=9 → 0.45 s
                 info!("P{} F.R.I.E.D.", ship.player_slot + 1);
             }
             ShipClass::Syrpe => {
-                drag(&mut vel, 20_000.0);
-                cooldown.0 = 4.0;
+                // shpsyrpe.cpp activate_special: siren song — within
+                // specialRange (.ini=11 → 440 u), Syreen probabilistic
+                // ally damages enemy *human* crew and spawns floating
+                // CrewPod pickups that, if collected by the Syreen,
+                // add crew. Needs target filtering by panel color and
+                // pickup pods — TODO (shpsyrpe.cpp:661). Placeholder:
+                // brake so the ship plants while the (silent) song
+                // plays.
+                drag(&mut vel, 8000.0);
+                cooldown.0 = 20.0 / 20.0; // SpecialRate=20 → 1 s
                 info!("P{} siren song (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Andgu => {
-                // Blazer-comet — 5850 N·s on a 9 kg Guardian for
-                // a 650 m/s sprint.
-                dash(&mut vel, forward * 5850.0);
-                cooldown.0 = 3.0;
-                info!("P{} comet", ship.player_slot + 1);
+                // shpandgu.cpp activate_special: enter Blazer-comet
+                // mode — set damage_factor=specialDamage, replace
+                // sprite, swap mass to specialMass, swap turn_rate to
+                // specialTurnRate. While active, thrust is forced full,
+                // recharge_amount=-1 (drains battery every tick), and
+                // collisions damage the target by specialDamage. Exits
+                // when battery hits -1. Needs a runtime stat-swap +
+                // collision-damage primitive — TODO (shpandgu.cpp:906).
+                // Placeholder: a forward sprint.
+                vel.0 += forward * (60.0 * SC2_VEL_SCALE) / ship.stats.mass.max(0.0001);
+                cooldown.0 = 0.1;
+                info!("P{} blazer comet (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Chebr => {
-                // DOGI mines — five stationary damage zones in a
-                // ring around the Broodhome. The canonical DOGI is
-                // a small mobile entity that homes on enemies; here
-                // we get the area-denial half of the mechanic
-                // (stand in the wrong place, take damage) without
-                // the mobile-mine sub-entity AI, which lands when
-                // the sub-entity primitive does. Source = self so
-                // the Chenjesu can fly through its own minefield.
-                let count = 5;
-                let mine_dist = 70.0;
-                for i in 0..count {
-                    let angle = std::f32::consts::TAU * (i as f32) / (count as f32);
-                    let offset = Vec2::new(angle.cos(), angle.sin()) * mine_dist;
-                    spawn_damage_zone(
-                        &mut commands,
-                        Some(entity),
-                        pos.0 + offset,
-                        24.0,
-                        6.0,
-                        7.0,
-                        Color::srgba(0.7, 0.8, 1.0, 0.5),
-                    );
-                }
-                cooldown.0 = 5.0;
-                info!("P{} DOGI minefield", ship.player_slot + 1);
+                // shpchebr.cpp activate_special: spawn ONE ChenjesuDOGI
+                // sub-entity at Vector2(0, -size.y/1.5) (back of ship)
+                // at angle+π. The DOGI is a small mobile mine with
+                // homing-with-avoidance behaviour and fuel-sap-on-hit.
+                // Sub-entity AI primitive doesn't exist; for now spawn
+                // a single backward damage zone at the DOGI's launch
+                // point. TODO: mobile DOGI (shpchebr.cpp:ChenjesuDOGI).
+                let back = -forward * 38.0;
+                spawn_damage_zone(
+                    &mut commands,
+                    Some(entity),
+                    pos.0 + back,
+                    24.0,
+                    8.0,
+                    6.0,
+                    Color::srgba(0.7, 0.8, 1.0, 0.5),
+                );
+                cooldown.0 = 0.1;
+                info!("P{} DOGI (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Druma => {
-                // Ship-jump thruster — 4500 N·s on an 18 kg Mauler
-                // ≈ 250 m/s. The iconic cannon recoil lives in
-                // fire_weapons via spec.recoil_impulse.
-                dash(&mut vel, forward * 4500.0);
-                cooldown.0 = 1.0;
-                info!("P{} ship jump", ship.player_slot + 1);
+                // shpdruma.cpp calculate_fire_special: if crew > 1 and
+                // batt < batt_max and recharge done, burn 1 crew and
+                // add `special_drain` to battery (clamped to batt_max).
+                // SpecialDrain=16 means each crewman becomes 16 batt.
+                if crew.current > 1 && battery.current < battery.max {
+                    crew.current -= 1;
+                    battery.current = (battery.current + ship.stats.special_drain).min(battery.max);
+                }
+                // Refund the activation drain — the special's "cost"
+                // is the burned crewman, not the battery (legacy
+                // gates on `batt < batt_max` and adds *into* batt).
+                battery.current = (battery.current + ship.stats.special_drain).min(battery.max);
+                cooldown.0 = 30.0 / 20.0; // SpecialRate=30 → 1.5 s
+                info!("P{} crew-burn", ship.player_slot + 1);
             }
             ShipClass::Utwju => {
+                // shputwju.cpp handle_damage: while special_recharge > 0
+                // incoming `normal` damage is *added to batt* instead of
+                // deducted from crew (i.e. fortitude — absorbs hits and
+                // converts them to energy). We approximate with a brief
+                // total-immunity ShieldActive. TODO: damage-to-battery
+                // conversion primitive (shputwju.cpp:96).
                 commands.entity(entity).insert(ShieldActive {
                     remaining: 2.0,
                     damage_factor: 0.0,
                 });
-                cooldown.0 = 5.0;
-                info!("P{} ricochet shield", ship.player_slot + 1);
+                cooldown.0 = 7.0 / 20.0; // SpecialRate=7 → 0.35 s
+                info!("P{} fortitude shield", ship.player_slot + 1);
             }
             ShipClass::Zfpst => {
-                // Taunt-dash on a 5 kg Stinger — 1500 N·s ≈ 300 m/s.
-                dash(&mut vel, forward * 1500.0);
-                cooldown.0 = 2.0;
-                info!("P{} taunt", ship.player_slot + 1);
+                // shpzfpst.cpp activate_special: spawn ZoqFotPikTongue
+                // at dist=39 ahead of ship; it's a ship-attached
+                // SpaceObject that ticks for 6 frames (~0.3 s) doing
+                // specialDamage per tick. Licking=0 (set in .ini) →
+                // damage stays positive (flat damage). We don't have
+                // ship-attached damage objects yet — approximate with
+                // a short-lived damage zone in front of the ship.
+                let tip = pos.0 + forward * 39.0;
+                spawn_damage_zone(
+                    &mut commands,
+                    Some(entity),
+                    tip,
+                    20.0,
+                    12.0 * 20.0,
+                    0.3,
+                    Color::srgba(1.0, 0.5, 0.3, 0.55),
+                );
+                cooldown.0 = 6.0 / 20.0; // SpecialRate=6 → 0.3 s
+                info!("P{} tongue", ship.player_slot + 1);
             }
             ShipClass::Mmrxf => {
-                dash(&mut vel, forward * 3850.0);
-                cooldown.0 = 2.0;
+                // shpmmrxf.cpp activate_special: form-toggle between
+                // T_FORM (twin laser, slower) and Y_FORM (twin homing
+                // missiles, faster). The toggle copies form_data[form]
+                // → ship stats (speed_max/accel/turn/sprite/etc.).
+                // Mode-toggle primitive doesn't exist yet — TODO
+                // (shpmmrxf.cpp:435).
+                cooldown.0 = 0.1;
                 info!("P{} transform (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Orzne => {
-                dash(&mut vel, forward * 4500.0);
-                cooldown.0 = 2.0;
+                // shporzne.cpp activate_special: spawn an OrzMarine
+                // sub-entity (costs 1 crew) that flies out, attaches
+                // to the nearest enemy, and drains crew on contact.
+                // Sub-entity AI primitive doesn't exist — TODO
+                // (shporzne.cpp:564). The same special also drives the
+                // turret-aim controls (left/right while held) but our
+                // turret isn't independent. Placeholder: burn 1 crew
+                // to mirror the canonical cost.
+                if crew.current > 1 {
+                    crew.current -= 1;
+                }
+                cooldown.0 = 12.0 / 20.0; // SpecialRate=12 → 0.6 s
                 info!("P{} marines (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Slypr => {
-                // Canonical Slylandro Probe special: harvest a nearby
-                // asteroid to instantly refill the battery — the ship's
-                // *only* way to refuel. There are no asteroids in the
-                // arena yet (and no battery resource either; we just
-                // track Crew), so this is a no-op with a log line.
-                // Lights up properly once the battery system + asteroid
-                // bodies land in M5.
-                cooldown.0 = 1.0;
+                // shpslypr.cpp: the Slylandro Probe's only refill is
+                // harvesting an asteroid (collision-based). There are
+                // no asteroids in the arena yet — TODO when
+                // mcbodies-style world bodies arrive. No-op.
+                cooldown.0 = 20.0 / 20.0; // SpecialRate=20 → 1 s
                 info!("P{} harvest (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Umgdr => {
-                // Anti-grav slingshot — reverse impulse. 4000 N·s
-                // on an 8 kg Drone ≈ 500 m/s backwards. First
-                // negative-direction dash; cleanly the same shape
-                // as positive ones thanks to the impulse closure.
-                dash(&mut vel, -forward * 4000.0);
-                cooldown.0 = 2.0;
-                info!("P{} anti-grav", ship.player_slot + 1);
+                // shpumgdr.cpp activate_special: a Newtonian slingshot
+                // — `vel = 0; pos -= unit_vector(angle) * size.x * 2`.
+                // It's not a thrust impulse, it's a *teleport* of 2·size
+                // backwards plus a hard stop. We model size.x as the
+                // collider diameter ≈ 24, so 2·size.x ≈ 48 units back.
+                pos.0 -= forward * 48.0;
+                vel.0 = Vec2::ZERO;
+                cooldown.0 = 2.0 / 20.0; // SpecialRate=2 → 0.1 s
+                info!("P{} anti-grav slingshot", ship.player_slot + 1);
             }
             ShipClass::Meltr => {
-                dash(&mut vel, forward * 3600.0);
-                cooldown.0 = 2.0;
+                // shpmeltr.cpp activate_special: forward MelnormeSpecial
+                // — a confusion shot that disables the target's
+                // controls for specialFrames frames. Disable-input
+                // primitive doesn't exist — TODO (shpmeltr.cpp:1215).
+                // Placeholder: forward dash so the button does
+                // *something* until the real ability lands.
+                vel.0 += forward * (120.0 * SC2_VEL_SCALE) / ship.stats.mass.max(0.0001) * 0.2;
+                cooldown.0 = 20.0 / 20.0; // SpecialRate=20 → 1 s
                 info!("P{} confusion (placeholder)", ship.player_slot + 1);
             }
         }
