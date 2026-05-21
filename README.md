@@ -70,7 +70,7 @@ Class index (same number = same ship for both players):
 | 9 / F9  | Pkunk Fury          | Fast forward fire, phase-shift invuln (1 s) |
 | 0 / F10 | Ilwrath Avenger     | Flamethrower, cloak invuln (2.5 s) |
 | ⇧+1 / ⇧+F1 | Thraddash Torch    | Forward bolt, afterburner dash |
-| ⇧+2 / ⇧+F2 | VUX Intruder       | Slow limpet, hit-and-stop brake |
+| ⇧+2 / ⇧+F2 | VUX Intruder       | **Mass-transferring limpets** (target gets heavier per hit), hit-and-stop brake |
 | ⇧+3 / ⇧+F3 | Supox Blade        | Plasma grenade, direction-aware strafe |
 | ⇧+4 / ⇧+F4 | Kohr-Ah Marauder   | Cleansing flame, **F.R.I.E.D. sawblade ring** (1.5 s AoE) |
 | ⇧+5 / ⇧+F5 | Syreen Penetrator  | Razor shot, siren song (placeholder) |

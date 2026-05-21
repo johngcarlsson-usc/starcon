@@ -926,6 +926,9 @@ fn spawn_projectile(
             turn_rate: spec.homing_turn_rate,
         });
     }
+    if spec.is_limpet {
+        ent.insert(Limpet);
+    }
     world_dir
 }
 
@@ -999,7 +1002,28 @@ struct WeaponSpec {
     /// [Weapon] or [Special] section, scaled the same way the ship's
     /// hull turn rate is (`scale_turning` in mhelpers.cpp).
     homing_turn_rate: f32,
+    /// VUX-style limpet: on hit, instead of "deduct crew and despawn",
+    /// the projectile transfers its mass onto the target via a `Limpet`
+    /// marker — see handle_projectile_hits. Cumulative — every limpet
+    /// makes the target heavier, which through the existing physics
+    /// (F = m·a, terminal v = thrust / (m·damping)) slows acceleration
+    /// AND top speed without any special-case "slow effect" code.
+    is_limpet: bool,
 }
+
+/// Marker on a projectile spawned from a VUX-style limpet weapon. When
+/// such a projectile hits a non-owner ship, that ship's Avian Mass is
+/// incremented by `LIMPET_MASS` and the projectile despawns. No joint,
+/// no parent-child reparenting — the slowing is emergent from giving
+/// the same thruster force more mass to push.
+#[derive(Component, Debug)]
+pub struct Limpet;
+
+/// How much each limpet adds to the target's mass (kg). Tunable; canonical
+/// SC2 limpets are bulkier than the small fast projectiles I have today,
+/// so 3 kg per stick is fairly aggressive — three of them on a Spathi
+/// (mass 16 kg) is a 60 % heavier ship.
+pub const LIMPET_MASS: f32 = 3.0;
 
 fn primary_weapon(class: ShipClass) -> WeaponSpec {
     let forward = Vec2::new(0.0, 1.0);
@@ -1014,6 +1038,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 6.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Spael => WeaponSpec {
             // Spathi primary is canonically a short-range fast-firing
@@ -1029,6 +1054,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 5.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Yehte => WeaponSpec {
             local_direction: forward,
@@ -1039,6 +1065,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 5.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Chmav => WeaponSpec {
             local_direction: forward,
@@ -1049,6 +1076,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 4.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Kzedr => WeaponSpec {
             // Fusion bolt is a slow heavy shot with mild recoil
@@ -1061,6 +1089,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 10.0,
             recoil_impulse: 800.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Mycpo => WeaponSpec {
             // Mycon plasmoid — the iconic slow homing shot. Turn
@@ -1074,6 +1103,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 9.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 1.5,
+            is_limpet: false,
         },
         ShipClass::Shosc => WeaponSpec {
             // Shofixti gun — fast, low damage. Compensates for the
@@ -1086,6 +1116,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 4.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Arisk => WeaponSpec {
             // Arilou's auto-aiming halo. Approximated as a fast straight
@@ -1099,6 +1130,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 5.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Pkufu => WeaponSpec {
             // Pkunk fires a fast forward cone in the original. For now
@@ -1112,6 +1144,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 5.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Ilwav => WeaponSpec {
             // Ilwrath's flamethrower — short range, big damage.
@@ -1123,6 +1156,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 8.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Thrto => WeaponSpec {
             // Thraddash bullet — small, fast, modest damage.
@@ -1134,11 +1168,17 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 5.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Vuxin => WeaponSpec {
-            // VUX limpet — slow, sticky in canon; we treat it as a
-            // chunky slow projectile for now. Real "attach + drag
-            // velocity" lands with the joint-based mechanics in M3.
+            // VUX limpet — slow, sticky. On hit it transfers mass
+            // onto the target via the Limpet marker (see
+            // handle_projectile_hits). Multiple limpets stack, making
+            // the target progressively harder to accelerate and
+            // capping its top speed — exactly the canonical "you can't
+            // outrun the VUX once you're tagged" feel, emergent from
+            // the existing F = m·a physics, no special-case "slow"
+            // effect code.
             local_direction: forward,
             muzzle_offset: 26.0,
             speed: 350.0,
@@ -1147,6 +1187,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 9.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: true,
         },
         ShipClass::Supbl => WeaponSpec {
             // Supox plasma grenade — slow lob in canon; here a fast
@@ -1159,6 +1200,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 7.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Kohma => WeaponSpec {
             // Kohr-Ah cleansing flames — wide spread in canon; for
@@ -1172,6 +1214,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 9.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Syrpe => WeaponSpec {
             // Syreen razor — fast straight shot. The siren song
@@ -1184,6 +1227,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 5.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Andgu => WeaponSpec {
             // Androsynth bubble shot — slow, big, persistent.
@@ -1195,6 +1239,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 8.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Chebr => WeaponSpec {
             // Chenjesu crystal shard cluster — single shot for now.
@@ -1206,6 +1251,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 6.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Druma => WeaponSpec {
             // Druuge cannon — slow heavy shell. The classic Druuge
@@ -1222,6 +1268,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 10.0,
             recoil_impulse: 2000.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Utwju => WeaponSpec {
             // Utwig dual prong — fast forward shot.
@@ -1233,6 +1280,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 5.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Zfpst => WeaponSpec {
             // Zoq-Fot-Pik tongue lash — short, fast. Real tongue is a
@@ -1246,6 +1294,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 4.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Mmrxf => WeaponSpec {
             // X-Form lasers — fast forward beam shot.
@@ -1257,6 +1306,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 4.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Orzne => WeaponSpec {
             // Orz "flexible arm" — extendable cannon. For now a
@@ -1269,6 +1319,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 6.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Slypr => WeaponSpec {
             // Slylandro lightning — homes in canon; straight-line
@@ -1282,6 +1333,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 5.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Umgdr => WeaponSpec {
             // Umgah anti-grav cone — fan of short-range projectiles
@@ -1294,6 +1346,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 7.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
         ShipClass::Meltr => WeaponSpec {
             // Melnorme chargeable plasma — held-fire charges in canon.
@@ -1307,6 +1360,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             sprite_size: 6.0,
             recoil_impulse: 0.0,
             homing_turn_rate: 0.0,
+            is_limpet: false,
         },
     }
 }
@@ -1445,8 +1499,10 @@ fn handle_projectile_hits(
     mut commands: Commands,
     mut reader: MessageReader<CollisionStart>,
     projectiles: Query<&Projectile>,
+    limpets: Query<&Limpet>,
     shields: Query<&ShieldActive>,
     mut crews: Query<&mut Crew>,
+    mut masses: Query<&mut Mass>,
 ) {
     for event in reader.read() {
         let (proj_entity, other_entity) = if projectiles.get(event.collider1).is_ok() {
@@ -1466,6 +1522,7 @@ fn handle_projectile_hits(
             continue;
         }
 
+        // Damage bookkeeping (shield-aware).
         if let Ok(mut crew) = crews.get_mut(other_entity) {
             let factor = shields
                 .get(other_entity)
@@ -1480,6 +1537,24 @@ fn handle_projectile_hits(
                 crew.max,
                 if factor < 1.0 { " [shielded]" } else { "" }
             );
+        }
+
+        // Limpet attach: instead of "just despawn", the limpet's mass
+        // is transferred onto the target ship before the projectile
+        // dies. Avian recomputes thrust/acceleration response from
+        // the new Mass next tick, so the target accelerates more
+        // slowly *and* its terminal speed at full throttle drops
+        // (terminal_v = thrust / (mass · damping)). Stack hits → more
+        // mass → progressively immobilised target. No special-case
+        // "slow effect" timer needed; it's just heavier.
+        if limpets.get(proj_entity).is_ok() {
+            if let Ok(mut mass) = masses.get_mut(other_entity) {
+                mass.0 += LIMPET_MASS;
+                info!(
+                    "limpet stuck: target mass now {:.1} kg",
+                    mass.0
+                );
+            }
         }
         commands.entity(proj_entity).despawn();
     }
@@ -1628,6 +1703,7 @@ fn trigger_specials(
                     // .ini Special TurnRate=1 → scale_turning gives
                     // (2π/16) / (1+1) / 0.05 ≈ 3.93 rad/s.
                     homing_turn_rate: 3.93,
+            is_limpet: false,
                 };
                 spawn_projectile(&mut commands, entity, pos.0, rot, vel.0, &butt, 2);
                 cooldown.0 = 1.2;
