@@ -831,11 +831,14 @@ fn fire_weapons(
             CollisionEventsEnabled,
         ));
 
-        // Druuge cannon recoil: the heavy shell physically shoves the
-        // ship in the opposite direction. Demonstrates that a weapon's
-        // primary can affect its firer just by mutating velocity here.
-        if matches!(class, ShipClass::Druma) {
-            vel.0 -= world_dir * 120.0;
+        // Recoil: apply -impulse to the firing ship along world_dir.
+        // The Δv = impulse / mass formula is Newton's third law made
+        // explicit, so a heavy hull recoils less than a light one for
+        // the same cannon. Weapons that shouldn't recoil (lasers,
+        // self-propelled missiles, point defense) set recoil_impulse
+        // = 0.0 and the multiply costs nothing.
+        if spec.recoil_impulse > 0.0 {
+            vel.0 -= world_dir * spec.recoil_impulse / ship.stats.mass;
         }
     }
 }
@@ -898,6 +901,12 @@ struct WeaponSpec {
     lifetime: f32,
     color: Color,
     sprite_size: f32,
+    /// Recoil impulse imparted to the firing ship, in N·s. Real units
+    /// — applied as `Δv = -world_dir * recoil_impulse / ship_mass`, so
+    /// the same cannon kicks a light hull harder than a heavy one
+    /// (Newton's third law). Zero for low-recoil weapons (point defense,
+    /// lasers, projectile launchers with internal compensators).
+    recoil_impulse: f32,
 }
 
 fn primary_weapon(class: ShipClass) -> WeaponSpec {
@@ -911,6 +920,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 2.0,
             color: Color::srgb(1.0, 0.9, 0.4),
             sprite_size: 6.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Spael => WeaponSpec {
             // BUTT missile — fires backwards as the Eluder runs away.
@@ -920,6 +930,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 3.0,
             color: Color::srgb(1.0, 0.5, 0.7),
             sprite_size: 8.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Yehte => WeaponSpec {
             local_direction: forward,
@@ -928,6 +939,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.2,
             color: Color::srgb(0.8, 1.0, 0.4),
             sprite_size: 5.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Chmav => WeaponSpec {
             local_direction: forward,
@@ -936,14 +948,18 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 0.8,
             color: Color::srgb(0.4, 0.9, 1.0),
             sprite_size: 4.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Kzedr => WeaponSpec {
+            // Fusion bolt is a slow heavy shot with mild recoil
+            // (≈ 25 m/s on a mass-32 Dreadnought).
             local_direction: forward,
             muzzle_offset: 36.0,
             speed: 500.0,
             lifetime: 2.5,
             color: Color::srgb(0.6, 1.0, 0.6),
             sprite_size: 10.0,
+            recoil_impulse: 800.0,
         },
         ShipClass::Mycpo => WeaponSpec {
             local_direction: forward,
@@ -952,6 +968,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 3.5,
             color: Color::srgb(1.0, 0.5, 0.3),
             sprite_size: 9.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Shosc => WeaponSpec {
             // Shofixti gun — fast, low damage. Compensates for the
@@ -962,6 +979,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(0.6, 1.0, 1.0),
             sprite_size: 4.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Arisk => WeaponSpec {
             // Arilou's auto-aiming halo. Approximated as a fast straight
@@ -973,6 +991,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(0.5, 1.0, 0.5),
             sprite_size: 5.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Pkufu => WeaponSpec {
             // Pkunk fires a fast forward cone in the original. For now
@@ -984,6 +1003,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(1.0, 0.6, 1.0),
             sprite_size: 5.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Ilwav => WeaponSpec {
             // Ilwrath's flamethrower — short range, big damage.
@@ -993,6 +1013,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.0,
             color: Color::srgb(1.0, 0.4, 0.2),
             sprite_size: 8.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Thrto => WeaponSpec {
             // Thraddash bullet — small, fast, modest damage.
@@ -1002,6 +1023,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.4,
             color: Color::srgb(1.0, 0.7, 0.2),
             sprite_size: 5.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Vuxin => WeaponSpec {
             // VUX limpet — slow, sticky in canon; we treat it as a
@@ -1013,6 +1035,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 4.0,
             color: Color::srgb(0.4, 0.9, 0.3),
             sprite_size: 9.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Supbl => WeaponSpec {
             // Supox plasma grenade — slow lob in canon; here a fast
@@ -1023,6 +1046,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.8,
             color: Color::srgb(0.5, 0.8, 1.0),
             sprite_size: 7.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Kohma => WeaponSpec {
             // Kohr-Ah cleansing flames — wide spread in canon; for
@@ -1034,6 +1058,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(1.0, 0.55, 0.15),
             sprite_size: 9.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Syrpe => WeaponSpec {
             // Syreen razor — fast straight shot. The siren song
@@ -1044,6 +1069,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.6,
             color: Color::srgb(1.0, 0.85, 0.95),
             sprite_size: 5.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Andgu => WeaponSpec {
             // Androsynth bubble shot — slow, big, persistent.
@@ -1053,6 +1079,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 2.5,
             color: Color::srgb(0.7, 0.7, 1.0),
             sprite_size: 8.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Chebr => WeaponSpec {
             // Chenjesu crystal shard cluster — single shot for now.
@@ -1062,17 +1089,22 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(0.9, 0.8, 1.0),
             sprite_size: 6.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Druma => WeaponSpec {
-            // Druuge cannon — slow heavy shell. Firing this also
-            // recoils the ship backwards; see fire_weapons for the
-            // ship-side impulse.
+            // Druuge cannon — slow heavy shell. The classic Druuge
+            // identity is the recoil: firing physically shoves the
+            // ship backward. recoil_impulse value is in N·s, so a
+            // mass-18 Druuge gets ≈ 110 m/s of kick per shot, but a
+            // mass-2 Shofixti (if it had this cannon) would get 1000
+            // m/s — Newton's third law in action.
             local_direction: forward,
             muzzle_offset: 30.0,
             speed: 600.0,
             lifetime: 2.5,
             color: Color::srgb(1.0, 0.3, 0.1),
             sprite_size: 10.0,
+            recoil_impulse: 2000.0,
         },
         ShipClass::Utwju => WeaponSpec {
             // Utwig dual prong — fast forward shot.
@@ -1082,6 +1114,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(0.8, 0.7, 1.0),
             sprite_size: 5.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Zfpst => WeaponSpec {
             // Zoq-Fot-Pik tongue lash — short, fast. Real tongue is a
@@ -1093,6 +1126,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 0.6,
             color: Color::srgb(1.0, 0.7, 0.5),
             sprite_size: 4.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Mmrxf => WeaponSpec {
             // X-Form lasers — fast forward beam shot.
@@ -1102,6 +1136,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.0,
             color: Color::srgb(0.6, 0.8, 1.0),
             sprite_size: 4.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Orzne => WeaponSpec {
             // Orz "flexible arm" — extendable cannon. For now a
@@ -1112,6 +1147,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(0.8, 0.9, 0.6),
             sprite_size: 6.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Slypr => WeaponSpec {
             // Slylandro lightning — homes in canon; straight-line
@@ -1123,6 +1159,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 2.0,
             color: Color::srgb(1.0, 1.0, 0.5),
             sprite_size: 5.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Umgdr => WeaponSpec {
             // Umgah anti-grav cone — fan of short-range projectiles
@@ -1133,6 +1170,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 0.8,
             color: Color::srgb(0.5, 1.0, 0.7),
             sprite_size: 7.0,
+            recoil_impulse: 0.0,
         },
         ShipClass::Meltr => WeaponSpec {
             // Melnorme chargeable plasma — held-fire charges in canon.
@@ -1144,6 +1182,7 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             lifetime: 1.5,
             color: Color::srgb(0.9, 0.5, 1.0),
             sprite_size: 6.0,
+            recoil_impulse: 0.0,
         },
     }
 }
@@ -1307,24 +1346,43 @@ fn trigger_specials(
         }
 
         let forward = Vec2::new(-rot.sin, rot.cos);
+        let mass = ship.stats.mass.max(0.0001);
+        let perp = Vec2::new(-forward.y, forward.x);
+        // Helpers: every dash specifies the impulse in N·s. The Δv
+        // each ship gets is `impulse / mass`, so heavy hulls feel
+        // ponderous and light hulls leap. Brakes specify a maximum
+        // drag impulse so a Dreadnought *cannot* hit-and-stop the
+        // way a Stinger can.
+        let dash = |vel: &mut LinearVelocity, impulse: Vec2| {
+            vel.0 += impulse / mass;
+        };
+        let drag = |vel: &mut LinearVelocity, drag_impulse: f32| {
+            let speed = vel.0.length();
+            if speed > 0.0 {
+                let dv = (drag_impulse / mass).min(speed);
+                vel.0 -= vel.0 / speed * dv;
+            }
+        };
+
         match class {
             ShipClass::Earcr => {
-                // Forward dash — short impulse, 1.5 s cooldown.
-                vel.0 += forward * 350.0;
+                // Forward thruster burst — 5000 N·s puts Δv ≈ 357 m/s
+                // on a 14 kg Cruiser, ≈ 156 m/s on a 32 kg Dreadnought
+                // if it ever borrows the ability.
+                dash(&mut vel, forward * 5000.0);
                 cooldown.0 = 1.5;
                 info!("P{} dash", ship.player_slot + 1);
             }
             ShipClass::Spael => {
-                // Phase-jump backwards 200 units. The classic Spathi flee.
+                // Phase-jump backwards 200 units, then bleed a heavy
+                // drag impulse to "lose momentum in warp". Teleport
+                // itself is non-physical so the position write stays.
                 pos.0 -= forward * 200.0;
-                vel.0 *= 0.5; // bleed momentum so the warp feels distinct
+                drag(&mut vel, 8000.0);
                 cooldown.0 = 2.5;
                 info!("P{} warp", ship.player_slot + 1);
             }
             ShipClass::Yehte => {
-                // Yehat energy shield — 2 s of 25% incoming damage, 5 s
-                // cooldown. First special that affects *other* ships'
-                // attacks rather than this ship's motion.
                 commands.entity(entity).insert(ShieldActive {
                     remaining: 2.0,
                     damage_factor: 0.25,
@@ -1333,38 +1391,33 @@ fn trigger_specials(
                 info!("P{} shield up", ship.player_slot + 1);
             }
             ShipClass::Chmav | ShipClass::Kzedr | ShipClass::Mycpo => {
-                // TODO: tractor beam / fighters / plasmoid (M5+). For
-                // now: free brake — kill 80% of velocity. Gives the
-                // class something to do while the real abilities cook.
-                vel.0 *= 0.2;
+                // Placeholder brake — 4000 N·s of drag impulse so a
+                // heavy ship needs longer to halt than a light one,
+                // which is the whole point of asking the physics to
+                // do this work. Real abilities (tractor / fighters /
+                // plasmoid) land with M3 primitives.
+                drag(&mut vel, 4000.0);
                 cooldown.0 = 2.0;
             }
             ShipClass::Shosc => {
-                // Glory Device, simplified: an explosive forward charge
-                // that drops your own crew to 1 in exchange for a huge
-                // velocity impulse. Real Glory in SC2 detonates at any
-                // time killing both ships if you're close; we'll do
-                // the AoE explosion in M3 once we have damage zones.
-                vel.0 += forward * 700.0;
+                // Glory charge — 2000 N·s on a 2 kg Scout gives a
+                // 1000 m/s sprint, the lightest hull and the
+                // hardest impulse together. Real Glory AoE comes
+                // with damage zones in M3.
+                dash(&mut vel, forward * 2000.0);
                 cooldown.0 = 3.0;
                 info!("P{} glory charge", ship.player_slot + 1);
             }
             ShipClass::Arisk => {
-                // Hyperspace teleport. Canonical Arilou jump is to a
-                // random arena spot; without an RNG resource we jump
-                // a fixed long distance perpendicular to current
-                // heading, which gives a clean "where did they go"
-                // disengage that's deterministic for rollback.
-                let perp = Vec2::new(-forward.y, forward.x);
+                // Pure teleport — non-physical, position write is
+                // the only correct primitive. Velocity zeroed because
+                // hyperspace cancels prior momentum in lore.
                 pos.0 += perp * 350.0;
                 vel.0 = Vec2::ZERO;
                 cooldown.0 = 3.0;
                 info!("P{} hyperspace", ship.player_slot + 1);
             }
             ShipClass::Pkufu => {
-                // Phase shift — temporary invulnerability. Same
-                // ShieldActive component the Yehat shield uses, but
-                // damage_factor = 0 means total invuln for 1 s.
                 commands.entity(entity).insert(ShieldActive {
                     remaining: 1.0,
                     damage_factor: 0.0,
@@ -1373,11 +1426,6 @@ fn trigger_specials(
                 info!("P{} phase shift", ship.player_slot + 1);
             }
             ShipClass::Ilwav => {
-                // Cloaking device — also invulnerability for now since
-                // we don't yet model "untargetable but visible" vs
-                // "invisible". M3 will split the two; the gameplay
-                // shape (Ilwrath ambushes you out of cloak) only
-                // needs the targeting-vs-rendering distinction.
                 commands.entity(entity).insert(ShieldActive {
                     remaining: 2.5,
                     damage_factor: 0.0,
@@ -1386,29 +1434,22 @@ fn trigger_specials(
                 info!("P{} cloak", ship.player_slot + 1);
             }
             ShipClass::Thrto => {
-                // Afterburner — strong forward impulse plus a damage
-                // multiplier (modelled as a longer dash) so chasing
-                // a ship into your own contrail is the thematic
-                // payoff once we add trail entities in M3.
-                vel.0 += forward * 500.0;
+                // Afterburner burst — 3500 N·s gives a 7 kg Torch
+                // ≈ 500 m/s sprint.
+                dash(&mut vel, forward * 3500.0);
                 cooldown.0 = 2.0;
                 info!("P{} afterburner", ship.player_slot + 1);
             }
             ShipClass::Vuxin => {
-                // VUX limpet drag is canonically applied to enemies,
-                // not the VUX itself — needs a projectile-with-
-                // attachment-joint. Placeholder: heavy hit-and-stop
-                // (kills 90% velocity) which roughly models the VUX
-                // muscling into close-range bombardment.
-                vel.0 *= 0.1;
+                // VUX hit-and-stop — heavy drag (5000 N·s) brakes a
+                // 10 kg Intruder by ≈ 500 m/s. Limpet attachment is
+                // M3 work.
+                drag(&mut vel, 5000.0);
                 cooldown.0 = 2.0;
             }
             ShipClass::Supbl => {
-                // Supox 4-way strafe in canon. Without a strafe-mode
-                // toggle component, special just gives a strong
-                // sideways impulse. Hold direction matters: turning
-                // left makes you strafe left, right makes you strafe
-                // right (picks current turn-input sign).
+                // Strafe — hold L or R during the special to pick
+                // sideways direction. 5600 N·s impulse perpendicular.
                 let dir = if input.pressed(input::INPUT_LEFT) {
                     1.0
                 } else if input.pressed(input::INPUT_RIGHT) {
@@ -1416,68 +1457,46 @@ fn trigger_specials(
                 } else {
                     0.0
                 };
-                let perp = Vec2::new(-forward.y, forward.x);
-                vel.0 += perp * dir * 400.0;
-                cooldown.0 = 1.0;
                 if dir != 0.0 {
+                    dash(&mut vel, perp * dir * 5600.0);
                     info!("P{} strafe", ship.player_slot + 1);
                 }
+                cooldown.0 = 1.0;
             }
             ShipClass::Kohma => {
-                // Kohr-Ah cleansing saw blades: drop a one-shot
-                // ring of crew damage around the ship. Without an
-                // AoE damage zone primitive, we approximate with a
-                // strong sphere of impulse on nearby bodies (push).
-                // Real implementation hooks into the field-effect
-                // pattern (see docs/EXTENSIBILITY.md).
-                vel.0 *= 0.0; // anchor while spinning sawblades, canon
+                // Anchor placeholder — apply enough drag impulse to
+                // stop a 20 kg Marauder mid-flight (20 000 N·s caps
+                // out at "stop completely" via the drag closure).
+                drag(&mut vel, 20_000.0);
                 cooldown.0 = 3.0;
                 info!("P{} sawblades (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Syrpe => {
-                // Syreen siren song saps crew off the *other* ship.
-                // Needs to know about other ships (system query
-                // beyond the per-ship for-loop). Placeholder uses
-                // the same brake-anchor as Kohr-Ah for now.
-                vel.0 *= 0.0;
+                drag(&mut vel, 20_000.0);
                 cooldown.0 = 4.0;
                 info!("P{} siren song (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Andgu => {
-                // Androsynth Blazer comet — a long high-speed forward
-                // dash. Real Blazer is a held-mode toggle that turns
-                // the ship into a ramming missile; until we model
-                // toggle-modes, this gives the right "fast straight
-                // line" feel for a single charge.
-                vel.0 += forward * 650.0;
+                // Blazer-comet — 5850 N·s on a 9 kg Guardian for
+                // a 650 m/s sprint.
+                dash(&mut vel, forward * 5850.0);
                 cooldown.0 = 3.0;
                 info!("P{} comet", ship.player_slot + 1);
             }
             ShipClass::Chebr => {
-                // Chenjesu DOGI mines drift around dropping damage
-                // zones. Without sub-entity AI yet, use a brake-and-
-                // anchor placeholder so the special button does
-                // something visible.
-                vel.0 *= 0.0;
+                drag(&mut vel, 20_000.0);
                 cooldown.0 = 3.5;
                 info!("P{} DOGI deploy (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Druma => {
-                // Druuge ship-jump — short forward impulse. The
-                // recoil-from-firing-main-weapon is the more iconic
-                // ability and that lives in fire_weapons (see the
-                // Druma arm there once we add it).
-                vel.0 += forward * 250.0;
+                // Ship-jump thruster — 4500 N·s on an 18 kg Mauler
+                // ≈ 250 m/s. The iconic cannon recoil lives in
+                // fire_weapons via spec.recoil_impulse.
+                dash(&mut vel, forward * 4500.0);
                 cooldown.0 = 1.0;
                 info!("P{} ship jump", ship.player_slot + 1);
             }
             ShipClass::Utwju => {
-                // Utwig ricochet shield — 2 s of zero damage taken AND
-                // any projectile that would have hit bounces away. We
-                // get the zero-damage half from ShieldActive(0.0); the
-                // bounce-back is implicit because the projectile is
-                // still a kinematic body and Avian's contact response
-                // handles the reflection.
                 commands.entity(entity).insert(ShieldActive {
                     remaining: 2.0,
                     damage_factor: 0.0,
@@ -1486,52 +1505,38 @@ fn trigger_specials(
                 info!("P{} ricochet shield", ship.player_slot + 1);
             }
             ShipClass::Zfpst => {
-                // Zoq-Fot-Pik taunt: provoke the enemy. Real taunt
-                // doesn't change much beyond morale and a sound effect.
-                // For now a small forward dash so the special is at
-                // least visibly something.
-                vel.0 += forward * 300.0;
+                // Taunt-dash on a 5 kg Stinger — 1500 N·s ≈ 300 m/s.
+                dash(&mut vel, forward * 1500.0);
                 cooldown.0 = 2.0;
                 info!("P{} taunt", ship.player_slot + 1);
             }
             ShipClass::Mmrxf => {
-                // Mmrnmhrm X↔Y form swap. Needs class mutation +
-                // re-deriving ShipPhysicsDerived, which requires
-                // commands access in the right shape — saved for M3.
-                // For now: forward dash as the "transform" visual cue.
-                vel.0 += forward * 350.0;
+                dash(&mut vel, forward * 3850.0);
                 cooldown.0 = 2.0;
                 info!("P{} transform (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Orzne => {
-                // Orz space marines need sub-entity AI (carrier-class
-                // hosts launching their own bodies). Placeholder dash.
-                vel.0 += forward * 300.0;
+                dash(&mut vel, forward * 4500.0);
                 cooldown.0 = 2.0;
                 info!("P{} marines (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Slypr => {
-                // Slylandro Probe self-destructs in canon. Until we have
-                // AoE damage, use a teleport like Arilou.
-                let perp = Vec2::new(-forward.y, forward.x);
                 pos.0 += perp * 400.0;
                 vel.0 = Vec2::ZERO;
                 cooldown.0 = 3.0;
                 info!("P{} probe jump (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Umgdr => {
-                // Umgah anti-grav slingshot — accelerates the ship
-                // *backwards* sharply. Maps cleanly to a reverse
-                // impulse, which is a fresh dispatch shape (every
-                // other special goes forward).
-                vel.0 -= forward * 500.0;
+                // Anti-grav slingshot — reverse impulse. 4000 N·s
+                // on an 8 kg Drone ≈ 500 m/s backwards. First
+                // negative-direction dash; cleanly the same shape
+                // as positive ones thanks to the impulse closure.
+                dash(&mut vel, -forward * 4000.0);
                 cooldown.0 = 2.0;
                 info!("P{} anti-grav", ship.player_slot + 1);
             }
             ShipClass::Meltr => {
-                // Melnorme confusion ray needs to affect enemy controls;
-                // beyond the per-ship loop. Placeholder dash.
-                vel.0 += forward * 300.0;
+                dash(&mut vel, forward * 3600.0);
                 cooldown.0 = 2.0;
                 info!("P{} confusion (placeholder)", ship.player_slot + 1);
             }
