@@ -20,8 +20,9 @@ use bevy::prelude::*;
 
 use crate::input;
 use crate::ship::{
-    spawn_attached_damage_zone, spawn_beam, spawn_damage_zone, Barrel, Battery, Crew, Homing,
-    Limpet, PointDefenseActive, Projectile, ShieldActive, Ship, SpecialCooldown, WeaponCooldown,
+    spawn_attached_damage_zone, spawn_beam, spawn_damage_zone, spawn_tractor, Barrel, Battery,
+    Crew, DamageToBattery, Homing, Invisible, Limpet, PointDefenseActive, Projectile,
+    ShieldActive, Ship, SpecialCooldown, WeaponCooldown,
 };
 
 /// Per-ship behaviour manifest. Present on entities that have been
@@ -108,6 +109,26 @@ pub enum AbilityKind {
     /// damaging the nearest enemy along its ray per tick. Canonical
     /// Chmmr laser, VUX laser, Arilou auto-aim halo.
     SpawnBeams { beams: Vec<BeamSpec> },
+
+    /// Spawn a TractorBeam — pulls (or pushes) the nearest enemy in
+    /// range. Canonical Chmmr Avatar tractor (shpchmav.cpp:87).
+    SpawnTractor {
+        local_origin: Vec2,
+        range: f32,
+        force_per_tick: f32,
+        color: Color,
+        width: f32,
+        duration_s: f32,
+    },
+
+    /// Mark the firer `Invisible` for a duration — drops homing locks
+    /// and auto-aim beams. Canonical Ilwrath cloak (shpilwav.cpp).
+    GrantInvisibility { duration_s: f32 },
+
+    /// Mark the firer as converting incoming projectile damage to
+    /// battery for a duration. Canonical Utwig fortitude
+    /// (shputwju.cpp:96, `batt += normal` while special_recharge > 0).
+    GrantDamageToBattery { duration_s: f32, conversion: f32 },
 
     /// Spawn a stationary damage zone at the firer's pose. `offset` is
     /// ship-local. `source_self` makes the zone immune to the firer
@@ -335,6 +356,41 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
                     b.width,
                 );
             }
+        }
+        AbilityKind::SpawnTractor {
+            local_origin,
+            range,
+            force_per_tick,
+            color,
+            width,
+            duration_s,
+        } => {
+            spawn_tractor(
+                ctx.commands,
+                ctx.entity,
+                *local_origin,
+                *range,
+                *force_per_tick,
+                *color,
+                *width,
+                *duration_s,
+            );
+        }
+        AbilityKind::GrantInvisibility { duration_s } => {
+            ctx.commands.entity(ctx.entity).insert(Invisible {
+                remaining: *duration_s,
+            });
+            info!("P{} cloaked", slot);
+        }
+        AbilityKind::GrantDamageToBattery {
+            duration_s,
+            conversion,
+        } => {
+            ctx.commands.entity(ctx.entity).insert(DamageToBattery {
+                remaining: *duration_s,
+                conversion: *conversion,
+            });
+            info!("P{} fortitude up", slot);
         }
         AbilityKind::GrantPointDefense {
             range,

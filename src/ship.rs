@@ -583,6 +583,9 @@ impl Plugin for ShipPlugin {
                 tick_damage_zones,
                 tick_attached_damage_zones,
                 tick_beams,
+                tick_tractors,
+                tick_invisible,
+                tick_damage_to_battery,
                 handle_projectile_hits,
                 handle_ship_collisions,
             ),
@@ -966,8 +969,19 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 1.0 / 20.0,
             },
             special: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "Chmmr tractor beam (shpchmav.cpp:87)" },
-                cooldown_s: 2.0,
+                // .ini Special: Force=30 → 30·9.6 ≈ 288 N·s/tick.
+                // Range=100 → 4000 u. Lives long enough for the
+                // 0.05 s cooldown to keep refreshing while held.
+                kind: AbilityKind::SpawnTractor {
+                    local_origin: Vec2::ZERO,
+                    range: 100.0 * SC2_RANGE_SCALE,
+                    force_per_tick: 30.0 * SC2_VEL_SCALE,
+                    color: Color::srgba(0.6, 0.9, 1.0, 0.55),
+                    width: 1.5,
+                    duration_s: 1.0 / 20.0,
+                },
+                // SpecialRate=0 → fire every frame; floor at one frame.
+                cooldown_s: 1.0 / 20.0,
             },
         }),
 
@@ -1105,9 +1119,10 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             },
         }),
 
-        // Ilwrath Avenger — short-range hit + cloak. Real cloak
-        // (invisibility) needs InvisibleTo primitive — TODO; the
-        // placeholder is a brief shield, matching the prior behaviour.
+        // Ilwrath Avenger — short-range hit + real cloak. While
+        // Invisible is on the ship, homing missiles drop their lock
+        // and auto-aim beams skip it. Canonical isInvisible() →
+        // 1.0 when cloak_frame ≥ 300 (shpilwav.cpp:64).
         ShipClass::Ilwav => Some(ShipAbilities {
             primary: AbilitySpec {
                 kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
@@ -1125,7 +1140,7 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 1.0 / 20.0,
             },
             special: AbilitySpec {
-                kind: AbilityKind::GrantShield { duration_s: 2.5, damage_factor: 0.0 },
+                kind: AbilityKind::GrantInvisibility { duration_s: 2.5 },
                 cooldown_s: 7.0 / 20.0,
             },
         }),
@@ -1400,9 +1415,13 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 7.0 / 20.0,
             },
             special: AbilitySpec {
-                // Real fortitude turns damage into battery — needs
-                // damage-to-battery primitive (TODO shputwju.cpp:96).
-                kind: AbilityKind::GrantShield { duration_s: 2.0, damage_factor: 0.0 },
+                // shputwju.cpp:96: while special_recharge > 0,
+                // `batt += normal` instead of crew damage. Conversion
+                // is 1.0 (1 damage absorbed → 1 battery gained).
+                kind: AbilityKind::GrantDamageToBattery {
+                    duration_s: 2.0,
+                    conversion: 1.0,
+                },
                 cooldown_s: 7.0 / 20.0,
             },
         }),
@@ -1802,6 +1821,73 @@ pub struct Barrel {
     pub direction: Vec2,
 }
 
+/// Force-applied-to-other primitive — Chmmr Avatar tractor.
+/// Owned by a firing ship; each tick `tick_tractors` finds the
+/// nearest non-friendly ship within `range` of `local_origin` and
+/// applies `force_per_tick / target_mass` units of velocity toward
+/// the owner. Despawns when `remaining` reaches zero.
+///
+/// Generic enough for future uses: any "drag X toward me" or "push X
+/// away" mechanic is `force_per_tick` with sign and direction.
+#[derive(Component, Debug)]
+pub struct TractorBeam {
+    pub owner: Entity,
+    pub local_origin: Vec2,
+    pub range: f32,
+    /// Newton·seconds per tick. Positive = pull toward owner;
+    /// negative = push away. Δv on target = force_per_tick / target_mass.
+    pub force_per_tick: f32,
+    pub color: Color,
+    pub width: f32,
+    pub remaining: f32,
+}
+
+pub(crate) fn spawn_tractor(
+    commands: &mut Commands,
+    owner: Entity,
+    local_origin: Vec2,
+    range: f32,
+    force_per_tick: f32,
+    color: Color,
+    width: f32,
+    duration_s: f32,
+) {
+    commands.spawn((
+        TractorBeam {
+            owner,
+            local_origin,
+            range,
+            force_per_tick,
+            color,
+            width,
+            remaining: duration_s,
+        },
+        Sprite::from_color(color, Vec2::new(width * 2.0, range)),
+        Transform::from_translation(Vec3::ZERO),
+    ));
+}
+
+/// Per-tick state for "this ship cannot be targeted" (Ilwrath cloak).
+/// Homing missiles and auto-aim beams skip entities carrying this
+/// component during target acquisition. Projectile collisions and
+/// ship-ship rams still hurt — cloak hides from auto-targeting, not
+/// from physics.
+#[derive(Component, Debug)]
+pub struct Invisible {
+    pub remaining: f32,
+}
+
+/// Per-tick state for "incoming damage tops up battery instead of
+/// hurting crew" (Utwig fortitude). While present, the projectile-hit
+/// handler routes `floor(damage · conversion)` to `Battery::current`
+/// (clamped to max) and zeroes the crew loss. Collisions are not
+/// affected — fortitude buffers projectile damage, not rams.
+#[derive(Component, Debug)]
+pub struct DamageToBattery {
+    pub remaining: f32,
+    pub conversion: f32,
+}
+
 /// Sustained-line damage primitive — Chmmr / Arilou / VUX laser.
 /// Owned by a firing ship; while the component exists, every tick
 /// `tick_beams` casts a ray from `local_origin` (in the owner's
@@ -1920,7 +2006,9 @@ fn tick_projectile_lifetime(
 fn steer_homing_projectiles(
     time: Res<Time<Physics>>,
     mut projectiles: Query<(&Projectile, &Position, &mut LinearVelocity, &mut Homing)>,
-    ships: Query<(Entity, &Ship, &Position), Without<Projectile>>,
+    // `Without<Invisible>` so a cloaked Ilwrath drops missile locks
+    // (canonical: isInvisible() filters target acquisition).
+    ships: Query<(Entity, &Ship, &Position), (Without<Projectile>, Without<Invisible>)>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -2044,7 +2132,9 @@ fn handle_projectile_hits(
     projectiles: Query<&Projectile>,
     limpets: Query<&Limpet>,
     shields: Query<&ShieldActive>,
+    damage_to_batt: Query<&DamageToBattery>,
     mut crews: Query<&mut Crew>,
+    mut batteries: Query<&mut Battery>,
     mut masses: Query<&mut Mass>,
 ) {
     for event in reader.read() {
@@ -2065,13 +2155,26 @@ fn handle_projectile_hits(
             continue;
         }
 
-        // Damage bookkeeping (shield-aware).
-        if let Ok(mut crew) = crews.get_mut(other_entity) {
-            let factor = shields
-                .get(other_entity)
-                .map(|s| s.damage_factor)
-                .unwrap_or(1.0);
-            let damage = ((proj.damage as f32 * factor).round() as i32).max(0);
+        // Shield first; fortitude (DamageToBattery) routes the post-
+        // shield damage into the target's battery instead of its
+        // crew. Order matches the canonical Utwig path: shield
+        // multiplies first, then fortitude consumes what's left.
+        let factor = shields
+            .get(other_entity)
+            .map(|s| s.damage_factor)
+            .unwrap_or(1.0);
+        let damage = ((proj.damage as f32 * factor).round() as i32).max(0);
+
+        if let Ok(d2b) = damage_to_batt.get(other_entity) {
+            if let Ok(mut batt) = batteries.get_mut(other_entity) {
+                let gain = (damage as f32 * d2b.conversion).round() as i32;
+                batt.current = (batt.current + gain).min(batt.max);
+                info!(
+                    "hit: fortitude absorbed {} dmg → +{} batt ({}/{})",
+                    damage, gain, batt.current, batt.max
+                );
+            }
+        } else if let Ok(mut crew) = crews.get_mut(other_entity) {
             crew.current = (crew.current - damage).max(0);
             info!(
                 "hit: -{} crew (now {}/{}){}",
@@ -2177,7 +2280,11 @@ fn tick_point_defense(
     time: Res<Time<Physics>>,
     mut firers: Query<(Entity, &Ship, &Position, &mut PointDefenseActive)>,
     projectiles: Query<(Entity, &Position, &Projectile)>,
-    mut ships: Query<(Entity, &Ship, &Position, &mut Crew), Without<PointDefenseActive>>,
+    // PD damage skips invisible enemies — they're not auto-targetable.
+    mut ships: Query<
+        (Entity, &Ship, &Position, &mut Crew),
+        (Without<PointDefenseActive>, Without<Invisible>),
+    >,
     shields: Query<&ShieldActive>,
 ) {
     let dt = time.delta_secs();
@@ -2289,7 +2396,9 @@ fn tick_beams(
     time: Res<Time<Physics>>,
     mut beams: Query<(Entity, &mut Beam, &mut Transform, &mut Sprite)>,
     owners: Query<(&Ship, &Position, &Rotation)>,
-    mut ships: Query<(Entity, &Ship, &Position, &mut Crew)>,
+    // Beams skip invisible ships during target search (cloaked Ilwrath
+    // can't be hit by an auto-aim laser).
+    mut ships: Query<(Entity, &Ship, &Position, &mut Crew), Without<Invisible>>,
     shields: Query<&ShieldActive>,
 ) {
     let dt = time.delta_secs();
@@ -2390,6 +2499,113 @@ fn tick_beams(
         beam.remaining -= dt;
         if beam.remaining <= 0.0 {
             commands.entity(beam_entity).despawn();
+        }
+    }
+}
+
+/// Pull (or push) the nearest enemy in range toward (or away from)
+/// each tractor's owner. Despawns when the owner dies or the tractor
+/// runs out of remaining time. Updates the sprite each tick to span
+/// owner-origin → target so the player sees the connection.
+fn tick_tractors(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut tractors: Query<(Entity, &mut TractorBeam, &mut Transform, &mut Sprite)>,
+    owners: Query<(&Ship, &Position, &Rotation)>,
+    mut ships: Query<(Entity, &Ship, &Position, &mut LinearVelocity, &Mass), Without<Invisible>>,
+) {
+    let dt = time.delta_secs();
+    for (tractor_entity, mut tractor, mut tractor_xf, mut sprite) in &mut tractors {
+        let Ok((owner_ship, owner_pos, owner_rot)) = owners.get(tractor.owner) else {
+            commands.entity(tractor_entity).despawn();
+            continue;
+        };
+        let world_origin = owner_pos.0
+            + Vec2::new(
+                tractor.local_origin.x * owner_rot.cos - tractor.local_origin.y * owner_rot.sin,
+                tractor.local_origin.x * owner_rot.sin + tractor.local_origin.y * owner_rot.cos,
+            );
+        let r2 = tractor.range * tractor.range;
+
+        // Find nearest non-friendly, non-invisible ship in range.
+        let mut best: Option<(Entity, Vec2, f32)> = None;
+        for (e, s, p, _, _) in &ships {
+            if s.player_slot == owner_ship.player_slot {
+                continue;
+            }
+            let d2 = (p.0 - world_origin).length_squared();
+            if d2 > r2 {
+                continue;
+            }
+            if best.map_or(true, |(_, _, bd)| d2 < bd) {
+                best = Some((e, p.0, d2));
+            }
+        }
+
+        let hit_endpoint = if let Some((target_e, target_pos, _)) = best {
+            // Apply the force as a velocity nudge toward the owner.
+            // Δv = force_per_tick / target_mass — heavy ships drift
+            // less per tick (correct Newtonian behaviour).
+            if let Ok((_, _, _, mut vel, mass)) = ships.get_mut(target_e) {
+                let to_owner = world_origin - target_pos;
+                let len = to_owner.length();
+                if len > 1e-3 {
+                    let dir = to_owner / len;
+                    let m = mass.0.max(0.0001);
+                    vel.0 += dir * (tractor.force_per_tick / m);
+                }
+            }
+            target_pos
+        } else {
+            // No target → sprite shows the full range as a faint hint.
+            world_origin + Vec2::Y * tractor.range
+        };
+
+        let mid = (world_origin + hit_endpoint) * 0.5;
+        let delta = hit_endpoint - world_origin;
+        let len = delta.length().max(1.0);
+        let angle = delta.y.atan2(delta.x) - std::f32::consts::FRAC_PI_2;
+        tractor_xf.translation = mid.extend(0.3);
+        tractor_xf.rotation = Quat::from_rotation_z(angle);
+        sprite.custom_size = Some(Vec2::new(tractor.width * 2.0, len));
+        sprite.color = tractor.color;
+
+        tractor.remaining -= dt;
+        if tractor.remaining <= 0.0 {
+            commands.entity(tractor_entity).despawn();
+        }
+    }
+}
+
+/// Tick down the `Invisible` timer and remove the component on expiry.
+/// Visual cloak rendering is a polish pass — for now, "invisible" is
+/// purely a targeting filter that homing missiles and auto-aim beams
+/// honour. The cloaked ship is still drawn at full brightness.
+fn tick_invisible(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut q: Query<(Entity, &mut Invisible)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut inv) in &mut q {
+        inv.remaining -= dt;
+        if inv.remaining <= 0.0 {
+            commands.entity(e).remove::<Invisible>();
+        }
+    }
+}
+
+/// Tick down the `DamageToBattery` timer and remove on expiry.
+fn tick_damage_to_battery(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut q: Query<(Entity, &mut DamageToBattery)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut d) in &mut q {
+        d.remaining -= dt;
+        if d.remaining <= 0.0 {
+            commands.entity(e).remove::<DamageToBattery>();
         }
     }
 }
