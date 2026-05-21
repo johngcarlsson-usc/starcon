@@ -401,6 +401,21 @@ pub struct ShieldActive {
     pub damage_factor: f32,
 }
 
+/// While present, the ship continuously fires a point-defense beam at
+/// any non-friendly projectile (and damages any non-friendly ship)
+/// inside `range`. Canonical Earthling Cruiser special — the .ini
+/// says Range=5 → 200 world units, Damage=1 per frame for Frames=100
+/// frames at 20 Hz ≈ 5 s. We use a shorter `remaining` and rely on
+/// `damage_per_tick` ticking at FixedUpdate rate.
+#[derive(Component, Debug)]
+pub struct PointDefenseActive {
+    pub remaining: f32,
+    pub range: f32,
+    /// Damage applied to each enemy ship still in range each tick.
+    /// Enemy *projectiles* in range are unconditionally despawned.
+    pub damage_per_tick: i32,
+}
+
 /// In-flight projectile. Owner is tracked so we can ignore self-hits.
 #[derive(Component, Debug)]
 pub struct Projectile {
@@ -492,6 +507,7 @@ impl Plugin for ShipPlugin {
                 tick_weapon_cooldown,
                 tick_special_cooldown,
                 tick_shield,
+                tick_point_defense,
                 fire_weapons.after(tick_weapon_cooldown),
                 trigger_specials.after(tick_special_cooldown),
                 tick_projectile_lifetime,
@@ -887,12 +903,13 @@ fn fire_weapons(
 
         let spec = primary_weapon(*class);
 
-        // SC2's [Weapon] Rate is in legacy 36 Hz ticks; convert to seconds.
-        let cooldown_secs = if ship.stats.weapon_rate > 0 {
-            ship.stats.weapon_rate as f32 / 36.0
-        } else {
-            0.25
-        };
+        // SC2 frame rate is 20 Hz. [Weapon] Rate is the number of
+        // frames *between* shots — so 10 → 10/20 = 0.5 s per shot,
+        // 2 shots/sec. WeaponRate=0 means "every frame" → machine-
+        // gun fire (Spathi cannon, Pkunk Fury, etc); clamp the
+        // minimum at one frame so the fixed-update can keep up.
+        const SC2_FRAME_RATE: f32 = 20.0;
+        let cooldown_secs = (ship.stats.weapon_rate as f32 / SC2_FRAME_RATE).max(1.0 / SC2_FRAME_RATE);
         cooldown.0 = cooldown_secs;
 
         let damage = ship.stats.weapon_damage.max(1);
@@ -1056,14 +1073,20 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
     let backward = Vec2::new(0.0, -1.0);
     match class {
         ShipClass::Earcr => WeaponSpec {
+            // Canonical EarthlingMissile (extends HomingMissile) — a
+            // slow-turning forward nuke. .ini: Velocity=80 → 768 u/s,
+            // Range=60 → 2400 u travel → 3.125 s lifetime, Damage=4
+            // (read from stats.weapon_damage at spawn), TurnRate=3 →
+            // (2π/16) / (3+1) / time_ratio = 1.96 rad/s. Slow enough
+            // to dodge but tracks once committed.
             local_direction: forward,
             muzzle_offset: 28.0,
-            speed: 700.0,
-            lifetime: 2.0,
+            speed: 768.0,
+            lifetime: 3.125,
             color: Color::srgb(1.0, 0.9, 0.4),
-            sprite_size: 6.0,
+            sprite_size: 7.0,
             recoil_impulse: 0.0,
-            homing_turn_rate: 0.0,
+            homing_turn_rate: 1.96,
             is_limpet: false,
         },
         ShipClass::Spael => WeaponSpec {
@@ -1645,6 +1668,68 @@ fn tick_shield(
     }
 }
 
+/// Earthling Cruiser point-defense beam. Each FixedUpdate, for every
+/// ship carrying `PointDefenseActive`:
+///   - Find every projectile within `range` whose owner is not this
+///     ship (and whose owner — if a ship — isn't on the same slot),
+///     and despawn it. This is the "shoots down incoming missiles"
+///     half of the canonical mechanic.
+///   - Find every ship within `range` on a different player_slot and
+///     deduct `damage_per_tick` crew (shield-aware via ShieldActive).
+///     That's the "fries the enemy too" half.
+///   - Decrement the timer; remove the component when expired.
+fn tick_point_defense(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut firers: Query<(Entity, &Ship, &Position, &mut PointDefenseActive)>,
+    projectiles: Query<(Entity, &Position, &Projectile)>,
+    mut ships: Query<(Entity, &Ship, &Position, &mut Crew), Without<PointDefenseActive>>,
+    shields: Query<&ShieldActive>,
+) {
+    let dt = time.delta_secs();
+    for (firer_entity, firer, firer_pos, mut beam) in &mut firers {
+        let r2 = beam.range * beam.range;
+
+        for (proj_entity, proj_pos, proj) in &projectiles {
+            if (proj_pos.0 - firer_pos.0).length_squared() > r2 {
+                continue;
+            }
+            // Don't blow up our own outgoing missiles.
+            if proj.owner == firer_entity {
+                continue;
+            }
+            commands.entity(proj_entity).despawn();
+        }
+
+        if beam.damage_per_tick > 0 {
+            for (ship_entity, ship, ship_pos, mut crew) in &mut ships {
+                if ship.player_slot == firer.player_slot {
+                    continue;
+                }
+                if (ship_pos.0 - firer_pos.0).length_squared() > r2 {
+                    continue;
+                }
+                let factor = shields
+                    .get(ship_entity)
+                    .map(|s| s.damage_factor)
+                    .unwrap_or(1.0);
+                let dmg = ((beam.damage_per_tick as f32 * factor).round() as i32).max(0);
+                if dmg > 0 {
+                    crew.current = (crew.current - dmg).max(0);
+                }
+            }
+        }
+
+        beam.remaining -= dt;
+        if beam.remaining <= 0.0 {
+            commands
+                .entity(firer_entity)
+                .remove::<PointDefenseActive>();
+            info!("P{} point defense offline", firer.player_slot + 1);
+        }
+    }
+}
+
 fn tick_special_cooldown(time: Res<Time<Physics>>, mut q: Query<&mut SpecialCooldown>) {
     let dt = time.delta_secs();
     for mut cd in &mut q {
@@ -1703,12 +1788,21 @@ fn trigger_specials(
 
         match class {
             ShipClass::Earcr => {
-                // Forward thruster burst — 5000 N·s puts Δv ≈ 357 m/s
-                // on a 14 kg Cruiser, ≈ 156 m/s on a 32 kg Dreadnought
-                // if it ever borrows the ability.
-                dash(&mut vel, forward * 5000.0);
-                cooldown.0 = 1.5;
-                info!("P{} dash", ship.player_slot + 1);
+                // Canonical Earthling Cruiser special: point-defense
+                // laser. While active, the ship instantly destroys
+                // any non-friendly projectile inside `range` and
+                // burns crew off any enemy ship in the same area.
+                // .ini stats: Range=5 → 200 world units, Damage=1
+                // per frame for Frames=100 (at 20 Hz ≈ 5 s lifetime).
+                // We use 1.5 s here to match the cooldown budget;
+                // the ability is "press button, defense up briefly".
+                commands.entity(entity).insert(PointDefenseActive {
+                    remaining: 1.5,
+                    range: 200.0,
+                    damage_per_tick: 1,
+                });
+                cooldown.0 = 3.0;
+                info!("P{} point defense online", ship.player_slot + 1);
             }
             ShipClass::Spael => {
                 // Canonical Spathi special: BUTT (Backward Utilizing
