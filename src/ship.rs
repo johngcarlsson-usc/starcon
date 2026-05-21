@@ -754,7 +754,148 @@ fn spawn_ship(
         ConstantTorque(0.0),
         CollisionEventsEnabled,
     );
-    commands.spawn((gameplay, visual, physics));
+    let mut entity = commands.spawn((gameplay, visual, physics));
+    // Opt this ship into the data-driven ability dispatcher when its
+    // class has a manifest. Otherwise, fall through to the per-class
+    // match arms in `fire_weapons` / `trigger_specials`. As classes
+    // get converted, this map grows and the match arms shrink.
+    if let Some(abilities) = abilities_for(class) {
+        entity.insert(abilities);
+    }
+}
+
+/// Per-class data manifest builder. Returning `None` keeps the ship on
+/// the legacy match-arm path. The numbers come straight from the
+/// canonical `shp*.cpp` / `.ini`, scaled with the same helpers as
+/// `primary_weapon` (SC2_VEL_SCALE, SC2_RANGE_SCALE, sc2_turning).
+///
+/// The intent is for every variant of `ShipClass` to return `Some(...)`
+/// here eventually; at that point `primary_weapon` / `trigger_specials`
+/// and the `ShipClass` match arms can be deleted.
+fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
+    use crate::ability::{AbilityKind, AbilitySpec, ShipAbilities, VolleySpec};
+    let forward = Vec2::new(0.0, 1.0);
+    let backward = Vec2::new(0.0, -1.0);
+    let single_barrel = |dir: Vec2, offset: f32| -> Vec<Barrel> {
+        vec![Barrel {
+            local_pos: dir * offset,
+            direction: dir,
+        }]
+    };
+    match class {
+        // Earthling Cruiser — homing nuke + point defense laser.
+        // shpearcr.cpp activate_weapon / activate_special.
+        ShipClass::Earcr => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles {
+                    volleys: vec![VolleySpec {
+                        barrels: single_barrel(forward, 28.0),
+                        random_spread_rad: 0.0,
+                        speed: 80.0 * SC2_VEL_SCALE,
+                        lifetime: (60.0 * SC2_RANGE_SCALE) / (80.0 * SC2_VEL_SCALE),
+                        color: Color::srgb(1.0, 1.0, 1.0),
+                        sprite_size: 16.0,
+                        sprite_path: Some("ships/earcr/sprites/shot_a01.png".into()),
+                        homing_turn_rate: sc2_turning(3.0),
+                        is_limpet: false,
+                        recoil_impulse: 0.0,
+                    }],
+                },
+                // WeaponRate=10 → 10/20 Hz = 0.5 s.
+                cooldown_s: 10.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::GrantPointDefense {
+                    // .ini Special: Range=5 → 5·40 = 200 world units,
+                    // Damage=1 per tick, Frames=100 → 5 s; we use a
+                    // shorter 1.5 s window to match the cooldown budget.
+                    range: 5.0 * SC2_RANGE_SCALE,
+                    damage_per_tick: 1,
+                    duration_s: 1.5,
+                },
+                cooldown_s: 3.0,
+            },
+        }),
+        // Spathi Eluder — forward cannon + BUTT homing back-missile.
+        // shpspael.cpp activate_weapon (forward Missile); special is
+        // the canonical BUTT spawned from the back (handled by trigger_
+        // specials originally; here it's just another SpawnProjectiles).
+        ShipClass::Spael => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles {
+                    volleys: vec![VolleySpec {
+                        barrels: single_barrel(forward, 22.0),
+                        random_spread_rad: 0.0,
+                        speed: 96.0 * SC2_VEL_SCALE,
+                        lifetime: (17.0 * SC2_RANGE_SCALE) / (96.0 * SC2_VEL_SCALE),
+                        color: Color::srgb(1.0, 1.0, 1.0),
+                        sprite_size: 8.0,
+                        sprite_path: Some("ships/spael/sprites/shot_a01.png".into()),
+                        homing_turn_rate: 0.0,
+                        is_limpet: false,
+                        recoil_impulse: 0.0,
+                    }],
+                },
+                // WeaponRate=0 → fire every frame, floor at 1 frame.
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles {
+                    volleys: vec![VolleySpec {
+                        barrels: single_barrel(backward, 22.0),
+                        random_spread_rad: 0.0,
+                        speed: 45.0 * SC2_VEL_SCALE,
+                        lifetime: (12.0 * SC2_RANGE_SCALE) / (45.0 * SC2_VEL_SCALE),
+                        color: Color::srgb(1.0, 1.0, 1.0),
+                        sprite_size: 12.0,
+                        sprite_path: Some("ships/spael/sprites/shot_b01.png".into()),
+                        // .ini Special TurnRate=1 → ≈ 3.93 rad/s.
+                        homing_turn_rate: sc2_turning(1.0),
+                        is_limpet: false,
+                        recoil_impulse: 0.0,
+                    }],
+                },
+                // SpecialRate=7 → 7/20 = 0.35 s.
+                cooldown_s: 7.0 / 20.0,
+            },
+        }),
+        // Yehat Terminator — twin forward missiles + shield.
+        // shpyehte.cpp activate_weapon (2 Missiles at ±24,14) /
+        // activate_special (shieldFrames += specialFrames; while >0
+        // handle_damage zeroes normal damage → full immunity).
+        ShipClass::Yehte => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles {
+                    volleys: vec![VolleySpec {
+                        barrels: vec![
+                            Barrel { local_pos: Vec2::new(-24.0, 14.0), direction: forward },
+                            Barrel { local_pos: Vec2::new( 24.0, 14.0), direction: forward },
+                        ],
+                        random_spread_rad: 0.0,
+                        speed: 80.0 * SC2_VEL_SCALE,
+                        lifetime: (12.0 * SC2_RANGE_SCALE) / (80.0 * SC2_VEL_SCALE),
+                        color: Color::srgb(1.0, 1.0, 1.0),
+                        sprite_size: 8.0,
+                        sprite_path: Some("ships/yehte/sprites/shot_a01_bmp.png".into()),
+                        homing_turn_rate: 0.0,
+                        is_limpet: false,
+                        recoil_impulse: 0.0,
+                    }],
+                },
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::GrantShield {
+                    // .ini Special Frames=500 → 25 s at 20 Hz.
+                    duration_s: 500.0 / 20.0,
+                    damage_factor: 0.0,
+                },
+                // SpecialRate=2 → 2/20 = 0.1 s.
+                cooldown_s: 2.0 / 20.0,
+            },
+        }),
+        _ => None,
+    }
 }
 
 fn load_rotation_frames(assets: &AssetServer, code: &str) -> Vec<Handle<Image>> {
@@ -937,16 +1078,22 @@ fn fire_weapons(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     assets: Res<AssetServer>,
-    mut q: Query<(
-        Entity,
-        &Ship,
-        &ShipClass,
-        &Position,
-        &Rotation,
-        &mut LinearVelocity,
-        &mut WeaponCooldown,
-        &mut Battery,
-    )>,
+    // `Without<ShipAbilities>` so ships that have been migrated to the
+    // data-driven dispatcher in `src/ability.rs` are skipped here —
+    // otherwise they'd fire twice (once per layer).
+    mut q: Query<
+        (
+            Entity,
+            &Ship,
+            &ShipClass,
+            &Position,
+            &Rotation,
+            &mut LinearVelocity,
+            &mut WeaponCooldown,
+            &mut Battery,
+        ),
+        Without<crate::ability::ShipAbilities>,
+    >,
 ) {
     for (entity, ship, class, pos, rot, mut vel, mut cooldown, mut battery) in &mut q {
         if cooldown.0 > 0.0 {
@@ -2157,17 +2304,21 @@ fn trigger_specials(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     assets: Res<AssetServer>,
-    mut q: Query<(
-        Entity,
-        &Ship,
-        &ShipClass,
-        &mut Position,
-        &Rotation,
-        &mut LinearVelocity,
-        &mut SpecialCooldown,
-        &mut Battery,
-        &mut Crew,
-    )>,
+    // Same skip-when-ability-driven gate as `fire_weapons`.
+    mut q: Query<
+        (
+            Entity,
+            &Ship,
+            &ShipClass,
+            &mut Position,
+            &Rotation,
+            &mut LinearVelocity,
+            &mut SpecialCooldown,
+            &mut Battery,
+            &mut Crew,
+        ),
+        Without<crate::ability::ShipAbilities>,
+    >,
 ) {
     for (entity, ship, class, mut pos, rot, mut vel, mut cooldown, mut battery, mut crew) in
         &mut q

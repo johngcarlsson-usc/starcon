@@ -1,3 +1,4 @@
+mod ability;
 mod hud;
 mod input;
 mod netplay;
@@ -51,6 +52,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.05)))
         .add_plugins((
             ship::ShipPlugin,
+            ability::AbilityPlugin,
             physics::PhysicsPlugin,
             input::InputPlugin,
             netplay::NetplayPlugin,
