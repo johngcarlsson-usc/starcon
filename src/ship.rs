@@ -481,7 +481,7 @@ pub struct DamageZone {
 /// gameplay marker). The sprite is a semi-transparent filled square
 /// the diameter of the zone; replace with a proper circle-outline
 /// shader in M7 polish.
-fn spawn_damage_zone(
+pub(crate) fn spawn_damage_zone(
     commands: &mut Commands,
     source: Option<Entity>,
     pos: Vec2,
@@ -894,7 +894,618 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 2.0 / 20.0,
             },
         }),
-        _ => None,
+
+        // --- The rest of the roster: mechanically faithful conversions
+        // from `primary_weapon` / `trigger_specials`. Specials whose
+        // canonical behaviour needs a primitive that doesn't exist
+        // yet stay as `Todo { ident: "..." }` so the dispatcher logs
+        // them but doesn't pretend to do something it can't.
+
+        // Chmmr Avatar — continuous laser (TODO Beam) + tractor beam
+        // (TODO AppliedForce). Primary fires a fast straight bolt as
+        // a placeholder for the canonical Laser.
+        ShipClass::Chmav => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 30.0),
+                    random_spread_rad: 0.0,
+                    speed: 1500.0,
+                    lifetime: (10.0 * SC2_RANGE_SCALE) / 1500.0,
+                    color: Color::srgb(1.0, 0.3, 0.3),
+                    sprite_size: 4.0,
+                    sprite_path: Some("ships/chmav/sprites/shot_a1_00_bmp.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "Chmmr tractor beam (shpchmav.cpp:87)" },
+                cooldown_s: 2.0,
+            },
+        }),
+
+        // Ur-Quan Kzer-Za Dreadnought — fusion bolt + launch fighters.
+        // Fighters need SubEntity primitive (TODO shpkzedr.cpp:55).
+        ShipClass::Kzedr => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 36.0),
+                    random_spread_rad: 0.0,
+                    speed: 80.0 * SC2_VEL_SCALE,
+                    lifetime: (22.0 * SC2_RANGE_SCALE) / (80.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 12.0,
+                    sprite_path: Some("ships/kzedr/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 6.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "Kzer-Za fighters (shpkzedr.cpp:55)" },
+                cooldown_s: 9.0 / 20.0,
+            },
+        }),
+
+        // Mycon Podship — homing plasmoid + crew repair.
+        // shpmycpo.cpp activate_special: damage(this, 0, -4).
+        ShipClass::Mycpo => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 26.0),
+                    random_spread_rad: 0.0,
+                    speed: 35.0 * SC2_VEL_SCALE,
+                    lifetime: (60.0 * SC2_RANGE_SCALE) / (35.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 16.0,
+                    sprite_path: Some("ships/mycpo/sprites/shot_a01.png".into()),
+                    homing_turn_rate: sc2_turning(1.0),
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 5.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::ModifyCrew { delta: 4 },
+                cooldown_s: 1.0 / 20.0,
+            },
+        }),
+
+        // Shofixti Scout — short forward gun + Glory Device.
+        // shpshosc.cpp: Glory hits everything within Range=13 → 520 u
+        // (no source_self → self-damaging suicide blast).
+        ShipClass::Shosc => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 22.0),
+                    random_spread_rad: 0.0,
+                    speed: 96.0 * SC2_VEL_SCALE,
+                    lifetime: (14.0 * SC2_RANGE_SCALE) / (96.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 6.0,
+                    sprite_path: Some("ships/shosc/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 3.0 / 20.0,
+            },
+            special: AbilitySpec {
+                // .ini Special Range=13 → 520 u, Damage=20, Scale=2.5.
+                // Canonical: 3 presses → blast everything in range and
+                // damage self by 999. We don't have the 3-press
+                // confirmation yet (TODO: shpshosc.cpp:52); for now,
+                // single-press → instant blast.
+                kind: AbilityKind::SpawnDamageZone {
+                    offset: Vec2::ZERO,
+                    radius: 13.0 * SC2_RANGE_SCALE,
+                    damage_per_sec: 1_000_000.0,
+                    duration_s: 0.1,
+                    source_self: false,
+                    color: Color::srgba(1.0, 0.6, 0.2, 0.55),
+                },
+                cooldown_s: 999.0,
+            },
+        }),
+
+        // Arilou Skiff — auto-aim laser (TODO Beam) + random teleport.
+        ShipClass::Arisk => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 22.0),
+                    random_spread_rad: 0.0,
+                    speed: 2400.0,
+                    lifetime: (5.5 * SC2_RANGE_SCALE) / 2400.0,
+                    color: Color::srgb(0.6, 1.0, 0.8),
+                    sprite_size: 5.0,
+                    sprite_path: Some("ships/arisk/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::TeleportRandom { range: 1500.0 },
+                cooldown_s: 2.0 / 20.0,
+            },
+        }),
+
+        // Pkunk Fury — triple-shot forward + ±90° lateral + battery taunt.
+        ShipClass::Pkufu => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: vec![
+                        Barrel { local_pos: Vec2::new(  0.0, 16.0), direction: Vec2::new( 0.0,  1.0) },
+                        Barrel { local_pos: Vec2::new(-16.0,  0.0), direction: Vec2::new(-1.0,  0.0) },
+                        Barrel { local_pos: Vec2::new( 16.0,  0.0), direction: Vec2::new( 1.0,  0.0) },
+                    ],
+                    random_spread_rad: 0.0,
+                    speed: 96.0 * SC2_VEL_SCALE,
+                    lifetime: (5.5 * SC2_RANGE_SCALE) / (96.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 6.0,
+                    sprite_path: Some("ships/pkufu/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::RefillBattery,
+                cooldown_s: 16.0 / 20.0,
+            },
+        }),
+
+        // Ilwrath Avenger — short-range hit + cloak. Real cloak
+        // (invisibility) needs InvisibleTo primitive — TODO; the
+        // placeholder is a brief shield, matching the prior behaviour.
+        ShipClass::Ilwav => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 30.0),
+                    random_spread_rad: 0.0,
+                    speed: 28.0 * SC2_VEL_SCALE,
+                    lifetime: (2.8 * SC2_RANGE_SCALE) / (28.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 0.6, 0.3),
+                    sprite_size: 8.0,
+                    sprite_path: Some("ships/ilwav/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::GrantShield { duration_s: 2.5, damage_factor: 0.0 },
+                cooldown_s: 7.0 / 20.0,
+            },
+        }),
+
+        // Thraddash Torch — forward shot + afterburner dash dropping a
+        // ThraddashFlame trail. Sequence composes ApplyImpulse + zone.
+        ShipClass::Thrto => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 22.0),
+                    random_spread_rad: 0.0,
+                    speed: 120.0 * SC2_VEL_SCALE,
+                    lifetime: (25.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 6.0,
+                    sprite_path: Some("ships/thrto/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 12.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::Sequence(vec![
+                    // .ini Special Thrust=8 → 8·9.6 = 76.8 u/s; treat
+                    // as an instantaneous Δv (impulse = Δv · mass).
+                    AbilityKind::ApplyImpulse {
+                        local_dir: forward,
+                        impulse: 8.0 * SC2_VEL_SCALE * 7.0, // mass≈7
+                    },
+                    // ThraddashFlame: Damage=2, Frames=39 ≈ 3.9 s.
+                    AbilityKind::SpawnDamageZone {
+                        offset: Vec2::new(0.0, -18.0),
+                        radius: 18.0,
+                        damage_per_sec: 8.0,
+                        duration_s: 3.9,
+                        source_self: true,
+                        color: Color::srgba(1.0, 0.5, 0.1, 0.5),
+                    },
+                ]),
+                cooldown_s: 1.0 / 20.0,
+            },
+        }),
+
+        // VUX Intruder — laser placeholder + backward limpet special.
+        // Real laser is TODO (Beam primitive); limpet uses existing
+        // pipeline via VolleySpec.is_limpet=true.
+        ShipClass::Vuxin => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 22.0),
+                    random_spread_rad: 0.0,
+                    speed: 2400.0,
+                    lifetime: (9.0 * SC2_RANGE_SCALE) / 2400.0,
+                    color: Color::srgb(0.6, 1.0, 0.4),
+                    sprite_size: 6.0,
+                    sprite_path: Some("ships/vuxin/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(backward, 16.0),
+                    random_spread_rad: 0.0,
+                    speed: 25.0 * SC2_VEL_SCALE,
+                    lifetime: (35.0 * SC2_RANGE_SCALE) / (25.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 10.0,
+                    sprite_path: Some("ships/vuxin/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: true,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 7.0 / 20.0,
+            },
+        }),
+
+        // Supox Blade — forward Missile. Special is a multi-direction
+        // strafe (S/D-while-held), which needs runtime state for "held
+        // continuously" — TODO ModeToggle-ish primitive.
+        ShipClass::Supbl => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 24.0),
+                    random_spread_rad: 0.0,
+                    speed: 120.0 * SC2_VEL_SCALE,
+                    lifetime: (15.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 6.0,
+                    sprite_path: Some("ships/supbl/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "Supox held-strafe (shpsupbl.cpp:calculate_thrust)" },
+                cooldown_s: 1.0 / 20.0,
+            },
+        }),
+
+        // Kohr-Ah Marauder — saw blade + 16-shot F.R.I.E.D. ring.
+        // Note: 16 ship-local barrels means the ring rotates with the
+        // ship. Canonical F.R.I.E.D. uses absolute world angles —
+        // visible difference is the spawn-time orientation, not the
+        // spread. TODO: world-frame volley flag if it matters.
+        ShipClass::Kohma => {
+            let fried_speed = 20.0 * SC2_VEL_SCALE;
+            let fried_life = (5.0 * SC2_RANGE_SCALE) / fried_speed;
+            let mut fried_barrels = Vec::with_capacity(16);
+            for i in 0..16 {
+                let theta = (i as f32) * std::f32::consts::TAU / 16.0;
+                let dir = Vec2::new(theta.cos(), theta.sin());
+                fried_barrels.push(Barrel { local_pos: dir * 16.0, direction: dir });
+            }
+            Some(ShipAbilities {
+                primary: AbilitySpec {
+                    kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                        barrels: single_barrel(forward, 34.0),
+                        random_spread_rad: 0.0,
+                        speed: 64.0 * SC2_VEL_SCALE,
+                        lifetime: (12.0 * SC2_RANGE_SCALE) / (64.0 * SC2_VEL_SCALE),
+                        color: Color::srgb(1.0, 1.0, 1.0),
+                        sprite_size: 12.0,
+                        sprite_path: Some("ships/kohma/sprites/shot_a01.png".into()),
+                        homing_turn_rate: 0.0,
+                        is_limpet: false,
+                        recoil_impulse: 0.0,
+                    }]},
+                    cooldown_s: 6.0 / 20.0,
+                },
+                special: AbilitySpec {
+                    kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                        barrels: fried_barrels,
+                        random_spread_rad: 0.0,
+                        speed: fried_speed,
+                        lifetime: fried_life,
+                        color: Color::srgb(1.0, 1.0, 1.0),
+                        sprite_size: 8.0,
+                        sprite_path: Some("ships/kohma/sprites/shot_b01.png".into()),
+                        homing_turn_rate: 0.0,
+                        is_limpet: false,
+                        recoil_impulse: 0.0,
+                    }]},
+                    cooldown_s: 9.0 / 20.0,
+                },
+            })
+        }
+
+        // Syreen Penetrator — fast razor. Siren song special is TODO
+        // (needs crew-pod sub-entity primitive).
+        ShipClass::Syrpe => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 32.0),
+                    random_spread_rad: 0.0,
+                    speed: 120.0 * SC2_VEL_SCALE,
+                    lifetime: (17.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 6.0,
+                    sprite_path: Some("ships/syrpe/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 8.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::Sequence(vec![
+                    AbilityKind::BrakeImpulse { max_dv: 8000.0 / 10.0 }, // ≈ 800 m/s on mass 10
+                    AbilityKind::Todo { ident: "Syreen siren song (shpsyrpe.cpp:661)" },
+                ]),
+                cooldown_s: 20.0 / 20.0,
+            },
+        }),
+
+        // Androsynth Guardian — bubble shot + Blazer mode (TODO ModeToggle).
+        ShipClass::Andgu => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 24.0),
+                    random_spread_rad: 0.0,
+                    speed: 24.0 * SC2_VEL_SCALE,
+                    lifetime: (50.0 * SC2_RANGE_SCALE) / (24.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 14.0,
+                    sprite_path: Some("ships/andgu/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "Androsynth Blazer mode (shpandgu.cpp:906)" },
+                cooldown_s: 1.0 / 20.0,
+            },
+        }),
+
+        // Chenjesu Broodhome — crystal (TODO shatter-on-release) +
+        // DOGI sub-entity (TODO).
+        ShipClass::Chebr => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 32.0),
+                    random_spread_rad: 0.0,
+                    speed: 64.0 * SC2_VEL_SCALE,
+                    lifetime: 4.0,
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 14.0,
+                    sprite_path: Some("ships/chebr/sprites/shot_a_01_tga.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "Chenjesu DOGI (shpchebr.cpp:1017)" },
+                cooldown_s: 1.0 / 20.0,
+            },
+        }),
+
+        // Druuge Mauler — heavy recoil cannon + crew-burn battery refill.
+        ShipClass::Druma => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 30.0),
+                    random_spread_rad: 0.0,
+                    speed: 120.0 * SC2_VEL_SCALE,
+                    lifetime: (40.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 12.0,
+                    sprite_path: Some("ships/druma/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    // .ini DriftVelocity=375 → 375·9.6 N·s.
+                    recoil_impulse: 375.0 * SC2_VEL_SCALE,
+                }]},
+                cooldown_s: 10.0 / 20.0,
+            },
+            special: AbilitySpec {
+                // .ini SpecialDrain=16 → each crewman becomes 16 batt.
+                kind: AbilityKind::BurnCrewForBattery { crew_cost: 1, batt_gain: 16 },
+                cooldown_s: 30.0 / 20.0,
+            },
+        }),
+
+        // Utwig Jugger — six-barrel forward + fortitude shield (placeholder).
+        ShipClass::Utwju => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: vec![
+                        Barrel { local_pos: Vec2::new(-34.0, 11.0), direction: forward },
+                        Barrel { local_pos: Vec2::new( 34.0, 11.0), direction: forward },
+                        Barrel { local_pos: Vec2::new(-18.0, 20.0), direction: forward },
+                        Barrel { local_pos: Vec2::new( 18.0, 20.0), direction: forward },
+                        Barrel { local_pos: Vec2::new( -6.0, 27.0), direction: forward },
+                        Barrel { local_pos: Vec2::new(  6.0, 27.0), direction: forward },
+                    ],
+                    random_spread_rad: 0.0,
+                    speed: 120.0 * SC2_VEL_SCALE,
+                    lifetime: (14.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 6.0,
+                    sprite_path: Some("ships/utwju/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 7.0 / 20.0,
+            },
+            special: AbilitySpec {
+                // Real fortitude turns damage into battery — needs
+                // damage-to-battery primitive (TODO shputwju.cpp:96).
+                kind: AbilityKind::GrantShield { duration_s: 2.0, damage_factor: 0.0 },
+                cooldown_s: 7.0 / 20.0,
+            },
+        }),
+
+        // Zoq-Fot-Pik Stinger — random-spread tongue + close-range zap.
+        ShipClass::Zfpst => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 20.0),
+                    random_spread_rad: 10.0 * (std::f32::consts::TAU / 64.0),
+                    speed: 120.0 * SC2_VEL_SCALE,
+                    lifetime: (11.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 6.0,
+                    sprite_path: Some("ships/zfpst/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                // ZFP tongue: a ship-attached SpaceObject at dist=39
+                // ahead. Attached-zone primitive doesn't exist —
+                // approximate with a brief stationary zone.
+                kind: AbilityKind::SpawnDamageZone {
+                    offset: Vec2::new(0.0, 39.0),
+                    radius: 20.0,
+                    damage_per_sec: 240.0, // 12 dmg/0.05s
+                    duration_s: 0.3,
+                    source_self: true,
+                    color: Color::srgba(1.0, 0.5, 0.3, 0.55),
+                },
+                cooldown_s: 6.0 / 20.0,
+            },
+        }),
+
+        // Mmrnmhrm X-Form — Y-Form twin homing missiles + form-toggle (TODO).
+        ShipClass::Mmrxf => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: vec![
+                        Barrel { local_pos: Vec2::new(-13.0, 2.0), direction: Vec2::new(-0.42261826, 0.9063078) },
+                        Barrel { local_pos: Vec2::new( 13.0, 2.0), direction: Vec2::new( 0.42261826, 0.9063078) },
+                    ],
+                    random_spread_rad: 0.0,
+                    speed: 80.0 * SC2_VEL_SCALE,
+                    lifetime: (50.0 * SC2_RANGE_SCALE) / (80.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 10.0,
+                    sprite_path: Some("ships/mmrxf/sprites/shot_a01.png".into()),
+                    homing_turn_rate: sc2_turning(9.0),
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "Mmrnmhrm T/Y form toggle (shpmmrxf.cpp:435)" },
+                cooldown_s: 1.0 / 20.0,
+            },
+        }),
+
+        // Orz Nemesis — turret cannon + marines. Turret aim + marine
+        // sub-entity both TODO (shporzne.cpp:549, 564).
+        ShipClass::Orzne => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 28.0),
+                    random_spread_rad: 0.0,
+                    speed: 120.0 * SC2_VEL_SCALE,
+                    lifetime: (20.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 8.0,
+                    sprite_path: Some("ships/orzne/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 4.0 / 20.0,
+            },
+            special: AbilitySpec {
+                // Marine spawning costs 1 crew in canon — model the
+                // cost; the sub-entity AI is the missing piece.
+                kind: AbilityKind::Sequence(vec![
+                    AbilityKind::ModifyCrew { delta: -1 },
+                    AbilityKind::Todo { ident: "Orz marine sub-entity (shporzne.cpp:564)" },
+                ]),
+                cooldown_s: 12.0 / 20.0,
+            },
+        }),
+
+        // Slylandro Probe — lightning (TODO) + asteroid harvest (no asteroids).
+        ShipClass::Slypr => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "Slylandro lightning (shpslypr.cpp:SlylandroLaserNew)" },
+                cooldown_s: 5.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "Slylandro asteroid harvest (no asteroids in arena)" },
+                cooldown_s: 20.0 / 20.0,
+            },
+        }),
+
+        // Umgah Drone — attached cone (TODO) + anti-grav slingshot.
+        ShipClass::Umgdr => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "Umgah attached cone (shpumgdr.cpp:UmgahCone)" },
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                // shpumgdr.cpp activate_special: pos -= forward·2·size.x;
+                // vel=0. Our collider radius is ~12 → 2·24 = 48 backwards.
+                kind: AbilityKind::TeleportRelative {
+                    offset: Vec2::new(0.0, -48.0),
+                    zero_velocity: true,
+                },
+                cooldown_s: 2.0 / 20.0,
+            },
+        }),
+
+        // Melnorme Trader — chargeable plasma (TODO ChargedFire) +
+        // confusion ray (TODO InputOverride).
+        ShipClass::Meltr => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
+                    barrels: single_barrel(forward, 28.0),
+                    random_spread_rad: 0.0,
+                    speed: 112.0 * SC2_VEL_SCALE,
+                    lifetime: (21.0 * SC2_RANGE_SCALE) / (112.0 * SC2_VEL_SCALE),
+                    color: Color::srgb(1.0, 1.0, 1.0),
+                    sprite_size: 10.0,
+                    sprite_path: Some("ships/meltr/sprites/shot_a01.png".into()),
+                    homing_turn_rate: 0.0,
+                    is_limpet: false,
+                    recoil_impulse: 0.0,
+                }]},
+                cooldown_s: 1.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "Melnorme confusion ray (shpmeltr.cpp:1215)" },
+                cooldown_s: 20.0 / 20.0,
+            },
+        }),
     }
 }
 

@@ -26,8 +26,8 @@ use bevy::prelude::*;
 
 use crate::input;
 use crate::ship::{
-    Barrel, Battery, Homing, Limpet, PointDefenseActive, Projectile, ShieldActive, Ship,
-    SpecialCooldown, WeaponCooldown,
+    spawn_damage_zone, Barrel, Battery, Crew, Homing, Limpet, PointDefenseActive, Projectile,
+    ShieldActive, Ship, SpecialCooldown, WeaponCooldown,
 };
 
 /// Per-ship behaviour manifest. Present on entities that have been
@@ -70,6 +70,63 @@ pub enum AbilityKind {
         duration_s: f32,
         damage_factor: f32,
     },
+
+    /// Δ crew on the firer, clamped to [0, crew_max]. Canonical Mycon
+    /// repair (positive); also used for Druuge crew-burn at the
+    /// negative end via `BurnCrewForBattery` which composes this with
+    /// a battery refill.
+    ModifyCrew { delta: i32 },
+
+    /// Top off the firer's battery to `Battery::max`. Canonical Pkunk
+    /// taunt (refunds the activation drain). The dispatcher's
+    /// battery-gate already deducted `special_drain` before this fires;
+    /// since the canonical effect is "net no cost, full batt", we just
+    /// set current=max.
+    RefillBattery,
+
+    /// Burn `crew_cost` crew to add `batt_gain` to battery. Skips with
+    /// no effect if the firer has ≤ 1 crew or the battery is already
+    /// full. Canonical Druuge special (shpdruma.cpp:calculate_fire_special).
+    BurnCrewForBattery { crew_cost: i32, batt_gain: i32 },
+
+    /// Random teleport within ±range on each axis (Arilou hyperspace).
+    /// No velocity change in canon — matches the legacy `translate(d)`.
+    TeleportRandom { range: f32 },
+
+    /// Translate by a *ship-local* offset (`offset` rotated by the
+    /// ship's current rotation), optionally zeroing velocity. Canonical
+    /// Umgah anti-grav slingshot: pos -= forward·2·size; vel=0.
+    TeleportRelative { offset: Vec2, zero_velocity: bool },
+
+    /// Apply an instantaneous impulse (N·s) along a ship-local
+    /// direction. Δv = impulse / mass — light hulls leap, heavy hulls
+    /// nudge. Generic dash / strafe primitive.
+    ApplyImpulse { local_dir: Vec2, impulse: f32 },
+
+    /// Drag-style velocity cap — bleed up to `max_dv` m/s off the
+    /// firer's current velocity, opposite to its direction of travel.
+    /// Canonical "stop and plant" for Syreen siren song placeholder
+    /// and similar.
+    BrakeImpulse { max_dv: f32 },
+
+    /// Spawn a stationary damage zone at the firer's pose. `offset` is
+    /// ship-local. `source_self` makes the zone immune to the firer
+    /// (DOGI / Kohr-Ah blades use this); `false` is a self-damaging
+    /// suicide blast (Shofixti Glory Device).
+    SpawnDamageZone {
+        offset: Vec2,
+        radius: f32,
+        damage_per_sec: f32,
+        duration_s: f32,
+        source_self: bool,
+        color: Color,
+    },
+
+    /// Run a list of `AbilityKind`s in order. Lets a single ability
+    /// compose primitives — e.g. Thraddash special is
+    /// `Sequence([ApplyImpulse, SpawnDamageZone])`. Nested Sequences
+    /// flatten naturally because each element re-enters apply_ability.
+    Sequence(Vec<AbilityKind>),
 
     /// Behaviour that needs a primitive we haven't built yet. The
     /// dispatcher logs the ident once per activation and applies no
@@ -120,14 +177,15 @@ fn dispatch_primary(
         Entity,
         &Ship,
         &ShipAbilities,
-        &Position,
+        &mut Position,
         &Rotation,
         &mut LinearVelocity,
         &mut WeaponCooldown,
         &mut Battery,
+        &mut Crew,
     )>,
 ) {
-    for (entity, ship, abilities, pos, rot, mut vel, mut cd, mut batt) in &mut q {
+    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew) in &mut q {
         if cd.0 > 0.0 {
             continue;
         }
@@ -140,17 +198,19 @@ fn dispatch_primary(
         }
         batt.current = (batt.current - ship.stats.weapon_drain).max(0);
         let damage = ship.stats.weapon_damage.max(1);
-        apply_ability(
-            &mut commands,
-            &assets,
+        let mut ctx = AbilityCtx {
+            commands: &mut commands,
+            assets: &assets,
             entity,
             ship,
-            pos,
+            pos: &mut pos,
             rot,
-            &mut vel,
+            vel: &mut vel,
+            batt: &mut batt,
+            crew: &mut crew,
             damage,
-            &abilities.primary,
-        );
+        };
+        apply_kind(&mut ctx, &abilities.primary.kind);
         cd.0 = abilities.primary.cooldown_s;
     }
 }
@@ -163,14 +223,15 @@ fn dispatch_special(
         Entity,
         &Ship,
         &ShipAbilities,
-        &Position,
+        &mut Position,
         &Rotation,
         &mut LinearVelocity,
         &mut SpecialCooldown,
         &mut Battery,
+        &mut Crew,
     )>,
 ) {
-    for (entity, ship, abilities, pos, rot, mut vel, mut cd, mut batt) in &mut q {
+    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew) in &mut q {
         if cd.0 > 0.0 {
             continue;
         }
@@ -188,36 +249,47 @@ fn dispatch_special(
         // that lands as a `damage_override: Option<i32>` field on
         // `VolleySpec`. Not needed yet.
         let damage = ship.stats.weapon_damage.max(1);
-        apply_ability(
-            &mut commands,
-            &assets,
+        let mut ctx = AbilityCtx {
+            commands: &mut commands,
+            assets: &assets,
             entity,
             ship,
-            pos,
+            pos: &mut pos,
             rot,
-            &mut vel,
+            vel: &mut vel,
+            batt: &mut batt,
+            crew: &mut crew,
             damage,
-            &abilities.special,
-        );
+        };
+        apply_kind(&mut ctx, &abilities.special.kind);
         cd.0 = abilities.special.cooldown_s;
     }
 }
 
-fn apply_ability(
-    commands: &mut Commands,
-    assets: &AssetServer,
+/// Plumbing for a single ability activation — passed to `apply_kind`
+/// so each variant gets at the firer's pose, components, and the
+/// command buffer without us re-listing 10 fn args per variant.
+struct AbilityCtx<'a, 'w, 's> {
+    commands: &'a mut Commands<'w, 's>,
+    assets: &'a AssetServer,
     entity: Entity,
-    ship: &Ship,
-    pos: &Position,
-    rot: &Rotation,
-    vel: &mut LinearVelocity,
+    ship: &'a Ship,
+    pos: &'a mut Position,
+    rot: &'a Rotation,
+    vel: &'a mut LinearVelocity,
+    batt: &'a mut Battery,
+    crew: &'a mut Crew,
     damage: i32,
-    spec: &AbilitySpec,
-) {
-    match &spec.kind {
+}
+
+fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
+    let slot = ctx.ship.player_slot + 1;
+    let forward = Vec2::new(-ctx.rot.sin, ctx.rot.cos);
+    let mass = ctx.ship.stats.mass.max(0.0001);
+    match kind {
         AbilityKind::SpawnProjectiles { volleys } => {
             for volley in volleys {
-                spawn_volley(commands, assets, entity, ship, pos, rot, vel, damage, volley);
+                spawn_volley(ctx, volley);
             }
         }
         AbilityKind::GrantPointDefense {
@@ -225,53 +297,126 @@ fn apply_ability(
             damage_per_tick,
             duration_s,
         } => {
-            commands.entity(entity).insert(PointDefenseActive {
+            ctx.commands.entity(ctx.entity).insert(PointDefenseActive {
                 remaining: *duration_s,
                 range: *range,
                 damage_per_tick: *damage_per_tick,
             });
-            info!("P{} point defense online", ship.player_slot + 1);
+            info!("P{} point defense online", slot);
         }
         AbilityKind::GrantShield {
             duration_s,
             damage_factor,
         } => {
-            commands.entity(entity).insert(ShieldActive {
+            ctx.commands.entity(ctx.entity).insert(ShieldActive {
                 remaining: *duration_s,
                 damage_factor: *damage_factor,
             });
-            info!("P{} shield up", ship.player_slot + 1);
+            info!("P{} shield up", slot);
+        }
+        AbilityKind::ModifyCrew { delta } => {
+            ctx.crew.current = (ctx.crew.current + delta).clamp(0, ctx.crew.max);
+            info!("P{} crew {:+} → {}", slot, delta, ctx.crew.current);
+        }
+        AbilityKind::RefillBattery => {
+            ctx.batt.current = ctx.batt.max;
+            info!("P{} battery refilled", slot);
+        }
+        AbilityKind::BurnCrewForBattery {
+            crew_cost,
+            batt_gain,
+        } => {
+            if ctx.crew.current > *crew_cost && ctx.batt.current < ctx.batt.max {
+                ctx.crew.current -= crew_cost;
+                ctx.batt.current = (ctx.batt.current + batt_gain).min(ctx.batt.max);
+                info!("P{} burned {} crew → +{} batt", slot, crew_cost, batt_gain);
+            }
+        }
+        AbilityKind::TeleportRandom { range } => {
+            let dx = (fastrand::f32() * 2.0 - 1.0) * range;
+            let dy = (fastrand::f32() * 2.0 - 1.0) * range;
+            ctx.pos.0 += Vec2::new(dx, dy);
+            info!("P{} hyperspace", slot);
+        }
+        AbilityKind::TeleportRelative {
+            offset,
+            zero_velocity,
+        } => {
+            // Rotate the ship-local offset into world space.
+            let world = Vec2::new(
+                offset.x * ctx.rot.cos - offset.y * ctx.rot.sin,
+                offset.x * ctx.rot.sin + offset.y * ctx.rot.cos,
+            );
+            ctx.pos.0 += world;
+            if *zero_velocity {
+                ctx.vel.0 = Vec2::ZERO;
+            }
+            info!("P{} translate", slot);
+        }
+        AbilityKind::ApplyImpulse { local_dir, impulse } => {
+            let world_dir = Vec2::new(
+                local_dir.x * ctx.rot.cos - local_dir.y * ctx.rot.sin,
+                local_dir.x * ctx.rot.sin + local_dir.y * ctx.rot.cos,
+            );
+            ctx.vel.0 += world_dir * (*impulse / mass);
+        }
+        AbilityKind::BrakeImpulse { max_dv } => {
+            let speed = ctx.vel.0.length();
+            if speed > 0.0 {
+                let dv = max_dv.min(speed);
+                ctx.vel.0 -= ctx.vel.0 / speed * dv;
+            }
+        }
+        AbilityKind::SpawnDamageZone {
+            offset,
+            radius,
+            damage_per_sec,
+            duration_s,
+            source_self,
+            color,
+        } => {
+            let world_offset = Vec2::new(
+                offset.x * ctx.rot.cos - offset.y * ctx.rot.sin,
+                offset.x * ctx.rot.sin + offset.y * ctx.rot.cos,
+            );
+            spawn_damage_zone(
+                ctx.commands,
+                source_self.then_some(ctx.entity),
+                ctx.pos.0 + world_offset,
+                *radius,
+                *damage_per_sec,
+                *duration_s,
+                *color,
+            );
+        }
+        AbilityKind::Sequence(steps) => {
+            for step in steps {
+                apply_kind(ctx, step);
+            }
         }
         AbilityKind::Todo { ident } => {
             info!(
                 "P{} ability '{}' has no engine primitive yet — no-op",
-                ship.player_slot + 1,
-                ident
+                slot, ident
             );
         }
     }
+    // `forward` is intentionally unused in most arms; keep it computed
+    // once at the top so individual arms (future Beam, AppliedForce,
+    // attached-zones) can reach for it without recomputing.
+    let _ = forward;
 }
 
-fn spawn_volley(
-    commands: &mut Commands,
-    assets: &AssetServer,
-    entity: Entity,
-    ship: &Ship,
-    pos: &Position,
-    rot: &Rotation,
-    vel: &mut LinearVelocity,
-    damage: i32,
-    volley: &VolleySpec,
-) {
-    let mass = ship.stats.mass.max(0.0001);
+fn spawn_volley(ctx: &mut AbilityCtx, volley: &VolleySpec) {
+    let mass = ctx.ship.stats.mass.max(0.0001);
     for barrel in &volley.barrels {
         let world_pos_offset = Vec2::new(
-            barrel.local_pos.x * rot.cos - barrel.local_pos.y * rot.sin,
-            barrel.local_pos.x * rot.sin + barrel.local_pos.y * rot.cos,
+            barrel.local_pos.x * ctx.rot.cos - barrel.local_pos.y * ctx.rot.sin,
+            barrel.local_pos.x * ctx.rot.sin + barrel.local_pos.y * ctx.rot.cos,
         );
         let mut world_dir = Vec2::new(
-            barrel.direction.x * rot.cos - barrel.direction.y * rot.sin,
-            barrel.direction.x * rot.sin + barrel.direction.y * rot.cos,
+            barrel.direction.x * ctx.rot.cos - barrel.direction.y * ctx.rot.sin,
+            barrel.direction.x * ctx.rot.sin + barrel.direction.y * ctx.rot.cos,
         );
         if volley.random_spread_rad > 0.0 {
             let jitter = (fastrand::f32() * 2.0 - 1.0) * volley.random_spread_rad;
@@ -282,17 +427,17 @@ fn spawn_volley(
             );
         }
         spawn_one_projectile(
-            commands,
-            assets,
-            entity,
-            pos.0 + world_pos_offset,
+            ctx.commands,
+            ctx.assets,
+            ctx.entity,
+            ctx.pos.0 + world_pos_offset,
             world_dir,
-            vel.0,
+            ctx.vel.0,
             volley,
-            damage,
+            ctx.damage,
         );
         if volley.recoil_impulse > 0.0 {
-            vel.0 -= world_dir * volley.recoil_impulse / mass;
+            ctx.vel.0 -= world_dir * volley.recoil_impulse / mass;
         }
     }
 }
