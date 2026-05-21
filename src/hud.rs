@@ -1,17 +1,37 @@
-//! In-match HUD: per-player crew readout, ship-destroyed handling, and
-//! winner detection. Kept deliberately barebones — it's playtest scaffolding,
-//! not the final UI.
+//! In-match HUD: per-player crew + battery readouts pinned to the
+//! right edge of the screen, plus a centred status banner that shows
+//! the running score and the rematch prompt between rounds.
 //!
-//! Future: per-ship battery bar, weapon-charge indicator, fleet roster
-//! once we have more than one ship per player.
+//! Both the bars and the numeric readouts are kept simple Bevy UI
+//! nodes (no custom shaders). Each frame the relevant `update_*`
+//! system measures the current/max ratio for the ship in that slot
+//! and resizes the bar's foreground Node accordingly.
 
 use bevy::prelude::*;
 
-use crate::ship::{Crew, Ship};
+use crate::ship::{Battery, Crew, Ship};
 
 #[derive(Component)]
-struct CrewReadout {
+struct CrewBarFill {
     slot: usize,
+}
+
+#[derive(Component)]
+struct BatteryBarFill {
+    slot: usize,
+}
+
+#[derive(Component)]
+struct StatLabel {
+    slot: usize,
+    kind: StatKind,
+}
+
+#[derive(Clone, Copy)]
+enum StatKind {
+    Name,
+    Crew,
+    Battery,
 }
 
 #[derive(Component)]
@@ -43,7 +63,8 @@ impl Plugin for HudPlugin {
             .add_systems(
                 Update,
                 (
-                    update_crew_readouts,
+                    update_stat_labels,
+                    update_bar_fills,
                     destroy_zero_crew_ships,
                     detect_winner,
                     update_status_banner,
@@ -52,32 +73,35 @@ impl Plugin for HudPlugin {
     }
 }
 
+const BAR_WIDTH_PX: f32 = 180.0;
+const BAR_HEIGHT_PX: f32 = 12.0;
+const PANEL_BG: Color = Color::srgba(0.08, 0.10, 0.16, 0.85);
+const BAR_BG: Color = Color::srgb(0.12, 0.14, 0.18);
+const CREW_COLOR: Color = Color::srgb(0.35, 0.95, 0.50);
+const BATT_COLOR: Color = Color::srgb(0.45, 0.75, 1.00);
+
 fn setup_hud(mut commands: Commands) {
-    // Top row: per-player crew readouts pinned to corners.
+    // Right-edge column holding both player panels stacked vertically.
     commands
         .spawn(Node {
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
+            position_type: PositionType::Absolute,
+            top: Val::Px(0.0),
+            right: Val::Px(0.0),
+            bottom: Val::Px(0.0),
+            width: Val::Px(220.0),
+            flex_direction: FlexDirection::Column,
             justify_content: JustifyContent::SpaceBetween,
             padding: UiRect::all(Val::Px(12.0)),
+            row_gap: Val::Px(12.0),
             ..default()
         })
-        .with_children(|root| {
+        .with_children(|column| {
             for slot in [0usize, 1usize] {
-                root.spawn((
-                    Text::new("P? crew --"),
-                    TextFont::from_font_size(20.0),
-                    TextColor(if slot == 0 {
-                        Color::srgb(0.6, 0.9, 1.0)
-                    } else {
-                        Color::srgb(1.0, 0.7, 0.6)
-                    }),
-                    CrewReadout { slot },
-                ));
+                spawn_player_panel(column, slot);
             }
         });
 
-    // Centred banner that lights up between rounds.
+    // Centred banner overlay used between rounds.
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
@@ -99,17 +123,182 @@ fn setup_hud(mut commands: Commands) {
         });
 }
 
-fn update_crew_readouts(
-    ships: Query<(&Ship, &Crew)>,
-    mut readouts: Query<(&mut Text, &CrewReadout)>,
+fn spawn_player_panel(parent: &mut ChildSpawnerCommands, slot: usize) {
+    let player_label = if slot == 0 {
+        Color::srgb(0.6, 0.9, 1.0)
+    } else {
+        Color::srgb(1.0, 0.7, 0.6)
+    };
+
+    parent
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(Val::Px(10.0)),
+                row_gap: Val::Px(6.0),
+                ..default()
+            },
+            BackgroundColor(PANEL_BG),
+        ))
+        .with_children(|panel| {
+            // Heading: e.g. "P1  Earthling Cruiser"
+            panel.spawn((
+                Text::new(format!("P{} —", slot + 1)),
+                TextFont::from_font_size(16.0),
+                TextColor(player_label),
+                StatLabel {
+                    slot,
+                    kind: StatKind::Name,
+                },
+            ));
+
+            // Crew row
+            spawn_stat_row(
+                panel,
+                slot,
+                StatKind::Crew,
+                "Crew",
+                CREW_COLOR,
+                |bar| CrewBarFill { slot }.insert_marker(bar),
+            );
+
+            // Battery row
+            spawn_stat_row(
+                panel,
+                slot,
+                StatKind::Battery,
+                "Batt",
+                BATT_COLOR,
+                |bar| BatteryBarFill { slot }.insert_marker(bar),
+            );
+        });
+}
+
+fn spawn_stat_row<F>(
+    panel: &mut ChildSpawnerCommands,
+    slot: usize,
+    kind: StatKind,
+    label_text: &str,
+    fill_color: Color,
+    mut tag_fill: F,
+) where
+    F: FnMut(&mut EntityCommands),
+{
+    panel
+        .spawn(Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(2.0),
+            ..default()
+        })
+        .with_children(|row| {
+            // Top: "Crew  18/18"
+            row.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                ..default()
+            })
+            .with_children(|line| {
+                line.spawn((
+                    Text::new(label_text),
+                    TextFont::from_font_size(13.0),
+                    TextColor(Color::srgb(0.75, 0.82, 0.92)),
+                ));
+                line.spawn((
+                    Text::new("--/--"),
+                    TextFont::from_font_size(13.0),
+                    TextColor(Color::srgb(0.92, 0.95, 1.00)),
+                    StatLabel { slot, kind },
+                ));
+            });
+
+            // Bottom: the bar (BG + fill child)
+            row.spawn((
+                Node {
+                    width: Val::Px(BAR_WIDTH_PX),
+                    height: Val::Px(BAR_HEIGHT_PX),
+                    ..default()
+                },
+                BackgroundColor(BAR_BG),
+            ))
+            .with_children(|bar| {
+                let mut fill = bar.spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(fill_color),
+                ));
+                tag_fill(&mut fill);
+            });
+        });
+}
+
+// Tiny trait so each marker can be inserted via a closure that
+// receives an EntityCommands. Reduces boilerplate at the call site.
+trait InsertMarker: Component + Sized {
+    fn insert_marker(self, ec: &mut EntityCommands) {
+        ec.insert(self);
+    }
+}
+impl InsertMarker for CrewBarFill {}
+impl InsertMarker for BatteryBarFill {}
+
+fn update_stat_labels(
+    ships: Query<(&Ship, &Crew, &Battery)>,
+    mut labels: Query<(&mut Text, &StatLabel)>,
 ) {
-    for (mut text, readout) in &mut readouts {
-        let label = ships
+    for (mut text, label) in &mut labels {
+        let ship_data = ships.iter().find(|(s, _, _)| s.player_slot == label.slot);
+        text.0 = match (ship_data, label.kind) {
+            (Some((ship, _, _)), StatKind::Name) => {
+                format!("P{}  {}", label.slot + 1, ship.stats.name)
+            }
+            (Some((_, crew, _)), StatKind::Crew) => {
+                format!("{:>2}/{:>2}", crew.current, crew.max)
+            }
+            (Some((_, _, batt)), StatKind::Battery) => {
+                format!("{:>2}/{:>2}", batt.current, batt.max)
+            }
+            (None, StatKind::Name) => format!("P{}  —", label.slot + 1),
+            (None, _) => "—".into(),
+        };
+    }
+}
+
+fn update_bar_fills(
+    ships: Query<(&Ship, &Crew, &Battery)>,
+    mut crew_fills: Query<(&mut Node, &CrewBarFill), Without<BatteryBarFill>>,
+    mut batt_fills: Query<(&mut Node, &BatteryBarFill), Without<CrewBarFill>>,
+) {
+    for (mut node, fill) in &mut crew_fills {
+        let ratio = ships
             .iter()
-            .find(|(s, _)| s.player_slot == readout.slot)
-            .map(|(_, c)| format!("P{} crew {:>2}/{:>2}", readout.slot + 1, c.current, c.max))
-            .unwrap_or_else(|| format!("P{} —", readout.slot + 1));
-        text.0 = label;
+            .find(|(s, _, _)| s.player_slot == fill.slot)
+            .map(|(_, c, _)| {
+                if c.max > 0 {
+                    (c.current as f32 / c.max as f32).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or(0.0);
+        node.width = Val::Percent(ratio * 100.0);
+    }
+    for (mut node, fill) in &mut batt_fills {
+        let ratio = ships
+            .iter()
+            .find(|(s, _, _)| s.player_slot == fill.slot)
+            .map(|(_, _, b)| {
+                if b.max > 0 {
+                    (b.current as f32 / b.max as f32).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or(0.0);
+        node.width = Val::Percent(ratio * 100.0);
     }
 }
 
@@ -142,8 +331,6 @@ fn detect_winner(
             _ => {}
         }
     }
-    // Need at least one ship to ever have existed before declaring an
-    // outcome — Startup runs before the match scene spawns ships.
     let winner = if have_p1 && !have_p2 {
         Some(0usize)
     } else if have_p2 && !have_p1 {

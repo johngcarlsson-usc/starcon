@@ -308,6 +308,25 @@ pub struct Crew {
     pub max: i32,
 }
 
+/// Live battery state. Spent by firing (`WeaponDrain`) and triggering
+/// specials (`SpecialDrain`); regenerates via `RechargeTimer` per the
+/// ship's `.ini` `RechargeAmount` + `RechargeRate`. Like `Crew`, this
+/// is *runtime* state, not a class stat.
+#[derive(Component, Debug)]
+pub struct Battery {
+    pub current: i32,
+    pub max: i32,
+}
+
+/// Counts down SC2 frames (50 ms each) until the next battery
+/// recharge tick. When it reaches zero we add the ship's
+/// `recharge_amount` to its Battery and reset to `recharge_rate`.
+/// A `recharge_rate` of 0 means "no natural recharge" (Slylandro).
+#[derive(Component, Debug)]
+pub struct RechargeTimer {
+    pub remaining_frames: i32,
+}
+
 /// Time (in seconds) until the ship's primary weapon can fire again.
 #[derive(Component, Debug, Default)]
 pub struct WeaponCooldown(pub f32);
@@ -508,6 +527,7 @@ impl Plugin for ShipPlugin {
                 tick_special_cooldown,
                 tick_shield,
                 tick_point_defense,
+                tick_battery_recharge,
                 fire_weapons.after(tick_weapon_cooldown),
                 trigger_specials.after(tick_special_cooldown),
                 tick_projectile_lifetime,
@@ -702,6 +722,13 @@ fn spawn_ship(
             current: stats.crew_max,
             max: stats.crew_max,
         },
+        Battery {
+            current: stats.batt_max,
+            max: stats.batt_max,
+        },
+        RechargeTimer {
+            remaining_frames: stats.recharge_rate,
+        },
         WeaponCooldown::default(),
         SpecialCooldown::default(),
         ShipFrames {
@@ -872,6 +899,32 @@ fn tick_weapon_cooldown(time: Res<Time<Physics>>, mut q: Query<&mut WeaponCooldo
     }
 }
 
+/// Per-ship battery regeneration. The `.ini` stats are framed in SC2
+/// 50 ms frames, so this system maintains a per-ship frame counter
+/// `RechargeTimer`. We tick it every FixedUpdate by `dt / 0.050`
+/// frames; when the counter hits zero we add `recharge_amount` to
+/// the battery (clamped at `max`) and reset the counter back to
+/// `recharge_rate`. A ship with `recharge_rate == 0` (Slylandro)
+/// gets no natural recharge — only its harvest special tops it up.
+fn tick_battery_recharge(
+    time: Res<Time<Physics>>,
+    mut q: Query<(&Ship, &mut Battery, &mut RechargeTimer)>,
+) {
+    let dt_frames = time.delta_secs() / 0.050;
+    for (ship, mut battery, mut timer) in &mut q {
+        if ship.stats.recharge_rate <= 0 || ship.stats.recharge_amount <= 0 {
+            continue;
+        }
+        // RechargeTimer is integer frames, but dt may not align exactly;
+        // accumulate by subtracting and topping up when we cross zero.
+        timer.remaining_frames -= dt_frames.round() as i32;
+        while timer.remaining_frames <= 0 {
+            battery.current = (battery.current + ship.stats.recharge_amount).min(battery.max);
+            timer.remaining_frames += ship.stats.recharge_rate;
+        }
+    }
+}
+
 /// Spawn a primary-weapon projectile when FIRE is pressed and the
 /// weapon is off cooldown. Dispatches on `ShipClass` so each class can
 /// shape its weapon differently — direction, speed, sprite tint, etc.
@@ -890,9 +943,10 @@ fn fire_weapons(
         &Rotation,
         &mut LinearVelocity,
         &mut WeaponCooldown,
+        &mut Battery,
     )>,
 ) {
-    for (entity, ship, class, pos, rot, mut vel, mut cooldown) in &mut q {
+    for (entity, ship, class, pos, rot, mut vel, mut cooldown, mut battery) in &mut q {
         if cooldown.0 > 0.0 {
             continue;
         }
@@ -900,6 +954,16 @@ fn fire_weapons(
         if !input.pressed(input::INPUT_FIRE) {
             continue;
         }
+
+        // Gate on battery — `WeaponDrain` is the per-shot energy cost
+        // (.ini field). Insufficient battery silently skips the shot;
+        // the player has to wait for the recharge ticker to top them
+        // back up. Matches the canonical SC2 behaviour where you can
+        // hear a "click" but no shot leaves the ship.
+        if ship.stats.weapon_drain > 0 && battery.current < ship.stats.weapon_drain {
+            continue;
+        }
+        battery.current = (battery.current - ship.stats.weapon_drain).max(0);
 
         let spec = primary_weapon(*class);
 
@@ -1756,9 +1820,10 @@ fn trigger_specials(
         &Rotation,
         &mut LinearVelocity,
         &mut SpecialCooldown,
+        &mut Battery,
     )>,
 ) {
-    for (entity, ship, class, mut pos, rot, mut vel, mut cooldown) in &mut q {
+    for (entity, ship, class, mut pos, rot, mut vel, mut cooldown, mut battery) in &mut q {
         if cooldown.0 > 0.0 {
             continue;
         }
@@ -1766,6 +1831,11 @@ fn trigger_specials(
         if !input.pressed(input::INPUT_SPECIAL) {
             continue;
         }
+        // Battery gate — `SpecialDrain` is per-activation cost.
+        if ship.stats.special_drain > 0 && battery.current < ship.stats.special_drain {
+            continue;
+        }
+        battery.current = (battery.current - ship.stats.special_drain).max(0);
 
         let forward = Vec2::new(-rot.sin, rot.cos);
         let mass = ship.stats.mass.max(0.0001);
