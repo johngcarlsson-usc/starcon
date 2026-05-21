@@ -795,13 +795,6 @@ fn fire_weapons(
         }
 
         let spec = primary_weapon(*class);
-        let local_dir = spec.local_direction;
-        let world_dir = Vec2::new(
-            local_dir.x * rot.cos - local_dir.y * rot.sin,
-            local_dir.x * rot.sin + local_dir.y * rot.cos,
-        );
-        let muzzle = pos.0 + world_dir * spec.muzzle_offset;
-        let projectile_vel = vel.0 + world_dir * spec.speed;
 
         // SC2's [Weapon] Rate is in legacy 36 Hz ticks; convert to seconds.
         let cooldown_secs = if ship.stats.weapon_rate > 0 {
@@ -812,35 +805,57 @@ fn fire_weapons(
         cooldown.0 = cooldown_secs;
 
         let damage = ship.stats.weapon_damage.max(1);
-        commands.spawn((
-            Projectile {
-                owner: entity,
-                damage,
-                lifetime: spec.lifetime,
-            },
-            Sprite::from_color(spec.color, Vec2::splat(spec.sprite_size)),
-            Transform::from_translation(muzzle.extend(0.5)),
-            RigidBody::Dynamic,
-            Collider::circle(spec.sprite_size * 0.5),
-            Mass(0.5),
-            LinearVelocity(projectile_vel),
-            AngularVelocity::ZERO,
-            // No damping — projectile flies straight until it dies or hits.
-            LinearDamping(0.0),
-            AngularDamping(0.0),
-            CollisionEventsEnabled,
-        ));
+        let world_dir =
+            spawn_projectile(&mut commands, entity, pos.0, rot, vel.0, &spec, damage);
 
-        // Recoil: apply -impulse to the firing ship along world_dir.
-        // The Δv = impulse / mass formula is Newton's third law made
-        // explicit, so a heavy hull recoils less than a light one for
-        // the same cannon. Weapons that shouldn't recoil (lasers,
-        // self-propelled missiles, point defense) set recoil_impulse
-        // = 0.0 and the multiply costs nothing.
+        // Recoil from firing: applied here (not in spawn_projectile)
+        // because it's specifically the *firer's* reaction to the
+        // launch impulse. Δv = recoil_impulse / mass keeps it
+        // Newton-third-law correct across ship masses.
         if spec.recoil_impulse > 0.0 {
             vel.0 -= world_dir * spec.recoil_impulse / ship.stats.mass;
         }
     }
+}
+
+/// Spawn a projectile from a WeaponSpec, given the firing ship's pose
+/// and velocity. Returns the world-space firing direction so callers
+/// can apply recoil to the firer if the spec requests it.
+fn spawn_projectile(
+    commands: &mut Commands,
+    owner: Entity,
+    pos: Vec2,
+    rot: &Rotation,
+    ship_vel: Vec2,
+    spec: &WeaponSpec,
+    damage: i32,
+) -> Vec2 {
+    let local_dir = spec.local_direction;
+    let world_dir = Vec2::new(
+        local_dir.x * rot.cos - local_dir.y * rot.sin,
+        local_dir.x * rot.sin + local_dir.y * rot.cos,
+    );
+    let muzzle = pos + world_dir * spec.muzzle_offset;
+    let projectile_vel = ship_vel + world_dir * spec.speed;
+    commands.spawn((
+        Projectile {
+            owner,
+            damage,
+            lifetime: spec.lifetime,
+        },
+        Sprite::from_color(spec.color, Vec2::splat(spec.sprite_size)),
+        Transform::from_translation(muzzle.extend(0.5)),
+        RigidBody::Dynamic,
+        Collider::circle(spec.sprite_size * 0.5),
+        Mass(0.5),
+        LinearVelocity(projectile_vel),
+        AngularVelocity::ZERO,
+        // No damping — projectile flies straight until it dies or hits.
+        LinearDamping(0.0),
+        AngularDamping(0.0),
+        CollisionEventsEnabled,
+    ));
+    world_dir
 }
 
 /// Per-class physics knobs. Defaults come from `ShipStats.mass`; this
@@ -923,13 +938,17 @@ fn primary_weapon(class: ShipClass) -> WeaponSpec {
             recoil_impulse: 0.0,
         },
         ShipClass::Spael => WeaponSpec {
-            // BUTT missile — fires backwards as the Eluder runs away.
-            local_direction: backward,
-            muzzle_offset: 28.0,
-            speed: 500.0,
-            lifetime: 3.0,
+            // Spathi primary is canonically a short-range fast-firing
+            // forward cannon — *not* the backward missile. The famous
+            // BUTT (Backward Utilizing Tracking Torpedo) is the
+            // *special*, see trigger_specials. .ini stat: Velocity=96
+            // (≈ 921 world units/s).
+            local_direction: forward,
+            muzzle_offset: 22.0,
+            speed: 920.0,
+            lifetime: 0.7,
             color: Color::srgb(1.0, 0.5, 0.7),
-            sprite_size: 8.0,
+            sprite_size: 5.0,
             recoil_impulse: 0.0,
         },
         ShipClass::Yehte => WeaponSpec {
@@ -1374,13 +1393,25 @@ fn trigger_specials(
                 info!("P{} dash", ship.player_slot + 1);
             }
             ShipClass::Spael => {
-                // Phase-jump backwards 200 units, then bleed a heavy
-                // drag impulse to "lose momentum in warp". Teleport
-                // itself is non-physical so the position write stays.
-                pos.0 -= forward * 200.0;
-                drag(&mut vel, 8000.0);
-                cooldown.0 = 2.5;
-                info!("P{} warp", ship.player_slot + 1);
+                // Canonical Spathi special: BUTT (Backward Utilizing
+                // Tracking Torpedo). A backward-firing tracking
+                // missile, the signature SC2 Eluder gag — Spathi
+                // runs while shooting over its shoulder. .ini stats:
+                // Special Velocity=45, Range=12, Damage=2, TurnRate=1
+                // (homes on enemy). Homing isn't wired up yet so the
+                // missile flies straight until M3 adds the primitive.
+                let butt = WeaponSpec {
+                    local_direction: Vec2::new(0.0, -1.0),
+                    muzzle_offset: 22.0,
+                    speed: 432.0, // Velocity=45 × distance_ratio / time_ratio
+                    lifetime: 1.1, // ≈ Range=12 ÷ Velocity at scale
+                    color: Color::srgb(1.0, 0.5, 0.7),
+                    sprite_size: 7.0,
+                    recoil_impulse: 0.0,
+                };
+                spawn_projectile(&mut commands, entity, pos.0, rot, vel.0, &butt, 2);
+                cooldown.0 = 1.2;
+                info!("P{} BUTT", ship.player_slot + 1);
             }
             ShipClass::Yehte => {
                 commands.entity(entity).insert(ShieldActive {
@@ -1521,10 +1552,15 @@ fn trigger_specials(
                 info!("P{} marines (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Slypr => {
-                pos.0 += perp * 400.0;
-                vel.0 = Vec2::ZERO;
-                cooldown.0 = 3.0;
-                info!("P{} probe jump (placeholder)", ship.player_slot + 1);
+                // Canonical Slylandro Probe special: harvest a nearby
+                // asteroid to instantly refill the battery — the ship's
+                // *only* way to refuel. There are no asteroids in the
+                // arena yet (and no battery resource either; we just
+                // track Crew), so this is a no-op with a log line.
+                // Lights up properly once the battery system + asteroid
+                // bodies land in M5.
+                cooldown.0 = 1.0;
+                info!("P{} harvest (placeholder)", ship.player_slot + 1);
             }
             ShipClass::Umgdr => {
                 // Anti-grav slingshot — reverse impulse. 4000 N·s

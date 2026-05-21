@@ -60,7 +60,7 @@ Class index (same number = same ship for both players):
 | # | Class | Note |
 | - | ----- | ---- |
 | 1 / F1  | Earthling Cruiser   | Forward gun, dash special |
-| 2 / F2  | Spathi Eluder       | Fires *backwards*, warp-jump special |
+| 2 / F2  | Spathi Eluder       | Fast forward cannon, BUTT (backward tracking torpedo) special |
 | 3 / F3  | Yehat Terminator    | Twin cannons, energy shield (25% incoming damage) |
 | 4 / F4  | Chmmr Avatar        | Forward laser, brake (placeholder special) |
 | 5 / F5  | Ur-Quan Dreadnought | Heavy bolt, brake (placeholder) |
@@ -81,7 +81,7 @@ Class index (same number = same ship for both players):
 | ⇧+0 / ⇧+F10| Zoq-Fot-Pik Stinger| Tongue lash, taunt-dash |
 | ⌃+1 / ⌃+F1 | Mmrnmhrm X-Form    | Beam shot, transform placeholder |
 | ⌃+2 / ⌃+F2 | Orz Nemesis        | Flex-arm shot, marines (placeholder) |
-| ⌃+3 / ⌃+F3 | Slylandro Probe    | Lightning shot, perpendicular jump |
+| ⌃+3 / ⌃+F3 | Slylandro Probe    | Lightning shot, asteroid harvest (no-op until M5) |
 | ⌃+4 / ⌃+F4 | Umgah Drone        | Cone shot, **anti-grav reverse impulse** |
 | ⌃+5 / ⌃+F5 | Melnorme Trader    | Plasma shot, confusion (placeholder) |
 
