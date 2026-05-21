@@ -26,6 +26,13 @@ fn main() {
                     primary_window: Some(Window {
                         title: "Starcon".into(),
                         resolution: (1280u32, 720u32).into(),
+                        // On WASM, fill the parent <body> so the canvas
+                        // grows with the browser window. Ignored on native.
+                        fit_canvas_to_parent: true,
+                        // Stop the browser from highlighting the canvas
+                        // or scrolling the page when arrow keys are
+                        // pressed during play.
+                        prevent_default_event_handling: true,
                         ..default()
                     }),
                     ..default()

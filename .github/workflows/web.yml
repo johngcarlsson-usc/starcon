@@ -1,0 +1,83 @@
+name: Build & deploy WASM to GitHub Pages
+
+on:
+  push:
+    branches:
+      - claude/review-timewarp-legacy-ABWTL
+      - main
+  workflow_dispatch:
+
+# Pages deploys need these scopes.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Cancel an in-flight deploy if a newer push comes in.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust + wasm target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Cache wasm-bindgen-cli too so we don't recompile it every run.
+          cache-all-crates: true
+
+      - name: Install wasm-bindgen-cli
+        run: |
+          # Use cargo-binstall to pull a prebuilt binary in seconds
+          # instead of compiling wasm-bindgen-cli from source (~5 min).
+          if ! command -v cargo-binstall >/dev/null; then
+            curl -L --proto '=https' --tlsv1.2 -sSf \
+              https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          fi
+          cargo binstall -y wasm-bindgen-cli
+
+      - name: Build (wasm32, release)
+        run: cargo build --release --bin starcon --target wasm32-unknown-unknown
+
+      - name: Bundle with wasm-bindgen
+        run: |
+          mkdir -p dist
+          wasm-bindgen \
+            --no-typescript \
+            --target web \
+            --out-dir dist/ \
+            --out-name starcon \
+            target/wasm32-unknown-unknown/release/starcon.wasm
+          cp web/index.html dist/
+          cp -r assets dist/assets
+
+      - name: Show build size
+        run: |
+          echo "## Build sizes" >> $GITHUB_STEP_SUMMARY
+          du -sh dist/starcon_bg.wasm dist/assets >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
