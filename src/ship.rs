@@ -3,8 +3,6 @@ use avian2d::prelude::*;
 use bevy::prelude::*;
 use ini::Ini;
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
 
 use crate::input;
 
@@ -36,8 +34,11 @@ pub struct ShipStats {
 }
 
 impl ShipStats {
-    pub fn from_files(code: &str, ini_path: &Path, txt_path: &Path) -> Result<Self, String> {
-        let ini = Ini::load_from_file(ini_path).map_err(|e| format!("ini {code}: {e}"))?;
+    /// Parse stats from already-loaded `.ini` + lore strings. Used by
+    /// `load_ship_catalog` against `include_str!`-baked content so the
+    /// catalog works identically on native and WASM (no `std::fs`).
+    pub fn from_str(code: &str, ini_str: &str, txt_str: &str) -> Result<Self, String> {
+        let ini = Ini::load_from_str(ini_str).map_err(|e| format!("ini {code}: {e}"))?;
         let info = ini.section(Some("Info")).ok_or("missing [Info]")?;
         let ship = ini.section(Some("Ship")).ok_or("missing [Ship]")?;
         let weapon = ini.section(Some("Weapon"));
@@ -51,8 +52,6 @@ impl ShipStats {
         fn g<T: std::str::FromStr + Default>(sec: &ini::Properties, k: &str) -> T {
             sec.get(k).unwrap_or("").trim().parse().unwrap_or_default()
         }
-
-        let description = fs::read_to_string(txt_path).unwrap_or_default();
 
         Ok(Self {
             code: code.to_string(),
@@ -76,10 +75,42 @@ impl ShipStats {
             cost: g(ship, "Cost"),
             weapon_range: weapon.map(|w| g::<f32>(w, "Range")).unwrap_or(0.0),
             weapon_damage: weapon.map(|w| g::<i32>(w, "Damage")).unwrap_or(0),
-            description,
+            description: txt_str.to_string(),
         })
     }
 }
+
+/// Every shipped class's `.ini` + lore baked into the binary via
+/// `include_str!`. Required because WASM can't scan an asset directory;
+/// also nice on native (one source of truth, no filesystem assumption).
+/// Adding a class = one new tuple here + the `ShipClass` enum arm.
+const SHIP_INIS: &[(&str, &str, &str)] = &[
+    ("earcr", include_str!("../assets/ships/earcr.ini"), include_str!("../assets/ships/earcr.txt")),
+    ("spael", include_str!("../assets/ships/spael.ini"), include_str!("../assets/ships/spael.txt")),
+    ("yehte", include_str!("../assets/ships/yehte.ini"), include_str!("../assets/ships/yehte.txt")),
+    ("chmav", include_str!("../assets/ships/chmav.ini"), include_str!("../assets/ships/chmav.txt")),
+    ("kzedr", include_str!("../assets/ships/kzedr.ini"), include_str!("../assets/ships/kzedr.txt")),
+    ("mycpo", include_str!("../assets/ships/mycpo.ini"), include_str!("../assets/ships/mycpo.txt")),
+    ("shosc", include_str!("../assets/ships/shosc.ini"), include_str!("../assets/ships/shosc.txt")),
+    ("arisk", include_str!("../assets/ships/arisk.ini"), include_str!("../assets/ships/arisk.txt")),
+    ("pkufu", include_str!("../assets/ships/pkufu.ini"), include_str!("../assets/ships/pkufu.txt")),
+    ("ilwav", include_str!("../assets/ships/ilwav.ini"), include_str!("../assets/ships/ilwav.txt")),
+    ("thrto", include_str!("../assets/ships/thrto.ini"), include_str!("../assets/ships/thrto.txt")),
+    ("vuxin", include_str!("../assets/ships/vuxin.ini"), include_str!("../assets/ships/vuxin.txt")),
+    ("supbl", include_str!("../assets/ships/supbl.ini"), include_str!("../assets/ships/supbl.txt")),
+    ("kohma", include_str!("../assets/ships/kohma.ini"), include_str!("../assets/ships/kohma.txt")),
+    ("syrpe", include_str!("../assets/ships/syrpe.ini"), include_str!("../assets/ships/syrpe.txt")),
+    ("andgu", include_str!("../assets/ships/andgu.ini"), include_str!("../assets/ships/andgu.txt")),
+    ("chebr", include_str!("../assets/ships/chebr.ini"), include_str!("../assets/ships/chebr.txt")),
+    ("druma", include_str!("../assets/ships/druma.ini"), include_str!("../assets/ships/druma.txt")),
+    ("utwju", include_str!("../assets/ships/utwju.ini"), include_str!("../assets/ships/utwju.txt")),
+    ("zfpst", include_str!("../assets/ships/zfpst.ini"), include_str!("../assets/ships/zfpst.txt")),
+    ("mmrxf", include_str!("../assets/ships/mmrxf.ini"), include_str!("../assets/ships/mmrxf.txt")),
+    ("orzne", include_str!("../assets/ships/orzne.ini"), include_str!("../assets/ships/orzne.txt")),
+    ("slypr", include_str!("../assets/ships/slypr.ini"), include_str!("../assets/ships/slypr.txt")),
+    ("umgdr", include_str!("../assets/ships/umgdr.ini"), include_str!("../assets/ships/umgdr.txt")),
+    ("meltr", include_str!("../assets/ships/meltr.ini"), include_str!("../assets/ships/meltr.txt")),
+];
 
 #[derive(Resource, Debug, Default)]
 pub struct ShipCatalog {
@@ -475,36 +506,16 @@ impl Plugin for ShipPlugin {
 }
 
 pub fn load_ship_catalog(mut commands: Commands) {
-    let dir = Path::new("assets/ships");
     let mut ships = HashMap::new();
-
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) => {
-            error!("failed to read {dir:?}: {e}");
-            return;
-        }
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("ini") {
-            continue;
-        }
-        let code = match path.file_stem().and_then(|s| s.to_str()) {
-            Some(c) => c.to_string(),
-            None => continue,
-        };
-        let txt = path.with_extension("txt");
-        match ShipStats::from_files(&code, &path, &txt) {
+    for (code, ini_str, txt_str) in SHIP_INIS {
+        match ShipStats::from_str(code, ini_str, txt_str) {
             Ok(stats) => {
                 info!("loaded ship {} ({})", stats.code, stats.name);
-                ships.insert(code, stats);
+                ships.insert(code.to_string(), stats);
             }
             Err(e) => warn!("skipping {code}: {e}"),
         }
     }
-
     info!("ship catalog: {} entries", ships.len());
     commands.insert_resource(ShipCatalog { ships });
 }
@@ -699,16 +710,17 @@ fn spawn_ship(
 }
 
 fn load_rotation_frames(assets: &AssetServer, code: &str) -> Vec<Handle<Image>> {
-    // Most ships have 40 or 64 frames named ship_s01..ship_sNN. We probe up
-    // to 64 and keep whatever exists on disk; assets/<code>/manifest.json
-    // has the authoritative list once we wire that loader up properly.
-    let dir = Path::new("assets/ships").join(code).join("sprites");
+    // Every salvaged ship has 64 rotation frames named ship_s01..ship_s64
+    // (VUX is the lone exception — its rotation uses ship_x## with a
+    // _bmp suffix; left as-is for now, VUX will look static until we
+    // ship a per-class sprite-prefix lookup). Issuing 64 loads
+    // unconditionally avoids needing `std::fs::exists`, which doesn't
+    // work in the browser sandbox. AssetServer.load() is fire-and-
+    // forget on both native and WASM: missing files just don't render.
     let mut frames = Vec::with_capacity(64);
     for i in 1..=64 {
         let name = format!("ship_s{i:02}.png");
-        if dir.join(&name).exists() {
-            frames.push(assets.load(format!("ships/{code}/sprites/{name}")));
-        }
+        frames.push(assets.load(format!("ships/{code}/sprites/{name}")));
     }
     frames
 }
