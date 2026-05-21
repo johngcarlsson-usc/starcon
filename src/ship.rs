@@ -395,6 +395,48 @@ pub struct Homing {
     pub turn_rate: f32,
 }
 
+/// Circular area-of-effect damage source. Lives independently of ships
+/// and projectiles. Used for: Shofixti Glory Device burst, Kohr-Ah
+/// sawblade ring, Chenjesu DOGI mines, eventually Slylandro Probe
+/// self-destruct.
+///
+/// Damage is applied continuously at `damage_per_sec` to any ship
+/// inside `radius` whose entity ≠ `source`. Set `source = None` for
+/// "no friendly fire exemption" (Glory Device kills the firer too).
+/// `lifetime` decrements every tick; on expiry the zone despawns.
+#[derive(Component, Debug)]
+pub struct DamageZone {
+    pub radius: f32,
+    pub damage_per_sec: f32,
+    pub lifetime: f32,
+    pub source: Option<Entity>,
+}
+
+/// Spawns a damage zone as a sprite entity (no rigid body — pure
+/// gameplay marker). The sprite is a semi-transparent filled square
+/// the diameter of the zone; replace with a proper circle-outline
+/// shader in M7 polish.
+fn spawn_damage_zone(
+    commands: &mut Commands,
+    source: Option<Entity>,
+    pos: Vec2,
+    radius: f32,
+    damage_per_sec: f32,
+    lifetime: f32,
+    color: Color,
+) {
+    commands.spawn((
+        DamageZone {
+            radius,
+            damage_per_sec,
+            lifetime,
+            source,
+        },
+        Sprite::from_color(color, Vec2::splat(radius * 2.0)),
+        Transform::from_translation(pos.extend(0.2)),
+    ));
+}
+
 /// All 64 rotation frames preloaded so the renderer can pick by heading
 /// without hitting the asset server hot path.
 #[derive(Component)]
@@ -423,6 +465,7 @@ impl Plugin for ShipPlugin {
                 trigger_specials.after(tick_special_cooldown),
                 tick_projectile_lifetime,
                 steer_homing_projectiles,
+                tick_damage_zones,
                 handle_projectile_hits,
                 handle_ship_collisions,
             ),
@@ -562,11 +605,15 @@ pub fn teardown_match(
     mut commands: Commands,
     ships: Query<Entity, With<Ship>>,
     projectiles: Query<Entity, With<Projectile>>,
+    damage_zones: Query<Entity, With<DamageZone>>,
 ) {
     for e in &ships {
         commands.entity(e).despawn();
     }
     for e in &projectiles {
+        commands.entity(e).despawn();
+    }
+    for e in &damage_zones {
         commands.entity(e).despawn();
     }
 }
@@ -1350,6 +1397,46 @@ fn steer_homing_projectiles(
     }
 }
 
+/// Apply damage from every active `DamageZone` to every ship inside its
+/// radius (excluding the zone's `source`, when set), then decrement
+/// lifetimes and despawn expired zones. Shield damage_factor still
+/// applies — a Pkunk in phase shift takes 0 from a Shofixti Glory.
+fn tick_damage_zones(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut zones: Query<(Entity, &Transform, &mut DamageZone)>,
+    mut ships: Query<(Entity, &Position, &mut Crew), With<Ship>>,
+    shields: Query<&ShieldActive>,
+) {
+    let dt = time.delta_secs();
+    for (zone_entity, zone_tf, mut zone) in &mut zones {
+        if zone.damage_per_sec > 0.0 && dt > 0.0 {
+            let zone_pos = zone_tf.translation.truncate();
+            let r2 = zone.radius * zone.radius;
+            for (ship_e, ship_pos, mut crew) in &mut ships {
+                if zone.source == Some(ship_e) {
+                    continue;
+                }
+                if (ship_pos.0 - zone_pos).length_squared() > r2 {
+                    continue;
+                }
+                let factor = shields
+                    .get(ship_e)
+                    .map(|s| s.damage_factor)
+                    .unwrap_or(1.0);
+                let dmg = (zone.damage_per_sec * dt * factor).ceil().max(0.0) as i32;
+                if dmg > 0 {
+                    crew.current = (crew.current - dmg).max(0);
+                }
+            }
+        }
+        zone.lifetime -= dt;
+        if zone.lifetime <= 0.0 {
+            commands.entity(zone_entity).despawn();
+        }
+    }
+}
+
 /// React to Avian `CollisionStart` messages. The physics solver has already
 /// applied the impulse, so all we do here is:
 ///   - Deduct crew from the ship the projectile hit (ignoring self-hits).
@@ -1564,13 +1651,25 @@ fn trigger_specials(
                 cooldown.0 = 2.0;
             }
             ShipClass::Shosc => {
-                // Glory charge — 2000 N·s on a 2 kg Scout gives a
-                // 1000 m/s sprint, the lightest hull and the
-                // hardest impulse together. Real Glory AoE comes
-                // with damage zones in M3.
-                dash(&mut vel, forward * 2000.0);
-                cooldown.0 = 3.0;
-                info!("P{} glory charge", ship.player_slot + 1);
+                // Glory Device — the canonical suicide explosion.
+                // Spawns an instant-burst DamageZone at the ship's
+                // position with source=None (no friendly-fire
+                // exemption), so the Shofixti dies in its own blast
+                // along with anyone nearby. damage_per_sec × short
+                // lifetime ≫ any ship's crew so the radius is a
+                // hard kill zone. Lifetime is brief (0.1 s) so it
+                // doesn't keep damaging long after the bang.
+                spawn_damage_zone(
+                    &mut commands,
+                    None,
+                    pos.0,
+                    250.0,
+                    100_000.0,
+                    0.1,
+                    Color::srgba(1.0, 0.6, 0.2, 0.55),
+                );
+                cooldown.0 = 999.0; // can't fire twice
+                info!("P{} GLORY DEVICE", ship.player_slot + 1);
             }
             ShipClass::Arisk => {
                 // Pure teleport — non-physical, position write is
@@ -1628,12 +1727,27 @@ fn trigger_specials(
                 cooldown.0 = 1.0;
             }
             ShipClass::Kohma => {
-                // Anchor placeholder — apply enough drag impulse to
-                // stop a 20 kg Marauder mid-flight (20 000 N·s caps
-                // out at "stop completely" via the drag closure).
+                // F.R.I.E.D. sawblades — a damage ring around the
+                // Marauder. Stationary at spawn position for now;
+                // making it follow the ship needs a parent-child
+                // transform relationship which lands with the
+                // satellite/orbiter primitive for Chmmr. Source set
+                // to the firer so the Marauder can fly through its
+                // own blades. Brake first so the ship is anchored
+                // while the ring is up — matches the canon "Kohr-Ah
+                // stops to spin sawblades" stance.
                 drag(&mut vel, 20_000.0);
-                cooldown.0 = 3.0;
-                info!("P{} sawblades (placeholder)", ship.player_slot + 1);
+                spawn_damage_zone(
+                    &mut commands,
+                    Some(entity),
+                    pos.0,
+                    95.0,
+                    20.0,
+                    1.5,
+                    Color::srgba(1.0, 0.5, 0.1, 0.4),
+                );
+                cooldown.0 = 4.0;
+                info!("P{} F.R.I.E.D.", ship.player_slot + 1);
             }
             ShipClass::Syrpe => {
                 drag(&mut vel, 20_000.0);
@@ -1648,9 +1762,31 @@ fn trigger_specials(
                 info!("P{} comet", ship.player_slot + 1);
             }
             ShipClass::Chebr => {
-                drag(&mut vel, 20_000.0);
-                cooldown.0 = 3.5;
-                info!("P{} DOGI deploy (placeholder)", ship.player_slot + 1);
+                // DOGI mines — five stationary damage zones in a
+                // ring around the Broodhome. The canonical DOGI is
+                // a small mobile entity that homes on enemies; here
+                // we get the area-denial half of the mechanic
+                // (stand in the wrong place, take damage) without
+                // the mobile-mine sub-entity AI, which lands when
+                // the sub-entity primitive does. Source = self so
+                // the Chenjesu can fly through its own minefield.
+                let count = 5;
+                let mine_dist = 70.0;
+                for i in 0..count {
+                    let angle = std::f32::consts::TAU * (i as f32) / (count as f32);
+                    let offset = Vec2::new(angle.cos(), angle.sin()) * mine_dist;
+                    spawn_damage_zone(
+                        &mut commands,
+                        Some(entity),
+                        pos.0 + offset,
+                        24.0,
+                        6.0,
+                        7.0,
+                        Color::srgba(0.7, 0.8, 1.0, 0.5),
+                    );
+                }
+                cooldown.0 = 5.0;
+                info!("P{} DOGI minefield", ship.player_slot + 1);
             }
             ShipClass::Druma => {
                 // Ship-jump thruster — 4500 N·s on an 18 kg Mauler
