@@ -401,14 +401,22 @@ impl ShipPhysicsDerived {
 
         // Inertial-mode tuning. We pick a per-class rise-time that grows
         // with TurnRate so nimble ships feel sharp and bulky ones lumber.
-        // K_p ≈ 3·I / rise_time gives ~95% of target omega after rise_time.
-        let rise_time = 0.15 * (stats.turn_rate + 1.0); // Earcr (TR=1) → 0.30 s
+        // Inertial-mode controller gain. Tight rise time (~ten ticks)
+        // so player input feels almost as snappy as Classic mode —
+        // the "inertia" comes from collisions, not from controller
+        // sluggishness. Tunable per ship via turn_rate.
+        let rise_time = 0.05 + 0.02 * stats.turn_rate; // Earcr (TR=1) → 70 ms
         let inertial_torque_gain = 3.0 * inertia / rise_time;
 
-        // Angular damping: bleed-off rate when no input. Same inverse
-        // relationship with TurnRate as the controller — nimble ships
-        // are also better at self-righting once player releases input.
-        let angular_damping = 5.0 / (stats.turn_rate + 1.0);
+        // No passive angular damping. In Classic mode it's irrelevant
+        // (we overwrite ang_vel each tick); in Inertial mode the user
+        // explicitly wants imparted spin to *persist* — collisions
+        // should leave the ship tumbling, and only deliberate input
+        // (or another collision) should slow / reverse it. If a
+        // future ship needs intrinsic stability, that lands as a
+        // per-class override or a "stabilizer" Mode field rather than
+        // a global default.
+        let angular_damping = 0.0;
 
         Self {
             speed_max,
@@ -2304,11 +2312,26 @@ fn apply_player_input(
                 torque.0 = 0.0;
             }
             AngularControl::Inertial => {
-                // Proportional torque toward target. Gain is per-ship —
-                // agile ships have a higher gain *relative to* their
-                // smaller moment of inertia, so they snap back faster.
-                let error = target_omega - ang_vel.0;
-                torque.0 = error * derived.inertial_torque_gain;
+                if dir != 0.0 {
+                    // Player is steering — drive toward target_omega
+                    // with the per-ship gain. Rise time ≈ 70 ms so it
+                    // *feels* close to Classic snap; the gain
+                    // automatically fights any existing spin (collision
+                    // impulse, or the opposite turn key cancelling the
+                    // current rate).
+                    let error = target_omega - ang_vel.0;
+                    torque.0 = error * derived.inertial_torque_gain;
+                } else {
+                    // No input — let the ship spin freely. With
+                    // AngularDamping=0 the rate persists indefinitely
+                    // until either the player taps a turn key (which
+                    // re-engages the controller above and brakes /
+                    // reverses the spin) or another collision changes
+                    // it. This is the "out of control after a heavy
+                    // hit, right yourself with deliberate input"
+                    // behaviour the user asked for.
+                    torque.0 = 0.0;
+                }
             }
         }
 

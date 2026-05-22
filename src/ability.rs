@@ -725,7 +725,14 @@ fn spawn_one_projectile(
         Transform::from_translation(muzzle.extend(0.5)),
         RigidBody::Dynamic,
         Collider::circle(volley.sprite_size * 0.5),
-        Mass(0.5),
+        // Projectile mass scales with damage. The collision impulse
+        // Avian imparts on the target is mass·velocity, so this gives
+        // heavy weapons (Mycon plasmoid dmg=10, Kzer-Za fusion dmg=6,
+        // Druuge cannon dmg=6) a real physical kick on top of their
+        // crew damage — heavy hits visibly spin / shove the target
+        // in Inertial mode. Spathi-pellet (dmg=1) stays at 0.5 kg
+        // so machine-gun fire doesn't make ships endlessly tumble.
+        Mass(0.5 + damage.max(0) as f32 * 0.4),
         // `Position` is required because `PhysicsTransformConfig::
         // transform_to_position` is disabled — without this Avian
         // would default the projectile to (0, 0) on its first sync
