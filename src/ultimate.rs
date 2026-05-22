@@ -138,6 +138,11 @@ pub struct UltimateState {
     pub chebr_ring_timer_s: f32,
     // -- Pkunk --
     pub pkunk_clones: Vec<Entity>,
+    /// Width/height of the loaded portrait image. Detected lazily
+    /// once the texture is decoded; zeroed on exit. Used by the
+    /// camera follow / portrait positioning to scale the on-screen
+    /// portrait without stretching it.
+    pub portrait_aspect: f32,
 }
 
 /// Ephemeral clone of a Pkunk ship spawned by its ultimate. Shares
@@ -361,6 +366,7 @@ impl Plugin for UltimatePlugin {
             Update,
             (
                 abort_cinematic_if_ship_gone,
+                detect_portrait_aspect,
                 hyper_trigger,
                 tick_ultimate_phases,
                 drive_camera_during_ultimate,
@@ -972,6 +978,7 @@ fn exit_cinematic(
     state.variant = UltimateVariant::None;
     state.beam_materials.clear();
     state.portrait_material = None;
+    state.portrait_aspect = 0.0;
     zoom_state.target_scale = state.orig_cam_scale;
     state.phase = UltimatePhase::Idle;
     state.phase_timer_s = 0.0;
@@ -1210,7 +1217,18 @@ fn drive_camera_during_ultimate(
             let z = portrait_xf.translation.z;
             portrait_xf.translation = cam_xf.translation + Vec3::new(off_x, off_y, 0.0);
             portrait_xf.translation.z = z;
-            portrait_xf.scale = Vec3::new(620.0 * scale, 930.0 * scale, 1.0);
+            // Preserve the source image's aspect ratio. If we don't
+            // know it yet (image still loading) fall back to the
+            // historical 620×930 (0.667). Once detected, width
+            // = target_height * aspect — no stretching.
+            let target_h = 930.0_f32;
+            let aspect = if state.portrait_aspect > 0.0 {
+                state.portrait_aspect
+            } else {
+                620.0 / 930.0
+            };
+            portrait_xf.scale =
+                Vec3::new(target_h * aspect * scale, target_h * scale, 1.0);
         }
     }
 }
@@ -2200,5 +2218,27 @@ fn tick_pkunk_clone_visual(
         let life_alpha = 0.45 + 0.45 * life;
         let alpha = life_alpha * clone.warp_in_t;
         sprite.color = Color::srgba(r, g, b, alpha);
+    }
+}
+
+/// Each frame while the cinematic is active, check whether the
+/// portrait image has finished decoding; if so, snapshot its
+/// width/height ratio so `drive_camera_during_ultimate` can scale
+/// the portrait without stretching. The probe is cheap (a couple
+/// of asset lookups) and stops the moment the aspect is known.
+fn detect_portrait_aspect(
+    mut state: ResMut<UltimateState>,
+    images: Res<Assets<Image>>,
+    materials: Res<Assets<PortraitMaterial>>,
+) {
+    if state.portrait_aspect > 0.0 || state.phase == UltimatePhase::Idle {
+        return;
+    }
+    let Some(mat_handle) = state.portrait_material.clone() else { return };
+    let Some(mat) = materials.get(&mat_handle) else { return };
+    let Some(image) = images.get(&mat.image) else { return };
+    let size = image.size();
+    if size.x > 0 && size.y > 0 {
+        state.portrait_aspect = size.x as f32 / size.y as f32;
     }
 }

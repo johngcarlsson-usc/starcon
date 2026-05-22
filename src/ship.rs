@@ -779,7 +779,7 @@ pub fn spawn_match(
         &catalog,
         &assets,
         config.p1_class,
-        Vec2::new(-300.0, 0.0),
+        Vec2::new(-900.0, 0.0),
         -std::f32::consts::FRAC_PI_2,
         0,
         &ship_colliders,
@@ -789,11 +789,13 @@ pub fn spawn_match(
         &catalog,
         &assets,
         config.p2_class,
-        Vec2::new(300.0, 0.0),
+        Vec2::new(900.0, 0.0),
         std::f32::consts::FRAC_PI_2,
         1,
         &ship_colliders,
     );
+
+    spawn_asteroids(&mut commands);
 }
 
 /// Class-picker hotkeys. Two ways in:
@@ -923,6 +925,7 @@ pub fn teardown_match(
     sub_entities: Query<Entity, With<SubEntity>>,
     overlays: Query<Entity, With<OverlaySprite>>,
     satellites: Query<Entity, With<ChmmrSatellite>>,
+    asteroids: Query<Entity, With<Asteroid>>,
 ) {
     for e in &ships {
         commands.entity(e).despawn();
@@ -949,6 +952,9 @@ pub fn teardown_match(
         commands.entity(e).despawn();
     }
     for e in &satellites {
+        commands.entity(e).despawn();
+    }
+    for e in &asteroids {
         commands.entity(e).despawn();
     }
 }
@@ -5238,4 +5244,73 @@ fn tick_kohma_passive_blades(
             vel.0 = Vec2::ZERO;
         }
     }
+}
+
+/// Drifting asteroid — a simple Dynamic obstacle that bounces off
+/// ships and other asteroids via Avian's natural physics response.
+/// Canonical SC2 melee fields are scattered with these so the
+/// arena isn't empty space. They don't damage on contact (canon
+/// VSmallAsteroid is similar) — they're physical inertia for
+/// projectiles and ships to interact with.
+#[derive(Component, Debug)]
+pub struct Asteroid;
+
+/// Sprinkle a handful of asteroids at random positions across the
+/// arena, avoiding the player-ship spawn corridors. Called once
+/// per match from `spawn_match`.
+pub fn spawn_asteroids(commands: &mut Commands) {
+    use std::f32::consts::TAU;
+    const N: usize = 8;
+    /// Half-side of the arena (matches STAR_AREA_HALF in starfield
+    /// for symmetry — keeps asteroids visible within the starfield
+    /// region).
+    const HALF: f32 = 3000.0;
+    /// Don't spawn asteroids too close to the ship spawn corridor.
+    const KEEP_OUT_X: f32 = 600.0;
+    const KEEP_OUT_Y: f32 = 350.0;
+
+    for _ in 0..N {
+        let pos = loop {
+            let x = (fastrand::f32() - 0.5) * HALF * 2.0;
+            let y = (fastrand::f32() - 0.5) * HALF * 2.0;
+            // Avoid the spawn corridor around (±900, 0).
+            let near_left = (x - (-900.0)).abs() < KEEP_OUT_X && y.abs() < KEEP_OUT_Y;
+            let near_right = (x - 900.0).abs() < KEEP_OUT_X && y.abs() < KEEP_OUT_Y;
+            if !near_left && !near_right {
+                break Vec2::new(x, y);
+            }
+        };
+        let theta = fastrand::f32() * TAU;
+        let speed = 18.0 + fastrand::f32() * 28.0;
+        let vel = Vec2::new(theta.cos(), theta.sin()) * speed;
+        // Asteroid radius — between small and chunky, with the
+        // sprite drawn slightly bigger than the collider so the
+        // silhouette feels solid.
+        let radius = 22.0 + fastrand::f32() * 16.0;
+        let visual = radius * 2.2;
+        // Earthy grey-brown with small per-asteroid colour jitter
+        // for visual variety.
+        let r = 0.45 + fastrand::f32() * 0.15;
+        let g = 0.40 + fastrand::f32() * 0.15;
+        let b = 0.38 + fastrand::f32() * 0.10;
+        commands.spawn((
+            Asteroid,
+            Sprite::from_color(Color::srgba(r, g, b, 1.0), Vec2::splat(visual)),
+            Transform::from_translation(pos.extend(0.1)),
+            RigidBody::Dynamic,
+            Collider::circle(radius),
+            Mass(4.0 + fastrand::f32() * 3.0),
+            Position(pos),
+            // Restitution gives the collisions some bounce — without
+            // it asteroids would just stick on contact.
+            Restitution::new(0.7),
+            Friction::new(0.0),
+            LinearVelocity(vel),
+            AngularVelocity((fastrand::f32() - 0.5) * 0.6),
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ));
+    }
+    info!("spawned {N} asteroids");
 }

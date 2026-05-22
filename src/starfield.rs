@@ -23,11 +23,18 @@ use bevy::prelude::*;
 
 use crate::ship::Ship;
 
-/// Persistent background star. Currently only carries brightness so
-/// we could later modulate it (twinkle, gradient, etc).
+/// Persistent background star. `anchor` is the star's world position
+/// in the "frozen" frame (i.e. where it would be with no camera
+/// movement). `parallax` is a 0..1 depth — 0 is far background (the
+/// star is locked to the camera, appears stationary on screen) and
+/// 1 is foreground (star is fixed in world, slides past as camera
+/// moves). Intermediate values give the classic multi-layer
+/// parallax slide.
 #[derive(Component, Debug)]
 pub struct BackgroundStar {
     pub brightness: f32,
+    pub anchor: Vec2,
+    pub parallax: f32,
 }
 
 /// Short-lived "you're moving through space" star spawned each time
@@ -114,6 +121,7 @@ impl Plugin for StarfieldPlugin {
                     handle_zoom_input,
                     handle_pinch_zoom,
                     smooth_zoom_scale,
+                    tick_starfield_parallax,
                     tick_zoom_stars,
                 )
                     .chain(),
@@ -121,8 +129,8 @@ impl Plugin for StarfieldPlugin {
     }
 }
 
-const STAR_COUNT: usize = 250;
-const STAR_AREA_HALF: f32 = 2000.0;
+const STAR_COUNT: usize = 480;
+const STAR_AREA_HALF: f32 = 3500.0;
 const STAR_Z_BACKGROUND: f32 = -10.0;
 const STAR_Z_ZOOM_BURST: f32 = -5.0;
 
@@ -130,24 +138,52 @@ fn setup_starfield(mut commands: Commands) {
     for _ in 0..STAR_COUNT {
         let x = (fastrand::f32() - 0.5) * STAR_AREA_HALF * 2.0;
         let y = (fastrand::f32() - 0.5) * STAR_AREA_HALF * 2.0;
-        // Faint stars: 4-22% alpha. Adds visible texture without
-        // competing with the foreground sprites for attention.
-        let brightness = 0.04 + fastrand::f32() * 0.18;
-        // Star size jitter (1-3 px). Larger stars feel "closer."
-        let size = 1.0 + fastrand::f32() * 2.0;
-        // Slight blue/white colour jitter so the field doesn't read
-        // as a flat grid of identical white dots.
+        // Per-star depth — 0 = far background (locked to camera,
+        // appears stationary), 1 = foreground (world-fixed, slides
+        // past at full camera speed). Most stars are far away;
+        // a tail of closer ones gives the eye motion cues.
+        let parallax = (fastrand::f32() * fastrand::f32()).clamp(0.0, 1.0);
+        // Closer stars (high parallax) are brighter and bigger
+        // because they "occupy more pixels per square parsec".
+        let brightness = 0.04 + 0.05 * parallax + fastrand::f32() * 0.18;
+        let size = 1.0 + 2.0 * parallax + fastrand::f32() * 1.5;
         let r = 0.85 + fastrand::f32() * 0.15;
         let g = 0.85 + fastrand::f32() * 0.15;
         let b = 0.9 + fastrand::f32() * 0.1;
+        let anchor = Vec2::new(x, y);
         commands.spawn((
-            BackgroundStar { brightness },
+            BackgroundStar {
+                brightness,
+                anchor,
+                parallax,
+            },
             Sprite::from_color(
                 Color::srgba(r, g, b, brightness),
                 Vec2::splat(size),
             ),
-            Transform::from_translation(Vec3::new(x, y, STAR_Z_BACKGROUND)),
+            Transform::from_translation(anchor.extend(STAR_Z_BACKGROUND)),
         ));
+    }
+}
+
+/// Slide each star's rendered Transform based on the camera's
+/// position. World-fixed stars (parallax = 1) stay put; far-distance
+/// stars (parallax ≈ 0) follow the camera so they appear nearly
+/// stationary on screen. The remaining stars slide at intermediate
+/// rates → classic multi-layer parallax.
+fn tick_starfield_parallax(
+    cameras: Query<&Transform, (With<Camera2d>, Without<BackgroundStar>)>,
+    mut stars: Query<(&BackgroundStar, &mut Transform), Without<Camera2d>>,
+) {
+    let Ok(cam) = cameras.single() else { return };
+    let cam_xy = cam.translation.truncate();
+    for (star, mut xf) in &mut stars {
+        // world_pos = anchor + cam_pos * (1 - parallax).
+        //   parallax=1 → world_pos = anchor (world-fixed).
+        //   parallax=0 → world_pos = anchor + cam (camera-locked).
+        let render = star.anchor + cam_xy * (1.0 - star.parallax);
+        xf.translation.x = render.x;
+        xf.translation.y = render.y;
     }
 }
 
@@ -456,7 +492,32 @@ fn follow_ships_with_camera(
     let needed = span + Vec2::splat(PAD_WU * 2.0);
     let scale_x = needed.x / win.x;
     let scale_y = needed.y / win.y;
-    let target_scale = scale_x.max(scale_y).clamp(SCALE_MIN, SCALE_MAX);
+    let raw_scale = scale_x.max(scale_y).clamp(SCALE_MIN, SCALE_MAX);
+
+    // Hysteresis: only update the target if either
+    //   - the current scale would clip the bbox (must zoom out), or
+    //   - the bbox is *much* smaller than the current framing
+    //     would suggest (zoom in is worth it).
+    // The dead-band between these two conditions kills the
+    // back-and-forth flip we'd otherwise get when the bbox's x
+    // and y dimensions trade places as the binding constraint.
+    let cur = zoom_state.target_scale;
+    let target_scale = if raw_scale > cur {
+        // Must zoom out — the ships are about to leave the frame.
+        // Use a slight overshoot (1.05×) so we don't immediately
+        // trip the same condition next frame as the bbox grows.
+        raw_scale * 1.05
+    } else if raw_scale < cur * 0.65 {
+        // Bbox has shrunk significantly (≈ 1.5× margin) — safe to
+        // tighten the frame. Snap to raw with a small margin so
+        // we don't sit exactly at the threshold.
+        raw_scale * 1.05
+    } else {
+        // Inside the dead-band: keep the current framing. Stops
+        // the wobble that comes from `max(scale_x, scale_y)`
+        // alternating constraints as ships drift.
+        cur
+    };
 
     // Lerp toward both target position and target scale. Higher
     // rate = snappier follow.
