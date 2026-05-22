@@ -67,9 +67,11 @@ fn main() {
             ultimate::UltimatePlugin,
             mobile_controls::MobileControlsPlugin,
         ))
-        .add_systems(Startup, setup_camera)
+        .init_resource::<ship::PreloadedAssets>()
+        .add_systems(Startup, (setup_camera, ship::preload_all_assets))
         .add_systems(OnEnter(AppState::Loading), ship::load_ship_catalog)
         .add_systems(OnEnter(AppState::InMatch), ship::spawn_match)
+        .add_systems(OnEnter(AppState::InMatch), starfield::reset_for_new_match)
         .add_systems(OnEnter(AppState::Resetting), ship::teardown_match)
         .add_systems(
             Update,

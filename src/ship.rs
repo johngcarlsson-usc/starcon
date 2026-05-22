@@ -3916,6 +3916,7 @@ fn handle_projectile_hits(
     limpets: Query<&Limpet>,
     shields: Query<&ShieldActive>,
     damage_to_batt: Query<&DamageToBattery>,
+    asteroids_q: Query<(), With<Asteroid>>,
     mut crews: Query<&mut Crew>,
     mut batteries: Query<&mut Battery>,
     mut velocities: Query<&mut LinearVelocity>,
@@ -3947,6 +3948,17 @@ fn handle_projectile_hits(
         // projectile interactions either — bullets fly past each
         // other.
         if projectiles.get(other_entity).is_ok() {
+            continue;
+        }
+
+        // Asteroid hit by projectile: 1 hp — blow up the rock and
+        // despawn the projectile. Matches canon VSmallAsteroid
+        // behaviour (handle_damage with armour ≈ 0). Projectiles
+        // do nothing else on contact with an asteroid (no chain
+        // damage; no crew loss).
+        if asteroids_q.get(other_entity).is_ok() {
+            commands.entity(other_entity).despawn();
+            commands.entity(proj_entity).despawn();
             continue;
         }
 
@@ -5316,4 +5328,88 @@ pub fn spawn_asteroids(commands: &mut Commands, assets: &AssetServer) {
         ));
     }
     info!("spawned {N} asteroids");
+}
+
+/// Strong-handle keep-alive for every asset the game will ever
+/// touch. Bevy's asset GC drops unreferenced assets, so we stash
+/// strong handles in here at startup; subsequent `assets.load()`
+/// calls then return cached handles without round-tripping the
+/// loader. Eliminates the "first time the Mycon fires a plasmoid
+/// the sprite isn't ready" stutter on the very first encounter.
+#[derive(Resource, Default)]
+pub struct PreloadedAssets {
+    pub handles: Vec<UntypedHandle>,
+}
+
+/// Walk every class in the catalog + every shared asset (asteroids,
+/// ultimate portraits + voices, shaders) and `load` it now so the
+/// asset server has it cached by the time gameplay code asks.
+pub fn preload_all_assets(
+    assets: Res<AssetServer>,
+    mut preloaded: ResMut<PreloadedAssets>,
+) {
+    // Asteroids — all 64 rotation frames.
+    for i in 1..=64u32 {
+        let path = format!("asteroids/astero{:02}.png", i);
+        preloaded
+            .handles
+            .push(assets.load::<Image>(path).untyped());
+    }
+
+    // Ultimate portraits + voices.
+    for code in [
+        "arisk", "earcr", "yehte", "spael", "chebr", "shosc", "pkufu", "slypr",
+    ] {
+        let png = format!("ultimate/portrait_{}.png", code);
+        preloaded
+            .handles
+            .push(assets.load::<Image>(png).untyped());
+        let wav = format!("ultimate/{}_voi.wav", code);
+        preloaded
+            .handles
+            .push(assets.load::<AudioSource>(wav).untyped());
+    }
+    // Arilou stinger SFX (plays right after the voice ends).
+    preloaded.handles.push(
+        assets
+            .load::<AudioSource>("ultimate/arisk_stinger.mp3")
+            .untyped(),
+    );
+
+    // Per-ship rotation frames + shot sprites. Iterate every class
+    // in the catalog and walk up to N_FRAMES indices; the asset
+    // server silently fails on missing files so we just blast the
+    // upper bound.
+    for class in ALL_CLASSES {
+        let code = class.code();
+        // Rotation frames are named ship_pNN.png; canonical SC2
+        // ships have between 8 and 64 frames. Pre-load 0..=63
+        // so even the widest sets are covered.
+        for i in 0..=63u32 {
+            let path = format!("ships/{}/sprites/ship_p{:02}.png", code, i);
+            preloaded
+                .handles
+                .push(assets.load::<Image>(path).untyped());
+        }
+        // Shot sprites — `shot_a01..a10`, `shot_b01..b10`,
+        // `shot_c_NN_tga.png` for crystal-style sprites. Just
+        // blast the typical patterns.
+        for letter in ["a", "b", "c", "d"] {
+            for i in 1..=12u32 {
+                let p = format!("ships/{}/sprites/shot_{}{:02}.png", code, letter, i);
+                preloaded
+                    .handles
+                    .push(assets.load::<Image>(p).untyped());
+                let pt = format!(
+                    "ships/{}/sprites/shot_{}_{:02}_tga.png",
+                    code, letter, i
+                );
+                preloaded
+                    .handles
+                    .push(assets.load::<Image>(pt).untyped());
+            }
+        }
+    }
+
+    info!("preloaded {} asset handles", preloaded.handles.len());
 }

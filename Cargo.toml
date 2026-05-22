@@ -25,6 +25,7 @@ bevy = { version = "0.18", default-features = false, features = [
     "bevy_asset",
     "bevy_audio",
     "wav",
+    "mp3",
     "png",
     "x11",
     "webgl2",

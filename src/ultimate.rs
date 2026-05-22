@@ -177,6 +177,22 @@ pub struct SlylandroLaunched {
     pub damage: i32,
     pub remaining_s: f32,
     pub total_s: f32,
+    /// Counts down from SLYP_HIT_FLASH_S on each crew hit so the
+    /// asteroid flashes white briefly — visible confirmation that
+    /// this rock just landed damage. Decremented in
+    /// `tick_slylandro_glow`.
+    pub hit_flash_remaining_s: f32,
+}
+
+/// Fading ghost of a SlylandroLaunched asteroid spawned each tick
+/// behind it for the trail effect. Carries its source sprite handle
+/// and an initial tint; tick_asteroid_ghosts decays alpha over the
+/// total lifetime and despawns on zero.
+#[derive(Component, Debug)]
+pub struct AsteroidGhost {
+    pub remaining_s: f32,
+    pub total_s: f32,
+    pub base_color: Color,
 }
 
 /// Yehat ultimate sub-entity — a fighter orbiting the parent
@@ -377,6 +393,14 @@ pub struct BeamTrail {
 #[derive(Component)]
 pub struct UltimatePortraitTag;
 
+/// Marker on the audio entity playing the Arilou ultimate voice
+/// line. When this entity gets despawned (PlaybackSettings::DESPAWN
+/// fires when the clip ends), `watch_arilou_voice_end` picks up
+/// the removal via `RemovedComponents` and immediately spawns the
+/// stinger SFX so it lands right on the heel of the voice.
+#[derive(Component)]
+pub struct ArilouVoicePlayer;
+
 // ----------------------------------------------------------------
 // Plugin.
 // ----------------------------------------------------------------
@@ -391,6 +415,11 @@ impl Plugin for UltimatePlugin {
             Material2dPlugin::<SoftBladeMaterial>::default(),
         ))
         .init_resource::<UltimateState>()
+        // Bevy's tuple Bundle impl tops out at ~16 systems per
+        // chain. Split the cinematic pipeline into two phases —
+        // the second strictly follows the first (chain across the
+        // two add_systems calls is implicit because Update runs
+        // them in registration order within the same schedule).
         .add_systems(
             Update,
             (
@@ -406,6 +435,12 @@ impl Plugin for UltimatePlugin {
                 tick_earthling_blast,
                 tick_blast_trails,
                 tick_yehat_battle_fleet,
+            )
+                .chain(),
+        )
+        .add_systems(
+            Update,
+            (
                 tick_spathi_barrage,
                 tick_chenjesu_tempest,
                 tick_shofixti_nova,
@@ -413,7 +448,9 @@ impl Plugin for UltimatePlugin {
                 tick_pkunk_clone_visual,
                 tick_slylandro_storm,
                 tick_slylandro_glow,
+                tick_asteroid_ghosts,
                 handle_slylandro_asteroid_hits,
+                watch_arilou_voice_end,
             )
                 .chain(),
         );
@@ -495,16 +532,24 @@ const PKUNK_PAN_FAR_SCALE: f32 = 1.2;
 const SLYP_CHARGE_S: f32 = 0.8;
 const SLYP_STORM_S: f32 = 4.0;
 /// Min/max launch speed of each asteroid (world units / second).
-/// The randomisation across this range gives the swarm its chaotic
-/// feel.
-const SLYP_LAUNCH_SPEED_MIN: f32 = 440.0;
-const SLYP_LAUNCH_SPEED_MAX: f32 = 1240.0;
+/// Doubled from the first pass + narrower spread so the swarm
+/// actually connects with the target instead of overshooting in
+/// every direction.
+const SLYP_LAUNCH_SPEED_MIN: f32 = 880.0;
+const SLYP_LAUNCH_SPEED_MAX: f32 = 2480.0;
+/// Max angular jitter applied to each asteroid's intercept aim,
+/// in radians. ±0.08 ≈ ±4.6° — enough that the swarm spreads
+/// visually but tight enough to actually hit a moving target.
+const SLYP_AIM_JITTER_RAD: f32 = 0.08;
 /// How long an asteroid stays "armed" — glowing and dealing contact
 /// damage — after launch. Once it expires the rock returns to
 /// being an inert physical obstacle.
 const SLYP_ARMED_LIFE_S: f32 = 5.0;
 /// Crew damage dealt per asteroid contact event.
 const SLYP_ASTEROID_DAMAGE: i32 = 6;
+/// On a damage hit the asteroid flashes white for this long so the
+/// player can see which rocks are landing crew damage.
+const SLYP_HIT_FLASH_S: f32 = 0.18;
 
 fn portrait_path(variant: UltimateVariant) -> &'static str {
     match variant {
@@ -776,12 +821,19 @@ fn hyper_trigger(
     virt.pause();
     state.was_paused = true;
 
-    // Vocal sample. `PlaybackSettings::DESPAWN` removes the AudioPlayer
-    // entity when the clip finishes so we don't accumulate.
-    commands.spawn((
+    // Vocal sample. `PlaybackSettings::DESPAWN` removes the
+    // AudioPlayer entity when the clip finishes so we don't
+    // accumulate. The Arilou variant additionally tags the
+    // entity with `ArilouVoicePlayer` — `watch_arilou_voice_end`
+    // notices when that marker is removed (because the entity
+    // despawned) and fires the stinger SFX in the same tick.
+    let mut voice = commands.spawn((
         AudioPlayer::<AudioSource>(assets.load(voice_path(state.variant))),
         PlaybackSettings::DESPAWN,
     ));
+    if state.variant == UltimateVariant::Arilou {
+        voice.insert(ArilouVoicePlayer);
+    }
 
     info!("ULTIMATE: P{} {}", ship.player_slot + 1, class.code());
 }
@@ -2333,94 +2385,168 @@ fn detect_portrait_aspect(
 // Slylandro — asteroid storm ultimate
 // ----------------------------------------------------------------
 
-/// On entry to SlylandroCharging: stamp every Asteroid with the
-/// `SlylandroLaunched` marker (full life = SLYP_ARMED_LIFE_S) and
-/// kick its velocity to a random launch direction roughly toward
-/// the nearest enemy ship. The asteroid then glows + does
-/// CollisionStart damage via `handle_slylandro_asteroid_hits`.
+/// Slylandro flow split across two phases:
+///   - On entry to SlylandroCharging: zero every Asteroid's
+///     linear + angular velocity ("dead stop") and stamp the
+///     SlylandroLaunched marker so they immediately start
+///     glowing. No impulse yet — the rocks just freeze + light up.
+///   - On entry to SlylandroStorm: pick the nearest enemy ship,
+///     compute a *predictive* intercept for each asteroid using
+///     the target's current velocity, and write that intercept
+///     velocity as a one-shot impulse. Speeds are randomised in
+///     [SLYP_LAUNCH_SPEED_MIN, _MAX], aim is jittered by at most
+///     SLYP_AIM_JITTER_RAD on either side.
 fn tick_slylandro_storm(
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
-    ships: Query<(Entity, &crate::ship::Ship, &Position)>,
+    ships: Query<(Entity, &crate::ship::Ship, &Position, &LinearVelocity)>,
     mut asteroids: Query<
-        (Entity, &mut LinearVelocity, &Position, Option<&SlylandroLaunched>),
+        (
+            Entity,
+            &mut LinearVelocity,
+            &mut AngularVelocity,
+            &Position,
+            Option<&SlylandroLaunched>,
+        ),
         (With<crate::ship::Asteroid>, Without<crate::ship::Ship>),
     >,
 ) {
     if state.variant != UltimateVariant::Slylandro {
         return;
     }
-    // Single-frame launch trigger on entry to SlylandroStorm.
-    if state.phase != UltimatePhase::SlylandroStorm {
-        return;
-    }
-    // Use phase_timer to fire-once.
-    if state.phase_timer_s > 0.02 {
+    let Some(firer) = state.player_entity else { return };
+
+    // Phase 1: freeze + arm. Fire once on entry to Charging.
+    if state.phase == UltimatePhase::SlylandroCharging && state.phase_timer_s <= 0.02 {
+        let mut stopped = 0;
+        for (asteroid, mut lin, mut ang, _pos, marker) in &mut asteroids {
+            if marker.is_some() {
+                continue;
+            }
+            lin.0 = Vec2::ZERO;
+            ang.0 = 0.0;
+            commands.entity(asteroid).insert(SlylandroLaunched {
+                owner: firer,
+                damage: SLYP_ASTEROID_DAMAGE,
+                remaining_s: SLYP_ARMED_LIFE_S,
+                total_s: SLYP_ARMED_LIFE_S,
+                hit_flash_remaining_s: 0.0,
+            });
+            stopped += 1;
+        }
+        info!("Slylandro storm: froze {} asteroids", stopped);
+        // Bump the timer just enough that we don't re-trigger.
+        state.phase_timer_s = 0.05;
         return;
     }
 
-    let Some(firer) = state.player_entity else { return };
-    let Ok((_, firer_ship, firer_pos)) = ships.get(firer) else { return };
+    // Phase 2: launch impulse. Fire once on entry to Storm.
+    if state.phase != UltimatePhase::SlylandroStorm || state.phase_timer_s > 0.02 {
+        return;
+    }
+
+    let Ok((_, firer_ship, firer_pos, _)) = ships.get(firer) else { return };
     let firer_slot = firer_ship.player_slot;
 
-    // Find the nearest non-friendly ship — the target of the swarm.
-    let mut target_pos: Option<Vec2> = None;
+    // Pick the nearest non-friendly ship to aim the swarm at.
+    let mut target_state: Option<(Vec2, Vec2)> = None;
     let mut best_d2 = f32::INFINITY;
-    for (e, s, p) in &ships {
+    for (e, s, p, v) in &ships {
         if e == firer || s.player_slot == firer_slot {
             continue;
         }
         let d2 = (p.0 - firer_pos.0).length_squared();
         if d2 < best_d2 {
             best_d2 = d2;
-            target_pos = Some(p.0);
+            target_state = Some((p.0, v.0));
         }
     }
-    // If no enemy is alive, aim at the centroid of the arena
-    // (more useful than aiming nowhere — at least the swarm flies).
-    let target = target_pos.unwrap_or(Vec2::ZERO);
+    // No enemy → aim toward the world centre. Better than nothing
+    // (and won't happen during a normal match).
+    let (target_pos, target_vel) =
+        target_state.unwrap_or((Vec2::ZERO, Vec2::ZERO));
 
     let mut count = 0;
-    for (asteroid, mut vel, pos, marker) in &mut asteroids {
-        if marker.is_some() {
-            // Already launched (e.g. left over from a previous ult).
+    for (_asteroid, mut vel, _ang, pos, marker) in &mut asteroids {
+        if marker.is_none() {
+            // Asteroid wasn't armed during charging — skip.
             continue;
         }
-        // Aim toward the target, but with up to ±25° random angle
-        // jitter so the swarm spreads instead of becoming a tight
-        // line.
-        let delta = target - pos.0;
-        let base = if delta.length_squared() > 1.0 {
-            delta.normalize()
-        } else {
-            // Random direction if the asteroid is right at the
-            // target's position.
-            let theta = fastrand::f32() * std::f32::consts::TAU;
-            Vec2::new(theta.cos(), theta.sin())
-        };
-        let jitter = (fastrand::f32() - 0.5) * 0.85; // ±0.42 rad ≈ ±24°
-        let (c, s) = (jitter.cos(), jitter.sin());
-        let dir = Vec2::new(base.x * c - base.y * s, base.x * s + base.y * c);
+        // Per-asteroid random speed across the launch range.
         let speed = SLYP_LAUNCH_SPEED_MIN
             + fastrand::f32() * (SLYP_LAUNCH_SPEED_MAX - SLYP_LAUNCH_SPEED_MIN);
-        // One-shot impulse: just rewrite the velocity. The asteroid
-        // keeps its mass/restitution so subsequent bounces feel
-        // physical.
+        // Predictive aim: solve the quadratic for the time τ at
+        // which a projectile launched from `pos.0` at `speed` will
+        // intercept a target at `target_pos` moving with
+        // `target_vel`. If the target is faster than the projectile
+        // and moving away, or no positive root exists, fall back
+        // to a direct aim at the current target position.
+        let delta = target_pos - pos.0;
+        let intercept_dir = match intercept_time(delta, target_vel, speed) {
+            Some(tau) => {
+                let intercept = target_pos + target_vel * tau;
+                let aim = intercept - pos.0;
+                if aim.length_squared() > 1.0 {
+                    aim.normalize()
+                } else {
+                    delta.normalize_or_zero()
+                }
+            }
+            None => delta.normalize_or_zero(),
+        };
+        // Apply a small random jitter around the intercept aim so
+        // the swarm doesn't read as 8 lines converging to a point.
+        let jitter =
+            (fastrand::f32() - 0.5) * 2.0 * SLYP_AIM_JITTER_RAD;
+        let (cj, sj) = (jitter.cos(), jitter.sin());
+        let dir = Vec2::new(
+            intercept_dir.x * cj - intercept_dir.y * sj,
+            intercept_dir.x * sj + intercept_dir.y * cj,
+        );
         vel.0 = dir * speed;
-        commands.entity(asteroid).insert(SlylandroLaunched {
-            owner: firer,
-            damage: SLYP_ASTEROID_DAMAGE,
-            remaining_s: SLYP_ARMED_LIFE_S,
-            total_s: SLYP_ARMED_LIFE_S,
-        });
         count += 1;
     }
     info!(
-        "Slylandro storm launched {} asteroids toward ({:.0}, {:.0})",
-        count, target.x, target.y
+        "Slylandro storm: launched {} asteroids (predictive aim, target_vel=({:.0}, {:.0}))",
+        count, target_vel.x, target_vel.y
     );
-    // Bump phase_timer just enough that we don't re-trigger next tick.
     state.phase_timer_s = 0.05;
+}
+
+/// Classic intercept-time solver for a projectile launching from
+/// the origin at speed `s` toward a target moving with velocity
+/// `tv` and current relative position `d`. Returns the smaller
+/// positive root of `(tv·tv - s²)·t² + 2(d·tv)·t + d·d = 0`, or
+/// `None` if no positive intercept exists (target outrunning a
+/// slow projectile is the typical failure case).
+fn intercept_time(d: Vec2, tv: Vec2, s: f32) -> Option<f32> {
+    let a = tv.length_squared() - s * s;
+    let b = 2.0 * d.dot(tv);
+    let c = d.length_squared();
+    if a.abs() < 1e-6 {
+        if b.abs() < 1e-6 {
+            return None;
+        }
+        let t = -c / b;
+        return (t > 0.0).then_some(t);
+    }
+    let disc = b * b - 4.0 * a * c;
+    if disc < 0.0 {
+        return None;
+    }
+    let sd = disc.sqrt();
+    let t1 = (-b + sd) / (2.0 * a);
+    let t2 = (-b - sd) / (2.0 * a);
+    // Smallest positive root (= soonest intercept).
+    let candidates = [t1, t2];
+    candidates
+        .iter()
+        .copied()
+        .filter(|t| t.is_finite() && *t > 0.0)
+        .fold(None, |acc: Option<f32>, t| match acc {
+            None => Some(t),
+            Some(prev) => Some(prev.min(t)),
+        })
 }
 
 /// While `SlylandroLaunched` is on an asteroid, tick its remaining
@@ -2431,12 +2557,20 @@ fn tick_slylandro_storm(
 fn tick_slylandro_glow(
     time: Res<Time>,
     mut commands: Commands,
-    mut q: Query<(Entity, &mut SlylandroLaunched, &mut Sprite)>,
+    mut q: Query<(
+        Entity,
+        &mut SlylandroLaunched,
+        &mut Sprite,
+        &Position,
+        &Transform,
+    )>,
 ) {
     let dt = time.delta_secs();
     let t = time.elapsed_secs();
-    for (e, mut launched, mut sprite) in &mut q {
+    for (e, mut launched, mut sprite, pos, xf) in &mut q {
         launched.remaining_s -= dt;
+        launched.hit_flash_remaining_s =
+            (launched.hit_flash_remaining_s - dt).max(0.0);
         if launched.remaining_s <= 0.0 {
             // Done glowing — restore default white tint so the
             // asteroid sprite renders at its native colour.
@@ -2446,16 +2580,73 @@ fn tick_slylandro_glow(
             }
             continue;
         }
-        // Glow pulses fast — feels like crackling energy.
-        let pulse = (t * 18.0).sin() * 0.5 + 0.5;
+
+        // Tint: hot-flash white briefly after a damage hit,
+        // otherwise a pulsing cyan-white glow.
         let life_frac = (launched.remaining_s / launched.total_s).clamp(0.0, 1.0);
-        // Hot-core white + cyan halo. Brightness drops as the
-        // asteroid's energy dissipates near the end.
-        let r = 0.65 + 0.35 * pulse * life_frac;
-        let g = 0.85 + 0.15 * pulse;
-        let b = 1.0;
-        let a = 0.6 + 0.4 * pulse * life_frac;
-        sprite.color = Color::srgba(r, g, b, a);
+        let flash = (launched.hit_flash_remaining_s / SLYP_HIT_FLASH_S).clamp(0.0, 1.0);
+        if flash > 0.0 {
+            sprite.color = Color::srgba(1.0, 1.0, 1.0, 1.0);
+        } else {
+            let pulse = (t * 18.0).sin() * 0.5 + 0.5;
+            let r = 0.65 + 0.35 * pulse * life_frac;
+            let g = 0.85 + 0.15 * pulse;
+            let b = 1.0;
+            let a = 0.6 + 0.4 * pulse * life_frac;
+            sprite.color = Color::srgba(r, g, b, a);
+        }
+
+        // Emit one fading ghost copy per asteroid per frame — the
+        // "comet trail" look. Reuses the asteroid's current sprite
+        // image so the trail visually matches.
+        let trail_color =
+            Color::srgba(0.55, 0.85, 1.0, 0.55 * life_frac);
+        commands.spawn((
+            AsteroidGhost {
+                remaining_s: 0.40,
+                total_s: 0.40,
+                base_color: trail_color,
+            },
+            Sprite {
+                image: sprite.image.clone(),
+                color: trail_color,
+                custom_size: sprite.custom_size,
+                ..default()
+            },
+            Transform {
+                translation: pos.0.extend(0.05),
+                // Inherit a snapshot of the current rotation so
+                // the trail "ghost" looks like the rock at that
+                // moment.
+                rotation: xf.rotation,
+                scale: xf.scale,
+            },
+        ));
+    }
+}
+
+/// Decay each AsteroidGhost's alpha + slight scale over its life
+/// and despawn at zero. Same shape as BeamTrail but textured.
+fn tick_asteroid_ghosts(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut AsteroidGhost, &mut Sprite, &mut Transform)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut ghost, mut sprite, mut xf) in &mut q {
+        ghost.remaining_s -= dt;
+        if ghost.remaining_s <= 0.0 {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
+            continue;
+        }
+        let frac = (ghost.remaining_s / ghost.total_s).clamp(0.0, 1.0);
+        let lin = ghost.base_color.to_linear();
+        let alpha = lin.alpha * frac.powf(0.6);
+        sprite.color = Color::srgba(lin.red, lin.green, lin.blue, alpha);
+        // Slight scale shrink so the ghost "thins out" as it fades.
+        xf.scale *= 0.985;
     }
 }
 
@@ -2467,7 +2658,7 @@ fn tick_slylandro_glow(
 /// target multiple times.
 fn handle_slylandro_asteroid_hits(
     mut reader: MessageReader<CollisionStart>,
-    launched: Query<&SlylandroLaunched>,
+    mut launched: Query<&mut SlylandroLaunched>,
     ships: Query<&crate::ship::Ship>,
     shields: Query<&crate::ship::ShieldActive>,
     mut crews: Query<&mut crate::ship::Crew>,
@@ -2480,10 +2671,13 @@ fn handle_slylandro_asteroid_hits(
         } else {
             continue;
         };
-        let Ok(launch) = launched.get(asteroid) else { continue };
-        if launch.owner == ship_e {
-            continue;
-        }
+        let damage_amt = {
+            let Ok(launch) = launched.get(asteroid) else { continue };
+            if launch.owner == ship_e {
+                continue;
+            }
+            launch.damage
+        };
         // Only damage ships — bounces off other asteroids or
         // projectiles are physics-only.
         if ships.get(ship_e).is_err() {
@@ -2493,11 +2687,41 @@ fn handle_slylandro_asteroid_hits(
             .get(ship_e)
             .map(|s| s.damage_factor)
             .unwrap_or(1.0);
-        let dmg = ((launch.damage as f32 * factor).round() as i32).max(0);
+        let dmg = ((damage_amt as f32 * factor).round() as i32).max(0);
         if dmg > 0 {
             if let Ok(mut crew) = crews.get_mut(ship_e) {
                 crew.current = (crew.current - dmg).max(0);
             }
+            // Flash the asteroid white so the player can see
+            // which rocks landed crew damage this frame.
+            if let Ok(mut launch) = launched.get_mut(asteroid) {
+                launch.hit_flash_remaining_s = SLYP_HIT_FLASH_S;
+            }
         }
+    }
+}
+
+/// Watch the Arilou voice playback entity for despawn — when it
+/// happens, fire the stinger SFX so it lands the instant the voice
+/// ends. `RemovedComponents` yields the entities whose
+/// `ArilouVoicePlayer` was removed this frame, which (because the
+/// component is only on the voice entity and that entity has
+/// `PlaybackSettings::DESPAWN`) coincides exactly with the voice
+/// finishing playback.
+fn watch_arilou_voice_end(
+    mut removed: RemovedComponents<ArilouVoicePlayer>,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+) {
+    let mut fired = false;
+    for _ in removed.read() {
+        if fired {
+            continue;
+        }
+        fired = true;
+        commands.spawn((
+            AudioPlayer::<AudioSource>(assets.load("ultimate/arisk_stinger.mp3")),
+            PlaybackSettings::DESPAWN,
+        ));
     }
 }

@@ -77,6 +77,11 @@ pub struct ZoomState {
     /// snap the camera + scale to the tight bounding box instead
     /// of slowly easing in.
     pub last_ship_count: usize,
+    /// `Time<Real>` instant at which `CameraFollowMode::Manual`
+    /// should revert to `Auto`. Wheel / pinch input flips to
+    /// Manual + sets this to (now + REVERT_DELAY_S). Press `C`
+    /// to flip permanently (sets this to f32::INFINITY).
+    pub manual_revert_at: f32,
 }
 
 /// Captured at the moment of a scroll event: `offset_px` is the
@@ -97,6 +102,7 @@ impl Default for ZoomState {
             last_pinch_dist: None,
             pivot: None,
             last_ship_count: 0,
+            manual_revert_at: 0.0,
         }
     }
 }
@@ -196,6 +202,11 @@ fn tick_starfield_parallax(
 const ZOOM_STEP: f32 = 1.05;
 const SCALE_MIN: f32 = 0.25;
 const SCALE_MAX: f32 = 6.0;
+/// How many seconds of zoom-input silence before the camera
+/// auto-reverts from Manual back to Auto follow. The follow's
+/// existing lerp then gradually slides the framing back to the
+/// bounding box — no jarring snap.
+const MANUAL_REVERT_DELAY_S: f32 = 3.5;
 /// Higher = snappier tween (1/seconds). At 8.0 the actual scale
 /// reaches ~95% of target in ~0.4 s — smooth but not laggy.
 const SMOOTHING_RATE: f32 = 8.0;
@@ -206,6 +217,7 @@ const SMOOTHING_RATE: f32 = 8.0;
 /// instead of an instant snap.
 fn handle_zoom_input(
     mut commands: Commands,
+    time: Res<Time<Real>>,
     mut scroll: MessageReader<MouseWheel>,
     mut zoom_state: ResMut<ZoomState>,
     mut follow_mode: ResMut<CameraFollowMode>,
@@ -224,10 +236,12 @@ fn handle_zoom_input(
         return;
     }
 
-    // Any wheel input switches the camera to Manual mode so the
-    // auto-follow doesn't immediately undo the zoom on the next
-    // frame. Press `C` to return to Auto.
+    // Wheel input switches the camera to Manual mode briefly so
+    // the auto-follow doesn't immediately undo the zoom — but
+    // schedule a revert to Auto after REVERT_DELAY_S of stillness
+    // so the player isn't permanently locked out of bbox-follow.
     *follow_mode = CameraFollowMode::Manual;
+    zoom_state.manual_revert_at = time.elapsed_secs() + MANUAL_REVERT_DELAY_S;
 
     let zoom_dir = delta_total.signum();
     zoom_state.last_scroll_dir = zoom_dir;
@@ -384,6 +398,7 @@ fn tick_zoom_stars(
 /// `ZoomState.target_scale`, so the existing `smooth_zoom_scale`
 /// tween picks up the change automatically.
 fn handle_pinch_zoom(
+    time: Res<Time<Real>>,
     touches: Res<Touches>,
     mut zoom_state: ResMut<ZoomState>,
     mut follow_mode: ResMut<CameraFollowMode>,
@@ -413,9 +428,11 @@ fn handle_pinch_zoom(
         zoom_state.last_pinch_dist = Some(dist);
         return;
     }
-    // Active pinch implies the user is intentionally zooming —
-    // switch to Manual so auto-follow doesn't fight it.
+    // Active pinch implies intentional zooming — switch to Manual
+    // briefly, but schedule a revert so the user isn't locked out
+    // of the bbox follow forever.
     *follow_mode = CameraFollowMode::Manual;
+    zoom_state.manual_revert_at = time.elapsed_secs() + MANUAL_REVERT_DELAY_S;
     // Spread fingers (ratio>1) = zoom in = smaller ortho scale.
     let new_scale = (zoom_state.target_scale / ratio).clamp(SCALE_MIN, SCALE_MAX);
     zoom_state.target_scale = new_scale;
@@ -427,15 +444,36 @@ fn handle_pinch_zoom(
 /// the user left it. Switching back to Auto re-centres on the
 /// midpoint of all live ships.
 fn toggle_camera_follow_mode(
+    time: Res<Time<Real>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut mode: ResMut<CameraFollowMode>,
+    mut zoom_state: ResMut<ZoomState>,
 ) {
     if keys.just_pressed(KeyCode::KeyC) {
         *mode = match *mode {
-            CameraFollowMode::Auto => CameraFollowMode::Manual,
-            CameraFollowMode::Manual => CameraFollowMode::Auto,
+            CameraFollowMode::Auto => {
+                // Permanent Manual — `manual_revert_at` of INFINITY
+                // disables the auto-revert.
+                zoom_state.manual_revert_at = f32::INFINITY;
+                CameraFollowMode::Manual
+            }
+            CameraFollowMode::Manual => {
+                // Back to Auto immediately.
+                zoom_state.manual_revert_at = 0.0;
+                CameraFollowMode::Auto
+            }
         };
         info!("camera follow: {:?}", *mode);
+    }
+
+    // Auto-revert: any non-permanent Manual mode flips back to
+    // Auto once the player has stopped zooming for a few seconds.
+    if *mode == CameraFollowMode::Manual
+        && zoom_state.manual_revert_at != f32::INFINITY
+        && time.elapsed_secs() >= zoom_state.manual_revert_at
+    {
+        *mode = CameraFollowMode::Auto;
+        zoom_state.manual_revert_at = 0.0;
     }
 }
 
@@ -548,4 +586,16 @@ fn follow_ships_with_camera(
     }
     let cur = zoom_state.target_scale;
     zoom_state.target_scale = cur + (target_scale - cur) * blend;
+}
+
+/// Reset the snap-detection counter whenever a new match begins so
+/// the first follow tick reliably triggers a 0→N transition + snap.
+/// Without this, the `last_ship_count` carried over from the previous
+/// match would stay equal to the new ship count and the snap branch
+/// in `follow_ships_with_camera` would never fire.
+pub fn reset_for_new_match(mut zoom_state: ResMut<ZoomState>) {
+    zoom_state.last_ship_count = 0;
+    // Force the next follow tick to take the snap branch even if
+    // the camera was at the right place before the rematch.
+    zoom_state.manual_revert_at = 0.0;
 }
