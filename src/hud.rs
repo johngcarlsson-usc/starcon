@@ -362,7 +362,10 @@ fn update_status_banner(
 ) {
     for mut text in &mut q {
         text.0 = match *phase {
-            MatchPhase::Live => format!("{} — {}", outcome.p1_wins, outcome.p2_wins),
+            // Hide the running score during play — it sat in the
+            // middle of the screen and got in the way. The
+            // post-match banner still shows the winner + score.
+            MatchPhase::Live => String::new(),
             MatchPhase::PostMatch => match outcome.winner {
                 Some(0) => format!(
                     "P1 WINS  ({}-{})\n[R] rematch",
