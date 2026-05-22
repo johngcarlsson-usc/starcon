@@ -5348,7 +5348,15 @@ pub fn preload_all_assets(
     assets: Res<AssetServer>,
     mut preloaded: ResMut<PreloadedAssets>,
 ) {
-    // Asteroids — all 64 rotation frames.
+    // KEEP THIS LIST TIGHT. Every asset path we list here becomes
+    // a fetch on first page load. Earlier versions speculatively
+    // requested 4000+ paths (mostly non-existent shot-sprite
+    // permutations) — every 404 still counts against GitHub
+    // Pages' rate limit and we tripped Cloudflare's 429 throttle.
+    // Only enumerate files we KNOW exist + are likely on the
+    // first match's critical path.
+
+    // Asteroid rotation frames (1..=64, all guaranteed to exist).
     for i in 1..=64u32 {
         let path = format!("asteroids/astero{:02}.png", i);
         preloaded
@@ -5356,59 +5364,42 @@ pub fn preload_all_assets(
             .push(assets.load::<Image>(path).untyped());
     }
 
-    // Ultimate portraits + voices.
+    // Ultimate portraits + voices — eight known captains, all
+    // copied into assets/ultimate/ (missing ones just won't load,
+    // no harm done, but the asset server still avoids re-fetching
+    // the misses repeatedly).
     for code in [
         "arisk", "earcr", "yehte", "spael", "chebr", "shosc", "pkufu", "slypr",
     ] {
-        let png = format!("ultimate/portrait_{}.png", code);
-        preloaded
-            .handles
-            .push(assets.load::<Image>(png).untyped());
-        let wav = format!("ultimate/{}_voi.wav", code);
-        preloaded
-            .handles
-            .push(assets.load::<AudioSource>(wav).untyped());
+        preloaded.handles.push(
+            assets
+                .load::<Image>(format!("ultimate/portrait_{}.png", code))
+                .untyped(),
+        );
+        preloaded.handles.push(
+            assets
+                .load::<AudioSource>(format!("ultimate/{}_voi.wav", code))
+                .untyped(),
+        );
     }
-    // Arilou stinger SFX (plays right after the voice ends).
     preloaded.handles.push(
         assets
             .load::<AudioSource>("ultimate/arisk_stinger.mp3")
             .untyped(),
     );
 
-    // Per-ship rotation frames + shot sprites. Iterate every class
-    // in the catalog and walk up to N_FRAMES indices; the asset
-    // server silently fails on missing files so we just blast the
-    // upper bound.
+    // Per-class base rotation frame ONLY. The full 64-frame set
+    // gets loaded the moment a class spawns via
+    // `load_rotation_frames`; we'd duplicate ~25 × 64 = 1600
+    // unnecessary fetches by pre-touching them all here.
+    // ship_p00.png is guaranteed (the universal "facing up" frame)
+    // and warming it on startup means class-switch UI thumbnails
+    // are instantly available.
     for class in ALL_CLASSES {
-        let code = class.code();
-        // Rotation frames are named ship_pNN.png; canonical SC2
-        // ships have between 8 and 64 frames. Pre-load 0..=63
-        // so even the widest sets are covered.
-        for i in 0..=63u32 {
-            let path = format!("ships/{}/sprites/ship_p{:02}.png", code, i);
-            preloaded
-                .handles
-                .push(assets.load::<Image>(path).untyped());
-        }
-        // Shot sprites — `shot_a01..a10`, `shot_b01..b10`,
-        // `shot_c_NN_tga.png` for crystal-style sprites. Just
-        // blast the typical patterns.
-        for letter in ["a", "b", "c", "d"] {
-            for i in 1..=12u32 {
-                let p = format!("ships/{}/sprites/shot_{}{:02}.png", code, letter, i);
-                preloaded
-                    .handles
-                    .push(assets.load::<Image>(p).untyped());
-                let pt = format!(
-                    "ships/{}/sprites/shot_{}_{:02}_tga.png",
-                    code, letter, i
-                );
-                preloaded
-                    .handles
-                    .push(assets.load::<Image>(pt).untyped());
-            }
-        }
+        let path = format!("ships/{}/sprites/ship_p00.png", class.code());
+        preloaded
+            .handles
+            .push(assets.load::<Image>(path).untyped());
     }
 
     info!("preloaded {} asset handles", preloaded.handles.len());
