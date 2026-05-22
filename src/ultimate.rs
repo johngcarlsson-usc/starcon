@@ -1601,6 +1601,8 @@ fn tick_ultimate_beams(
     mut beams: Query<(&UltimateBeam, &mut Transform, &Visibility), Without<BeamTrail>>,
     mut color_mats: ResMut<Assets<SoftBladeMaterial>>,
     ultimate_meshes: Res<UltimateMeshes>,
+    asteroids: Query<(Entity, &Position), With<crate::ship::Asteroid>>,
+    assets: Res<AssetServer>,
     mut commands: Commands,
 ) {
     if state.phase == UltimatePhase::Idle {
@@ -1657,6 +1659,35 @@ fn tick_ultimate_beams(
                     }
                 }
             }
+        }
+    }
+
+    // Asteroids in the blade's sweep arc explode. The blade spins
+    // fast (HYPER_SPIN_RAD_PER_S ≈ 14 rad/s ≈ 0.23 rad/frame at
+    // 60 fps); a ±0.18 rad window catches everything the sweep
+    // passes through without false positives behind the ship.
+    let blade_angle = world_dir.y.atan2(world_dir.x);
+    const ARILOU_ASTEROID_ARC: f32 = 0.18;
+    for (ast_e, ast_pos) in &asteroids {
+        let v = ast_pos.0 - owner_pos;
+        let d2 = v.length_squared();
+        if d2 > HYPER_BEAM_LEN * HYPER_BEAM_LEN || d2 < 1.0 {
+            continue;
+        }
+        let a = v.y.atan2(v.x);
+        let mut delta = a - blade_angle;
+        while delta > std::f32::consts::PI {
+            delta -= std::f32::consts::TAU;
+        }
+        while delta < -std::f32::consts::PI {
+            delta += std::f32::consts::TAU;
+        }
+        if delta.abs() > ARILOU_ASTEROID_ARC {
+            continue;
+        }
+        crate::ship::spawn_asteroid_explosion(&mut commands, &assets, ast_pos.0, 24.0);
+        if let Ok(mut ec) = commands.get_entity(ast_e) {
+            ec.try_despawn();
         }
     }
 

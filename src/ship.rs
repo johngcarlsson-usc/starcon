@@ -734,7 +734,6 @@ impl Plugin for ShipPlugin {
                 spawn_chmmr_satellites,
                 tick_chmmr_satellites,
                 tick_asteroid_explosions,
-                handle_asteroid_ship_collisions,
                 replenish_asteroids,
             ),
         )
@@ -5500,41 +5499,12 @@ pub fn spawn_asteroid_explosion(
     ));
 }
 
-/// Handle non-projectile collisions involving an asteroid: a ship
-/// rams an asteroid, the asteroid breaks apart. The ship itself
-/// takes no contact damage from the rock — only the Slylandro
-/// ultimate (which uses its own SlylandroLaunched marker +
-/// dedicated handler) deals crew damage via asteroid impact.
-fn handle_asteroid_ship_collisions(
-    mut commands: Commands,
-    mut reader: MessageReader<CollisionStart>,
-    asteroids: Query<&Position, With<Asteroid>>,
-    ships: Query<&Ship>,
-    assets: Res<AssetServer>,
-) {
-    for event in reader.read() {
-        // Identify which side is the asteroid.
-        let (asteroid_e, other_e) = if asteroids.get(event.collider1).is_ok() {
-            (event.collider1, event.collider2)
-        } else if asteroids.get(event.collider2).is_ok() {
-            (event.collider2, event.collider1)
-        } else {
-            continue;
-        };
-        // Only ship rams break the asteroid — projectile-vs-asteroid
-        // is already handled in `handle_projectile_hits`,
-        // asteroid-vs-asteroid bonks fall through to Avian's
-        // restitution physics.
-        if ships.get(other_e).is_err() {
-            continue;
-        }
-        let Ok(pos) = asteroids.get(asteroid_e) else { continue };
-        spawn_asteroid_explosion(&mut commands, &assets, pos.0, 24.0);
-        if let Ok(mut ec) = commands.get_entity(asteroid_e) {
-            ec.try_despawn();
-        }
-    }
-}
+/// Ship-vs-asteroid collisions are deliberately NOT handled here:
+/// asteroids only break apart when a weapon (projectile, laser, or
+/// the Arilou ultimate blade) hits them. Plain ship rams just
+/// bounce off via Avian's contact response. Slylandro's launched
+/// asteroids have their own dedicated handler that applies crew
+/// damage + kaboom on contact with a non-friendly ship.
 
 /// Replenish asteroids when the field gets thin: each FixedUpdate
 /// check the live count, and if it's below `TARGET_ASTEROID_COUNT`,
