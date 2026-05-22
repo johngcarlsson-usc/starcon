@@ -2813,21 +2813,19 @@ pub(crate) fn spawn_beam(
     duration_s: f32,
     width: f32,
 ) {
-    // Compute the initial world pose so the first render frame after
-    // spawn shows the beam at the owner's muzzle, not at world origin.
-    // tick_beams updates it every FixedUpdate after that. Without this,
-    // there's a brief "ghost beam" at (0, 0) flashing every shot.
+    // Compute *only* the initial origin — the visible quad is set
+    // by `tick_beams` on its first tick. Spawning at zero size
+    // avoids a 1-frame "beam pointing the wrong way" flash for
+    // auto-aim beams (the spawn pose uses ship-forward, the tick
+    // updates it to point at the actual target, and at high fire
+    // rates two beams can be visible simultaneously — one
+    // mid-life-aimed, one fresh-and-wrong).
     let world_origin = owner_pos
         + Vec2::new(
             local_origin.x * owner_rot.cos - local_origin.y * owner_rot.sin,
             local_origin.x * owner_rot.sin + local_origin.y * owner_rot.cos,
         );
-    let world_dir = Vec2::new(
-        local_dir.x * owner_rot.cos - local_dir.y * owner_rot.sin,
-        local_dir.x * owner_rot.sin + local_dir.y * owner_rot.cos,
-    );
-    let midpoint = world_origin + world_dir * (range * 0.5);
-    let angle = world_dir.y.atan2(world_dir.x) - std::f32::consts::FRAC_PI_2;
+    let _ = local_dir; // kept on the component for tick_beams' rotation calc
 
     commands.spawn((
         Beam {
@@ -2841,9 +2839,8 @@ pub(crate) fn spawn_beam(
             remaining: duration_s,
             width,
         },
-        Sprite::from_color(color, Vec2::new(width * 2.0, range)),
-        Transform::from_translation(midpoint.extend(0.3))
-            .with_rotation(Quat::from_rotation_z(angle)),
+        Sprite::from_color(color, Vec2::new(0.0, 0.0)),
+        Transform::from_translation(world_origin.extend(0.3)),
     ));
 }
 
@@ -3369,6 +3366,10 @@ fn tick_chebr_crystal(
                         let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
                         let init_spin = (fastrand::f32() - 0.5) * 20.0;
                         let size = 4.0 + fastrand::f32() * 6.0;
+                        // Spread each shard slightly along its own
+                        // velocity direction so they don't all
+                        // spawn at one point and immediately stack.
+                        let spawn_pos = burst_at + dir * (8.0 + fastrand::f32() * 12.0);
                         let shard_color = Color::srgb(
                             0.7 + fastrand::f32() * 0.3,
                             0.75 + fastrand::f32() * 0.25,
@@ -3394,11 +3395,11 @@ fn tick_chebr_crystal(
                                 lifetime: shard_lifetime,
                             },
                             Sprite::from_color(shard_color, Vec2::splat(size * 1.8)),
-                            Transform::from_translation(burst_at.extend(0.5)),
+                            Transform::from_translation(spawn_pos.extend(0.5)),
                             RigidBody::Dynamic,
                             collider,
                             Mass(0.5 + shard_damage as f32 * 0.4),
-                            Position(burst_at),
+                            Position(spawn_pos),
                             Rotation::radians(init_angle),
                             LinearVelocity(shard_vel),
                             AngularVelocity(init_spin),
@@ -3474,6 +3475,7 @@ fn tick_meltr_charge(
     let speed: f32 = 112.0 * SC2_VEL_SCALE;
     let muzzle_local = Vec2::new(0.0, 60.0); // clear of ship hull, like Chebr crystal
     let max_scale: f32 = 3.0; // shot 3× bigger at full charge
+    const FLASH_DURATION_S: f32 = 0.4;
 
     for (entity, ship, ship_pos, ship_rot, ship_vel, mut state, mut batt) in &mut ships {
         let input = input::read_local_input(&keys, ship.player_slot);
@@ -3560,28 +3562,48 @@ fn tick_meltr_charge(
 
                 // Damage is integer (Crew is integer), so it crosses
                 // discrete tiers as the player holds. Each time it
-                // does, kick off a brief white flash so the player
-                // sees the "now this shot is meaningfully stronger"
-                // moment — the otherwise-smooth lerp doesn't signal
-                // when the actual game-state value steps up.
+                // does, kick off a flash so the player sees the
+                // "now this shot is meaningfully stronger" moment.
                 if new_damage > state.last_damage {
-                    state.flash_remaining_s = 0.15;
+                    state.flash_remaining_s = FLASH_DURATION_S;
                     state.last_damage = new_damage;
                     info!("meltr charge tier: dmg now {}", new_damage);
                 }
 
-                let scale = 1.0 + (max_scale - 1.0) * charge_fraction;
-                // Pale-green → bright yellow-white as the shot charges.
+                let scale_base = 1.0 + (max_scale - 1.0) * charge_fraction;
+                // Pick sprite frame from charge fraction: shot_a01..a10
+                // cycle through ten ascending charge tiers. Avoids
+                // the boring "single colour gets brighter" look —
+                // each tier of the legacy animation is its own
+                // distinct sprite that fits the bigger / hotter
+                // shot identity the user wanted.
+                let frame_idx =
+                    ((charge_fraction * 9.0).floor() as usize + 1).min(10);
+                let sprite_path = format!(
+                    "ships/meltr/sprites/shot_a{:02}.png",
+                    frame_idx
+                );
+
+                // Base tint stays pale-green→yellow-white. The
+                // sprite frame already varies the underlying art.
                 let mut r = 0.5 + 0.5 * charge_fraction;
                 let mut g = 1.0;
                 let mut b = 0.5 + 0.1 * charge_fraction;
-                // Flash: lerp toward pure white over the flash window.
+
+                // Flash overlay — for the full duration, push colour
+                // toward pure white and add an extra ~20% size pulse.
+                // Longer than the previous attempt (0.4 s vs 0.15 s),
+                // and the size component makes it visible even when
+                // the lerp is already shifting colour.
+                let mut flash_scale_mul = 1.0;
                 if state.flash_remaining_s > 0.0 {
-                    let f = (state.flash_remaining_s / 0.15).clamp(0.0, 1.0);
+                    let f = (state.flash_remaining_s / FLASH_DURATION_S).clamp(0.0, 1.0);
                     r = r + (1.0 - r) * f;
                     g = g + (1.0 - g) * f;
                     b = b + (1.0 - b) * f;
+                    flash_scale_mul = 1.0 + 0.25 * f;
                 }
+                let scale = scale_base * flash_scale_mul;
 
                 if let Ok((mut proj, mut pos, mut vel, mut xf, mut sprite)) =
                     projectiles.get_mut(shot_entity)
@@ -3590,6 +3612,7 @@ fn tick_meltr_charge(
                     pos.0 = muzzle;
                     vel.0 = ship_vel.0;
                     xf.scale = Vec3::new(scale, scale, 1.0);
+                    sprite.image = assets.load(sprite_path);
                     sprite.color = Color::srgb(r, g, b);
                 }
             }
@@ -3781,6 +3804,17 @@ fn handle_projectile_hits(
         };
 
         if proj.owner == other_entity {
+            continue;
+        }
+
+        // Projectile-vs-projectile: pass through silently. Without
+        // this, the 14-22 Chenjesu shatter-shards (or any other
+        // cluster spawn at one point) would collide with each other
+        // on the spawning tick and despawn each other before any
+        // are visibly flying. Canon doesn't model projectile-on-
+        // projectile interactions either — bullets fly past each
+        // other.
+        if projectiles.get(other_entity).is_ok() {
             continue;
         }
 
