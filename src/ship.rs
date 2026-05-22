@@ -495,10 +495,11 @@ pub struct DamageZone {
     pub source: Option<Entity>,
 }
 
-/// Spawns a damage zone as a sprite entity (no rigid body — pure
-/// gameplay marker). The sprite is a semi-transparent filled square
-/// the diameter of the zone; replace with a proper circle-outline
-/// shader in M7 polish.
+/// Spawns a damage zone as a sensor circle collider. Avian's
+/// physics pipeline reports overlap via `CollidingEntities`, which
+/// `tick_damage_zones` reads each tick — replacing the previous
+/// custom distance check. Owner of the zone can be excluded via the
+/// `source` field.
 pub(crate) fn spawn_damage_zone(
     commands: &mut Commands,
     source: Option<Entity>,
@@ -517,6 +518,16 @@ pub(crate) fn spawn_damage_zone(
         },
         Sprite::from_color(color, Vec2::splat(radius * 2.0)),
         Transform::from_translation(pos.extend(0.2)),
+        // Physics-native overlap detection. `Sensor` means Avian
+        // tracks collisions for events but applies no impulse — the
+        // ship doesn't bounce off the zone. `CollidingEntities` is
+        // updated by Avian each step with the set of entities
+        // currently inside the zone's collider.
+        RigidBody::Static,
+        Collider::circle(radius),
+        Sensor,
+        CollidingEntities::default(),
+        Position(pos),
     ));
 }
 
@@ -574,6 +585,15 @@ pub(crate) fn spawn_attached_damage_zone(
         },
         Sprite::from_color(color, Vec2::splat(radius * 2.0)),
         Transform::from_translation(world_pos.extend(0.2)),
+        // Avian-native overlap detection. RigidBody::Kinematic
+        // because we move it manually each tick (no physics
+        // integration). `Sensor` disables impulse response so the
+        // owner ship doesn't ram itself off its own cone.
+        RigidBody::Kinematic,
+        Collider::circle(radius),
+        Sensor,
+        CollidingEntities::default(),
+        Position(world_pos),
     ));
 }
 
@@ -3629,36 +3649,35 @@ fn orient_projectiles(mut q: Query<(&LinearVelocity, &mut Rotation), With<Projec
     }
 }
 
-/// Apply damage from every active `DamageZone` to every ship inside its
-/// radius (excluding the zone's `source`, when set), then decrement
-/// lifetimes and despawn expired zones. Shield damage_factor still
-/// applies — a Pkunk in phase shift takes 0 from a Shofixti Glory.
+/// Apply damage from every active `DamageZone` to every ship overlapping
+/// its sensor collider (excluding the zone's `source`, when set), then
+/// decrement lifetimes and despawn expired zones. Overlap detection
+/// is owned by Avian — we read the `CollidingEntities` set the
+/// physics broad/narrow phase populated this step. Shield damage_factor
+/// still applies — a Pkunk in phase shift takes 0 from a Shofixti Glory.
 fn tick_damage_zones(
     mut commands: Commands,
     time: Res<Time<Physics>>,
-    mut zones: Query<(Entity, &Transform, &mut DamageZone)>,
-    mut ships: Query<(Entity, &Position, &mut Crew), With<Ship>>,
+    mut zones: Query<(Entity, &CollidingEntities, &mut DamageZone)>,
+    mut crews: Query<&mut Crew>,
     shields: Query<&ShieldActive>,
 ) {
     let dt = time.delta_secs();
-    for (zone_entity, zone_tf, mut zone) in &mut zones {
+    for (zone_entity, colliding, mut zone) in &mut zones {
         if zone.damage_per_sec > 0.0 && dt > 0.0 {
-            let zone_pos = zone_tf.translation.truncate();
-            let r2 = zone.radius * zone.radius;
-            for (ship_e, ship_pos, mut crew) in &mut ships {
-                if zone.source == Some(ship_e) {
-                    continue;
-                }
-                if (ship_pos.0 - zone_pos).length_squared() > r2 {
+            for &target in colliding.0.iter() {
+                if zone.source == Some(target) {
                     continue;
                 }
                 let factor = shields
-                    .get(ship_e)
+                    .get(target)
                     .map(|s| s.damage_factor)
                     .unwrap_or(1.0);
                 let dmg = (zone.damage_per_sec * dt * factor).ceil().max(0.0) as i32;
                 if dmg > 0 {
-                    crew.current = (crew.current - dmg).max(0);
+                    if let Ok(mut crew) = crews.get_mut(target) {
+                        crew.current = (crew.current - dmg).max(0);
+                    }
                 }
             }
         }
@@ -3901,51 +3920,69 @@ fn tick_point_defense(
 }
 
 /// Reposition each attached zone to follow its owner, then apply
-/// damage to any non-friendly ship inside it. Zones whose owner has
-/// died despawn (no orphan damage continuing in dead space).
+/// damage to any non-friendly ship overlapping its sensor collider.
+/// Zones whose owner has died despawn (no orphan damage continuing
+/// in dead space). Overlap detection comes from Avian's
+/// `CollidingEntities`, populated by the broad/narrow phase.
 fn tick_attached_damage_zones(
     mut commands: Commands,
     time: Res<Time<Physics>>,
-    mut zones: Query<(Entity, &mut AttachedDamageZone, &mut Transform, &mut Sprite)>,
-    owners: Query<(&Ship, &Position, &Rotation)>,
-    mut ships: Query<(Entity, &Ship, &Position, &mut Crew)>,
+    mut zones: Query<(
+        Entity,
+        &mut AttachedDamageZone,
+        &mut Transform,
+        &mut Position,
+        &mut Sprite,
+        &CollidingEntities,
+    )>,
+    owners: Query<(&Ship, &Position, &Rotation), Without<AttachedDamageZone>>,
+    ships: Query<&Ship>,
+    mut crews: Query<&mut Crew>,
     shields: Query<&ShieldActive>,
 ) {
     let dt = time.delta_secs();
-    for (zone_entity, mut zone, mut zone_xf, mut zone_sprite) in &mut zones {
+    for (
+        zone_entity,
+        mut zone,
+        mut zone_xf,
+        mut zone_pos,
+        mut zone_sprite,
+        colliding,
+    ) in &mut zones
+    {
         let Ok((owner_ship, owner_pos, owner_rot)) = owners.get(zone.owner) else {
             commands.entity(zone_entity).despawn();
             continue;
         };
-        // Ship-local offset → world.
         let world_offset = Vec2::new(
             zone.local_offset.x * owner_rot.cos - zone.local_offset.y * owner_rot.sin,
             zone.local_offset.x * owner_rot.sin + zone.local_offset.y * owner_rot.cos,
         );
-        let zone_pos = owner_pos.0 + world_offset;
-        zone_xf.translation = zone_pos.extend(0.2);
-        // Keep sprite size in sync (radius can change frame-to-frame
-        // in the future without re-spawning the entity).
+        let world_pos = owner_pos.0 + world_offset;
+        // Sync render Transform AND Avian Position (the latter is
+        // what drives the sensor collider's world location).
+        zone_xf.translation = world_pos.extend(0.2);
+        zone_pos.0 = world_pos;
         zone_sprite.custom_size = Some(Vec2::splat(zone.radius * 2.0));
         zone_sprite.color = zone.color;
 
         if zone.damage_per_sec > 0.0 && dt > 0.0 {
-            let r2 = zone.radius * zone.radius;
-            for (ship_e, ship, ship_pos, mut crew) in &mut ships {
-                // Don't damage the owner with its own attached zone.
-                if ship.player_slot == owner_ship.player_slot {
+            for &target in colliding.0.iter() {
+                let Ok(target_ship) = ships.get(target) else {
                     continue;
-                }
-                if (ship_pos.0 - zone_pos).length_squared() > r2 {
+                };
+                if target_ship.player_slot == owner_ship.player_slot {
                     continue;
                 }
                 let factor = shields
-                    .get(ship_e)
+                    .get(target)
                     .map(|s| s.damage_factor)
                     .unwrap_or(1.0);
                 let dmg = (zone.damage_per_sec * dt * factor).ceil().max(0.0) as i32;
                 if dmg > 0 {
-                    crew.current = (crew.current - dmg).max(0);
+                    if let Ok(mut crew) = crews.get_mut(target) {
+                        crew.current = (crew.current - dmg).max(0);
+                    }
                 }
             }
         }
