@@ -51,6 +51,11 @@ pub struct ZoomStar {
 pub struct ZoomState {
     pub target_scale: f32,
     pub last_scroll_dir: f32,
+    /// Pinch baseline: distance between the two active touches on
+    /// the previous frame, in screen-pixel units. `None` when fewer
+    /// than two fingers are down — re-baselined each time a pinch
+    /// gesture starts so quick re-pinches don't snap the scale.
+    pub last_pinch_dist: Option<f32>,
 }
 
 impl Default for ZoomState {
@@ -58,6 +63,7 @@ impl Default for ZoomState {
         Self {
             target_scale: 1.0,
             last_scroll_dir: 0.0,
+            last_pinch_dist: None,
         }
     }
 }
@@ -70,7 +76,12 @@ impl Plugin for StarfieldPlugin {
             .add_systems(Startup, setup_starfield)
             .add_systems(
                 Update,
-                (handle_zoom_input, smooth_zoom_scale, tick_zoom_stars),
+                (
+                    handle_zoom_input,
+                    handle_pinch_zoom,
+                    smooth_zoom_scale,
+                    tick_zoom_stars,
+                ),
             );
     }
 }
@@ -232,4 +243,46 @@ fn tick_zoom_stars(
         let alpha = (4.0 * f * (1.0 - f)).clamp(0.0, 1.0) * star.peak_alpha;
         sprite.color = Color::srgba(1.0, 1.0, 1.0, alpha);
     }
+}
+
+/// Two-finger pinch-to-zoom. When exactly two fingers are on the
+/// screen, the ratio between the current and previous inter-finger
+/// distance drives `target_scale` — pinching out (fingers spread)
+/// shrinks the orthographic scale (zoom in), pinching in (fingers
+/// close) grows it. Re-baselines each time a new gesture starts so
+/// finger-lifts don't snap the scale.
+///
+/// Sits alongside `handle_zoom_input` and writes to the same
+/// `ZoomState.target_scale`, so the existing `smooth_zoom_scale`
+/// tween picks up the change automatically.
+fn handle_pinch_zoom(touches: Res<Touches>, mut zoom_state: ResMut<ZoomState>) {
+    // Collect up to two active touches. If there's a third we still
+    // pinch on the first two — common mobile-browser idiom and
+    // tolerates accidental third-finger taps.
+    let mut iter = touches.iter();
+    let (Some(t0), Some(t1)) = (iter.next(), iter.next()) else {
+        zoom_state.last_pinch_dist = None;
+        return;
+    };
+    let dist = t0.position().distance(t1.position());
+    if dist < 1.0 {
+        return;
+    }
+    let Some(prev) = zoom_state.last_pinch_dist else {
+        // First frame of the gesture — set the baseline, no scaling
+        // yet (avoids a jump on the first sample).
+        zoom_state.last_pinch_dist = Some(dist);
+        return;
+    };
+    let ratio = dist / prev;
+    if (ratio - 1.0).abs() < 0.0005 {
+        // Sub-pixel jitter; ignore so the scale doesn't drift while
+        // fingers are still.
+        zoom_state.last_pinch_dist = Some(dist);
+        return;
+    }
+    // Spread fingers (ratio>1) = zoom in = smaller ortho scale.
+    let new_scale = (zoom_state.target_scale / ratio).clamp(SCALE_MIN, SCALE_MAX);
+    zoom_state.target_scale = new_scale;
+    zoom_state.last_pinch_dist = Some(dist);
 }
