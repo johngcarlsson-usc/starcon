@@ -299,9 +299,16 @@ fn dispatch_primary(
         &mut WeaponCooldown,
         &mut Battery,
         &mut Crew,
+        Option<&crate::ultimate::MmrxfActive>,
     )>,
 ) {
-    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew) in &mut q {
+    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active) in &mut q {
+        // While Mmrnmhrm's ultimate is active the tangled laser
+        // owns the primary. Skip the normal Mmrxf beams so the
+        // two don't stack.
+        if mmrxf_active.is_some() {
+            continue;
+        }
         // Ships whose primary lives in a dedicated system get skipped
         // here so they fully own input handling + cooldown + drain
         // (Chenjesu crystal launcher, Melnorme charge-and-release).
@@ -352,9 +359,15 @@ fn dispatch_special(
         &mut SpecialCooldown,
         &mut Battery,
         &mut Crew,
+        Option<&crate::ultimate::MmrxfActive>,
     )>,
 ) {
-    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew) in &mut q {
+    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active) in &mut q {
+        // Mmrnmhrm ultimate replaces the special with the split
+        // missile launcher — skip the form-toggle here.
+        if mmrxf_active.is_some() {
+            continue;
+        }
         if cd.0 > 0.0 {
             continue;
         }

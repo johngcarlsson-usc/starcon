@@ -143,6 +143,48 @@ pub struct UltimateState {
     /// camera follow / portrait positioning to scale the on-screen
     /// portrait without stretching it.
     pub portrait_aspect: f32,
+    // -- Mmrnmhrm transform --
+    pub mmrxf_overlay_entity: Option<Entity>,
+    pub mmrxf_orig_scale: Option<Vec3>,
+    pub mmrxf_laser_cooldown_s: f32,
+    pub mmrxf_missile_cooldown_s: f32,
+}
+
+/// Marker on the Mmrnmhrm ship during MmrxfUnleashing. Normal
+/// Mmrxf primary / special abilities check for this and skip so
+/// the ultimate's weapons replace them rather than stacking on
+/// top.
+#[derive(Component, Debug)]
+pub struct MmrxfActive;
+
+/// Marker on the alt-form overlay sprite spawned during the
+/// transform. Despawned on cinematic exit.
+#[derive(Component, Debug)]
+pub struct MmrxfOverlaySprite;
+
+/// Component on the parent guided missile fired by Mmrnmhrm's
+/// special during the ultimate. After `split_at_s` seconds it
+/// despawns + spawns `child_count` smaller homing projectiles.
+#[derive(Component, Debug)]
+pub struct MmrxfSplitMissile {
+    pub timer_s: f32,
+    pub split_at_s: f32,
+    pub child_count: usize,
+    /// Carries the owner Entity so the children inherit the
+    /// same firer for self-hit checks.
+    pub owner: Entity,
+}
+
+/// One short-lived sprite segment of the tangled laser. Lifetime
+/// is one FixedUpdate tick — the system redraws the segments
+/// every tick to "animate" the wavy path. The fade lets each
+/// segment stay visible for a couple of render frames between
+/// physics ticks.
+#[derive(Component, Debug)]
+pub struct MmrxfLaserSegment {
+    pub remaining_s: f32,
+    pub total_s: f32,
+    pub base_color: Color,
 }
 
 /// Ephemeral clone of a Pkunk ship spawned by its ultimate. Shares
@@ -249,6 +291,12 @@ pub enum UltimateVariant {
     /// opponent at randomised chaotic speeds. Each hit on the
     /// opponent (or anything else) deducts crew.
     Slylandro,
+    /// Mmrnmhrm: ship triples in size, both T-form and Y-form
+    /// sprites superimposed; primary becomes a curvy "tangled
+    /// rope" homing laser at 2× range; special fires guided
+    /// missiles that split into smaller guided missiles
+    /// mid-flight (Owa-style cluster).
+    Mmrnmhrm,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -327,6 +375,14 @@ pub enum UltimatePhase {
     /// the predicted intercept of the nearest enemy ship and
     /// deals contact damage for the duration.
     SlylandroStorm,
+    // ---- Mmrnmhrm transform ----
+    /// Paused. Ship visually scales 3× and the alternate form's
+    /// sprite is overlaid — the "X-form fusion" beat.
+    MmrxfTransform,
+    /// Unpaused. Primary = tangled-rope homing laser, special =
+    /// splitting guided missiles. Normal Mmrxf abilities are
+    /// suppressed for the duration via the MmrxfActive marker.
+    MmrxfUnleashing,
 }
 
 /// Marker on the ship while the cinematic is active.
@@ -489,6 +545,21 @@ impl Plugin for UltimatePlugin {
                 tick_arilou_stinger,
             )
                 .chain(),
+        )
+        .add_systems(
+            Update,
+            (
+                tick_mmrxf_transform,
+                tick_mmrxf_laser_segments,
+            ),
+        )
+        .add_systems(
+            FixedUpdate,
+            (
+                tick_mmrxf_tangled_laser,
+                tick_mmrxf_split_launcher,
+                tick_mmrxf_split_missiles,
+            ),
         );
     }
 }
@@ -588,6 +659,28 @@ const SLYP_ASTEROID_DAMAGE: i32 = 6;
 /// player can see which rocks are landing crew damage.
 const SLYP_HIT_FLASH_S: f32 = 0.18;
 
+// -- Mmrnmhrm transform --
+const MMRXF_TRANSFORM_S: f32 = 0.6;
+const MMRXF_UNLEASH_S: f32 = 5.0;
+/// Ship visually scales by this factor during the ultimate.
+const MMRXF_SHIP_SCALE: f32 = 3.0;
+/// Tangled laser primary: range = 2× the canonical Mmrxf T-form
+/// laser (8 SC2 units → 320 wu), damage per SC2-frame, and the
+/// number of curve segments to render per tick.
+const MMRXF_LASER_RANGE: f32 = 2.0 * 8.0 * crate::ship::SC2_VEL_SCALE * 5.0; // 768 wu  (2 * canon)
+const MMRXF_LASER_DAMAGE: i32 = 1;
+const MMRXF_LASER_SEGMENTS: usize = 14;
+/// Refire interval for the tangled beam tick (damage application
+/// rate cap, in SC2 frames).
+const MMRXF_LASER_FIRE_INTERVAL_S: f32 = 0.05;
+/// Special: spawn the parent missile this often (max 1 in flight
+/// from this firer).
+const MMRXF_MISSILE_COOLDOWN_S: f32 = 0.55;
+/// Time before the parent missile splits into children.
+const MMRXF_MISSILE_SPLIT_AT_S: f32 = 0.7;
+/// Number of children produced when a split missile splits.
+const MMRXF_MISSILE_CHILD_COUNT: usize = 5;
+
 fn portrait_path(variant: UltimateVariant) -> &'static str {
     match variant {
         UltimateVariant::Earthling => "ultimate/portrait_earcr.png",
@@ -597,6 +690,7 @@ fn portrait_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Shofixti => "ultimate/portrait_shosc.png",
         UltimateVariant::Pkunk => "ultimate/portrait_pkufu.png",
         UltimateVariant::Slylandro => "ultimate/portrait_slypr.png",
+        UltimateVariant::Mmrnmhrm => "ultimate/portrait_mmrxf.png",
         _ => "ultimate/portrait_arisk.png",
     }
 }
@@ -614,6 +708,7 @@ fn voice_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Shofixti => "ultimate/shosc_voi.wav",
         UltimateVariant::Pkunk => "ultimate/pkufu_voi.wav",
         UltimateVariant::Slylandro => "ultimate/slypr_voi.wav",
+        UltimateVariant::Mmrnmhrm => "ultimate/mmrxf_voi.wav",
         _ => "ultimate/arisk_voi.wav",
     }
 }
@@ -627,6 +722,7 @@ fn variant_for_class(class: ShipClass) -> UltimateVariant {
         ShipClass::Shosc => UltimateVariant::Shofixti,
         ShipClass::Pkufu => UltimateVariant::Pkunk,
         ShipClass::Slypr => UltimateVariant::Slylandro,
+        ShipClass::Mmrxf => UltimateVariant::Mmrnmhrm,
         _ => UltimateVariant::Arilou,
     }
 }
@@ -816,6 +912,42 @@ fn hyper_trigger(
         }
         // The remaining variants do their spawning later, in
         // their first active phase. Nothing pre-spawned here.
+        UltimateVariant::Mmrnmhrm => {
+            // Snapshot the ship's current Transform.scale so the
+            // exit path can restore it cleanly.
+            if let Ok((_, _, _, ship_xf)) = ships.get(entity) {
+                state.mmrxf_orig_scale = Some(ship_xf.scale);
+            }
+            // Spawn the alt-form overlay sprite at the ship's
+            // position. Tinted cyan, semi-transparent so the eye
+            // reads "both forms phasing into one another". Uses
+            // a Y-form shot_b sprite if available (the ship's
+            // alternate-mode frames), else falls back to the
+            // standard ship_p00 — either way it shows up as a
+            // second layered silhouette.
+            if let Ok((_, _, _, ship_xf)) = ships.get(entity) {
+                let overlay = commands
+                    .spawn((
+                        MmrxfOverlaySprite,
+                        Sprite {
+                            image: assets.load("ships/mmrxf/sprites/shot_b01.png"),
+                            color: Color::srgba(0.5, 0.9, 1.0, 0.55),
+                            custom_size: Some(Vec2::splat(80.0 * MMRXF_SHIP_SCALE)),
+                            ..default()
+                        },
+                        Transform::from_translation(
+                            ship_xf.translation.truncate().extend(0.45),
+                        ),
+                    ))
+                    .id();
+                state.mmrxf_overlay_entity = Some(overlay);
+            }
+            // Mark the ship as Mmrxf-ultimate-active so the normal
+            // dispatch path skips its primary + special.
+            commands.entity(entity).insert(MmrxfActive);
+            state.mmrxf_laser_cooldown_s = 0.0;
+            state.mmrxf_missile_cooldown_s = 0.0;
+        }
         UltimateVariant::Yehat
         | UltimateVariant::Spathi
         | UltimateVariant::Chenjesu
@@ -940,6 +1072,12 @@ fn tick_ultimate_phases(
                 let portrait_p = (p / 0.5).clamp(0.0, 1.0);
                 (SLYP_STORM_S, 1.0 - portrait_p, false, 0.0, false)
             }
+            UltimatePhase::MmrxfTransform => (MMRXF_TRANSFORM_S, 1.0, false, 0.0, true),
+            UltimatePhase::MmrxfUnleashing => {
+                let p = (state.phase_timer_s / MMRXF_UNLEASH_S).clamp(0.0, 1.0);
+                let portrait_p = (p / 0.5).clamp(0.0, 1.0);
+                (MMRXF_UNLEASH_S, 1.0 - portrait_p, false, 0.0, false)
+            }
             UltimatePhase::Idle => unreachable!(),
         };
 
@@ -976,7 +1114,7 @@ fn tick_ultimate_phases(
     // forced ang_vel write (the cinematic owns the ship's motion).
     let needs_lock = !matches!(
         state.variant,
-        UltimateVariant::Pkunk | UltimateVariant::Slylandro
+        UltimateVariant::Pkunk | UltimateVariant::Slylandro | UltimateVariant::Mmrnmhrm
     );
     if needs_lock {
         if let Ok(mut av) = ships.get_mut(p1) {
@@ -1031,6 +1169,10 @@ fn tick_ultimate_phases(
             (UltimatePhase::PkunkPan, _) => UltimatePhase::PkunkFormation,
             (UltimatePhase::SlylandroCharging, _) => UltimatePhase::SlylandroPullback,
             (UltimatePhase::SlylandroPullback, _) => UltimatePhase::SlylandroStorm,
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Mmrnmhrm) => {
+                UltimatePhase::MmrxfTransform
+            }
+            (UltimatePhase::MmrxfTransform, _) => UltimatePhase::MmrxfUnleashing,
             // Final phases: exit.
             (UltimatePhase::ArilouUnleashing, _)
             | (UltimatePhase::EarthlingBlasting, _)
@@ -1039,7 +1181,8 @@ fn tick_ultimate_phases(
             | (UltimatePhase::ChenjesuTempest, _)
             | (UltimatePhase::ShofixtiNova, _)
             | (UltimatePhase::PkunkFormation, _)
-            | (UltimatePhase::SlylandroStorm, _) => {
+            | (UltimatePhase::SlylandroStorm, _)
+            | (UltimatePhase::MmrxfUnleashing, _) => {
                 exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
                 return;
             }
@@ -1072,6 +1215,11 @@ fn exit_cinematic(
             if state.variant == UltimateVariant::Earthling {
                 e.insert(PostUltimateCoasting);
             }
+            // Drop the Mmrnmhrm-active marker so normal abilities
+            // resume + restore the ship's original scale.
+            if state.variant == UltimateVariant::Mmrnmhrm {
+                e.remove::<MmrxfActive>();
+            }
         }
     }
     if let Some(p) = state.portrait_entity.take() {
@@ -1103,6 +1251,16 @@ fn exit_cinematic(
     state.orig_ship_scale = None;
     state.blast_dir = None;
     state.chebr_ring_timer_s = 0.0;
+    // Mmrnmhrm cleanup: despawn the overlay, drop the active
+    // marker, and restore the ship's original Transform.scale.
+    if let Some(overlay) = state.mmrxf_overlay_entity.take() {
+        if let Ok(mut ec) = commands.get_entity(overlay) {
+            ec.try_despawn();
+        }
+    }
+    state.mmrxf_orig_scale = None;
+    state.mmrxf_laser_cooldown_s = 0.0;
+    state.mmrxf_missile_cooldown_s = 0.0;
     state.variant = UltimateVariant::None;
     state.beam_materials.clear();
     state.portrait_material = None;
@@ -1274,6 +1432,18 @@ fn drive_camera_during_ultimate(
             // against a stable view.
             let zoom_far = state.orig_cam_scale.max(1.4);
             (0.0, zoom_far)
+        }
+        // Mmrnmhrm: tight zoom during the transform beat, then
+        // ease back to a wide playable view for the unleashing.
+        UltimatePhase::MmrxfTransform => (1.0, HYPER_CAM_SCALE),
+        UltimatePhase::MmrxfUnleashing => {
+            let p = (state.phase_timer_s / 0.5).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - p).powi(3);
+            let zoom_far = state.orig_cam_scale.max(1.4);
+            (
+                1.0 - eased,
+                HYPER_CAM_SCALE * (1.0 - eased) + zoom_far * eased,
+            )
         }
         UltimatePhase::Idle => return,
     };
@@ -2929,5 +3099,346 @@ pub fn tick_pkunk_formation_correction(
         }
         // Else: in formation — leave whatever apply_player_input
         // wrote in place so the clone keeps responding to input.
+    }
+}
+
+// ----------------------------------------------------------------
+// Mmrnmhrm — transform ultimate
+// ----------------------------------------------------------------
+
+/// During MmrxfTransform + MmrxfUnleashing, lerp the player ship's
+/// Transform.scale toward MMRXF_SHIP_SCALE×, and keep the alt-form
+/// overlay glued to the ship's world position. The orig scale is
+/// restored in `exit_cinematic`.
+pub fn tick_mmrxf_transform(
+    state: Res<UltimateState>,
+    leader: Query<&Position, With<crate::ship::Ship>>,
+    mut ship_xf: Query<&mut Transform, (With<crate::ship::Ship>, Without<MmrxfOverlaySprite>)>,
+    mut overlay_q: Query<&mut Transform, (With<MmrxfOverlaySprite>, Without<crate::ship::Ship>)>,
+) {
+    if state.variant != UltimateVariant::Mmrnmhrm {
+        return;
+    }
+    let active = matches!(
+        state.phase,
+        UltimatePhase::MmrxfTransform | UltimatePhase::MmrxfUnleashing
+    );
+    if !active {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Some(orig) = state.mmrxf_orig_scale else { return };
+
+    // Scale ramp: from 1× at MmrxfTransform start to MMRXF_SHIP_SCALE
+    // by the end of the transform phase, hold during unleashing.
+    let target_factor = match state.phase {
+        UltimatePhase::MmrxfTransform => {
+            let p = (state.phase_timer_s / MMRXF_TRANSFORM_S).clamp(0.0, 1.0);
+            1.0 + (MMRXF_SHIP_SCALE - 1.0) * p
+        }
+        UltimatePhase::MmrxfUnleashing => MMRXF_SHIP_SCALE,
+        _ => 1.0,
+    };
+
+    if let Ok(mut xf) = ship_xf.get_mut(p1) {
+        xf.scale = orig * target_factor;
+    }
+    // Glue the overlay sprite to the ship's world position.
+    if let Some(overlay) = state.mmrxf_overlay_entity {
+        if let Ok(pos) = leader.get(p1) {
+            if let Ok(mut overlay_xf) = overlay_q.get_mut(overlay) {
+                overlay_xf.translation.x = pos.0.x;
+                overlay_xf.translation.y = pos.0.y;
+                overlay_xf.scale =
+                    Vec3::new(target_factor, target_factor, 1.0) * 1.2;
+            }
+        }
+    }
+}
+
+/// While MmrxfUnleashing is active and the player holds FIRE,
+/// the tangled-rope homing laser does continuous damage to the
+/// nearest valid target and redraws its wavy path each tick.
+pub fn tick_mmrxf_tangled_laser(
+    time: Res<Time<Physics>>,
+    mut state: ResMut<UltimateState>,
+    keys: Res<ButtonInput<KeyCode>>,
+    virt: Res<crate::input::VirtualInput>,
+    mut commands: Commands,
+    ships: Query<(Entity, &crate::ship::Ship, &Position, &Rotation)>,
+    target_ships: Query<
+        (Entity, &crate::ship::Ship, &Position),
+        Without<crate::ship::Invisible>,
+    >,
+    shields: Query<&crate::ship::ShieldActive>,
+    mut crews: Query<&mut crate::ship::Crew>,
+) {
+    if state.variant != UltimateVariant::Mmrnmhrm
+        || state.phase != UltimatePhase::MmrxfUnleashing
+    {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok((_, firer_ship, firer_pos, _)) = ships.get(p1) else { return };
+    let input = crate::input::read_local_input_with_virtual(&keys, Some(&virt), firer_ship.player_slot);
+    let dt = time.delta_secs();
+    state.mmrxf_laser_cooldown_s = (state.mmrxf_laser_cooldown_s - dt).max(0.0);
+    if !input.pressed(crate::input::INPUT_FIRE) {
+        return;
+    }
+    if state.mmrxf_laser_cooldown_s > 0.0 {
+        return;
+    }
+    state.mmrxf_laser_cooldown_s = MMRXF_LASER_FIRE_INTERVAL_S;
+
+    // Pick nearest non-friendly non-invisible ship within range.
+    let firer_slot = firer_ship.player_slot;
+    let mut best: Option<(Vec2, Entity, f32)> = None;
+    for (e, s, p) in &target_ships {
+        if e == p1 || s.player_slot == firer_slot {
+            continue;
+        }
+        let d2 = (p.0 - firer_pos.0).length_squared();
+        if d2 > MMRXF_LASER_RANGE * MMRXF_LASER_RANGE {
+            continue;
+        }
+        if best.map_or(true, |(_, _, b)| d2 < b) {
+            best = Some((p.0, e, d2));
+        }
+    }
+    let Some((target_pos, target_e, _)) = best else { return };
+
+    // Apply damage to the target (shield-multiplied).
+    let factor = shields
+        .get(target_e)
+        .map(|s| s.damage_factor)
+        .unwrap_or(1.0);
+    let dmg = ((MMRXF_LASER_DAMAGE as f32 * factor).round() as i32).max(0);
+    if dmg > 0 {
+        if let Ok(mut crew) = crews.get_mut(target_e) {
+            crew.current = (crew.current - dmg).max(0);
+        }
+    }
+
+    // Draw the curve: sample MMRXF_LASER_SEGMENTS points along the
+    // firer→target line, perturbed by a sine wave perpendicular
+    // to the line. Each segment is a thin sprite that fades out
+    // over a short window so successive ticks layer into a
+    // tangled-rope effect.
+    let start = firer_pos.0;
+    let end = target_pos;
+    let delta = end - start;
+    let len = delta.length();
+    if len < 1.0 {
+        return;
+    }
+    let along = delta / len;
+    let perp = Vec2::new(-along.y, along.x);
+    let t_now = time.elapsed_secs();
+    let amp = (len * 0.18).clamp(40.0, 180.0);
+    let freq = 6.0;
+
+    let mut prev = start;
+    for i in 1..=MMRXF_LASER_SEGMENTS {
+        let t = i as f32 / MMRXF_LASER_SEGMENTS as f32;
+        let base = start + along * (len * t);
+        // Smooth sine + faster random jitter so the rope wobbles
+        // visibly each tick rather than reading as a static curve.
+        let wave = (t * std::f32::consts::PI * freq + t_now * 12.0).sin();
+        let jitter = (fastrand::f32() - 0.5) * 0.4;
+        // Taper amplitude to 0 at the endpoints.
+        let taper = (t * (1.0 - t) * 4.0).sqrt();
+        let off = perp * (wave + jitter) * amp * taper;
+        let point = base + off;
+        // Render this segment from `prev` to `point`.
+        let mid = (prev + point) * 0.5;
+        let seg = point - prev;
+        let seg_len = seg.length().max(1.0);
+        let angle = seg.y.atan2(seg.x) - std::f32::consts::FRAC_PI_2;
+        let color = Color::srgba(0.55 + 0.45 * fastrand::f32(), 0.85, 1.0, 0.95);
+        commands.spawn((
+            MmrxfLaserSegment {
+                remaining_s: 0.10,
+                total_s: 0.10,
+                base_color: color,
+            },
+            Sprite::from_color(color, Vec2::new(6.0, seg_len)),
+            Transform {
+                translation: mid.extend(0.32),
+                rotation: Quat::from_rotation_z(angle),
+                scale: Vec3::ONE,
+            },
+        ));
+        prev = point;
+    }
+}
+
+/// Fade laser-segment alpha out over their short lifetime.
+fn tick_mmrxf_laser_segments(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut MmrxfLaserSegment, &mut Sprite)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut seg, mut sprite) in &mut q {
+        seg.remaining_s -= dt;
+        if seg.remaining_s <= 0.0 {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
+            continue;
+        }
+        let frac = (seg.remaining_s / seg.total_s).clamp(0.0, 1.0);
+        let lin = seg.base_color.to_linear();
+        sprite.color = Color::srgba(lin.red, lin.green, lin.blue, lin.alpha * frac);
+    }
+}
+
+/// While MmrxfUnleashing is active and the player taps SPECIAL,
+/// spawn one Owa-style guided missile (Homing) that after
+/// `MMRXF_MISSILE_SPLIT_AT_S` despawns + spawns 5 smaller homing
+/// children radially outward — each child is also Homing toward
+/// the nearest enemy, so the cluster scatters then re-aims.
+pub fn tick_mmrxf_split_launcher(
+    time: Res<Time<Physics>>,
+    mut state: ResMut<UltimateState>,
+    keys: Res<ButtonInput<KeyCode>>,
+    virt: Res<crate::input::VirtualInput>,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    ships: Query<(&crate::ship::Ship, &Position, &Rotation, &LinearVelocity), With<crate::ship::Ship>>,
+) {
+    if state.variant != UltimateVariant::Mmrnmhrm
+        || state.phase != UltimatePhase::MmrxfUnleashing
+    {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok((firer_ship, firer_pos, firer_rot, firer_vel)) = ships.get(p1) else { return };
+    let input = crate::input::read_local_input_with_virtual(&keys, Some(&virt), firer_ship.player_slot);
+    let dt = time.delta_secs();
+    state.mmrxf_missile_cooldown_s = (state.mmrxf_missile_cooldown_s - dt).max(0.0);
+    if !input.pressed(crate::input::INPUT_SPECIAL) || state.mmrxf_missile_cooldown_s > 0.0 {
+        return;
+    }
+    state.mmrxf_missile_cooldown_s = MMRXF_MISSILE_COOLDOWN_S;
+
+    // Spawn the parent missile from the ship's nose, inheriting
+    // its velocity. The Homing component steers it toward the
+    // nearest enemy; the MmrxfSplitMissile marker tells the tick
+    // system to split it after `split_at_s`.
+    let forward = Vec2::new(-firer_rot.sin, firer_rot.cos);
+    let muzzle = firer_pos.0 + forward * 38.0;
+    let parent_speed = 80.0 * crate::ship::SC2_VEL_SCALE;
+    let proj_vel = firer_vel.0 + forward * parent_speed;
+    let init_angle = forward.y.atan2(forward.x) - std::f32::consts::FRAC_PI_2;
+    commands.spawn((
+        (
+            crate::ship::Projectile {
+                owner: p1,
+                damage: 5,
+                lifetime: MMRXF_MISSILE_SPLIT_AT_S + 1.5,
+            },
+            crate::ship::Homing {
+                target: None,
+                turn_rate: crate::ship::sc2_turning(3.0),
+            },
+            MmrxfSplitMissile {
+                timer_s: 0.0,
+                split_at_s: MMRXF_MISSILE_SPLIT_AT_S,
+                child_count: MMRXF_MISSILE_CHILD_COUNT,
+                owner: p1,
+            },
+            Sprite {
+                image: assets.load("ships/mmrxf/sprites/shot_a01.png"),
+                color: Color::srgb(0.85, 0.9, 1.0),
+                custom_size: Some(Vec2::splat(14.0)),
+                ..default()
+            },
+            Transform::from_translation(muzzle.extend(0.5)),
+        ),
+        (
+            RigidBody::Dynamic,
+            Collider::circle(7.0),
+            Sensor,
+            Mass(1.2),
+            Position(muzzle),
+            Rotation::radians(init_angle),
+            LinearVelocity(proj_vel),
+            AngularVelocity::ZERO,
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ),
+    ));
+}
+
+/// Each FixedUpdate, tick every MmrxfSplitMissile; when its
+/// `timer_s` exceeds `split_at_s`, despawn the parent and spawn
+/// `child_count` smaller Homing projectiles radially around the
+/// parent's last known position.
+pub fn tick_mmrxf_split_missiles(
+    time: Res<Time<Physics>>,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    mut parents: Query<(
+        Entity,
+        &mut MmrxfSplitMissile,
+        &Position,
+        &LinearVelocity,
+    )>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut split, pos, vel) in &mut parents {
+        split.timer_s += dt;
+        if split.timer_s < split.split_at_s {
+            continue;
+        }
+        // SPLIT. Spawn child_count smaller homing projectiles
+        // outward from the parent.
+        let world = pos.0;
+        let base_vel = vel.0;
+        let base_speed = base_vel.length().max(50.0 * crate::ship::SC2_VEL_SCALE);
+        let owner = split.owner;
+        let count = split.child_count;
+        for i in 0..count {
+            let theta = (i as f32) * std::f32::consts::TAU / count as f32;
+            let dir = Vec2::new(theta.cos(), theta.sin());
+            let speed_jitter = 0.7 + fastrand::f32() * 0.5;
+            let child_vel = dir * base_speed * speed_jitter;
+            let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
+            commands.spawn((
+                crate::ship::Projectile {
+                    owner,
+                    damage: 3,
+                    lifetime: 2.5,
+                },
+                crate::ship::Homing {
+                    target: None,
+                    turn_rate: crate::ship::sc2_turning(2.0),
+                },
+                Sprite {
+                    image: assets.load("ships/mmrxf/sprites/shot_a01.png"),
+                    color: Color::srgb(0.7, 0.85, 1.0),
+                    custom_size: Some(Vec2::splat(9.0)),
+                    ..default()
+                },
+                Transform::from_translation((world + dir * 14.0).extend(0.5)),
+                RigidBody::Dynamic,
+                Collider::circle(4.5),
+                Sensor,
+                Mass(0.5),
+                Position(world + dir * 14.0),
+                Rotation::radians(init_angle),
+                LinearVelocity(child_vel),
+                AngularVelocity::ZERO,
+                LinearDamping(0.0),
+                AngularDamping(0.0),
+                CollisionEventsEnabled,
+            ));
+        }
+        if let Ok(mut ec) = commands.get_entity(e) {
+            ec.try_despawn();
+        }
     }
 }
