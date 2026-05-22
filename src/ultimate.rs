@@ -166,9 +166,9 @@ impl Plugin for UltimatePlugin {
 // ----------------------------------------------------------------
 
 /// Fast ram-in while the world is paused — the dramatic pause
-/// before the punch. Short enough to feel like a snap, long enough
-/// to read the portrait fading in.
-const PHASE_ZOOM_IN_S: f32 = 0.22;
+/// before the punch. Long enough to read the portrait and feel
+/// the held breath.
+const PHASE_ZOOM_IN_S: f32 = 0.45;
 /// Time resumes for this phase. Camera pulls back from full close-
 /// up to the original framing across this duration *while* the
 /// blade slashes — the zoom-out itself sells the move.
@@ -263,7 +263,7 @@ fn hyper_trigger(
             UltimatePortraitTag,
             Mesh2d(QUAD_MESH_HANDLE.clone()),
             MeshMaterial2d(material.clone()),
-            Transform::from_scale(Vec3::new(380.0, 570.0, 1.0))
+            Transform::from_scale(Vec3::new(620.0, 930.0, 1.0))
                 .with_translation(Vec3::new(0.0, 0.0, 60.0)),
         ))
         .id();
@@ -493,12 +493,12 @@ fn drive_camera_during_ultimate(
             // Anchor portrait to lower-right of camera in world
             // coords; offsets scale with `scale` so the portrait
             // stays in the same place on screen regardless of zoom.
-            let off_x = 220.0 * scale;
-            let off_y = -140.0 * scale;
+            let off_x = 150.0 * scale;
+            let off_y = -60.0 * scale;
             let z = portrait_xf.translation.z;
             portrait_xf.translation = cam_xf.translation + Vec3::new(off_x, off_y, 0.0);
             portrait_xf.translation.z = z;
-            portrait_xf.scale = Vec3::new(380.0 * scale, 570.0 * scale, 1.0);
+            portrait_xf.scale = Vec3::new(620.0 * scale, 930.0 * scale, 1.0);
         }
     }
 }
