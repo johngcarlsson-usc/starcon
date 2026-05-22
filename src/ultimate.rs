@@ -551,6 +551,7 @@ impl Plugin for UltimatePlugin {
             (
                 tick_mmrxf_transform,
                 tick_mmrxf_laser_segments,
+                tick_mmrxf_needs_restore,
             ),
         )
         .add_systems(
@@ -1216,9 +1217,13 @@ fn exit_cinematic(
                 e.insert(PostUltimateCoasting);
             }
             // Drop the Mmrnmhrm-active marker so normal abilities
-            // resume + restore the ship's original scale.
+            // resume + restore the ship's original scale on the
+            // next tick via MmrxfNeedsRestore.
             if state.variant == UltimateVariant::Mmrnmhrm {
                 e.remove::<MmrxfActive>();
+                if let Some(orig) = state.mmrxf_orig_scale {
+                    e.insert(MmrxfNeedsRestore { orig });
+                }
             }
         }
     }
@@ -3106,15 +3111,22 @@ pub fn tick_pkunk_formation_correction(
 // Mmrnmhrm — transform ultimate
 // ----------------------------------------------------------------
 
-/// During MmrxfTransform + MmrxfUnleashing, lerp the player ship's
-/// Transform.scale toward MMRXF_SHIP_SCALE×, and keep the alt-form
-/// overlay glued to the ship's world position. The orig scale is
-/// restored in `exit_cinematic`.
+/// During MmrxfTransform + MmrxfUnleashing:
+///   - Lerp the ship's Transform.scale toward MMRXF_SHIP_SCALE.
+///   - Glue the overlay sprite to the ship's world position.
+///   - Match the overlay's rotation to the ship's rotation.
+///   - Cycle the overlay's sprite frame from the *other* form's
+///     rotation frames so the alt form reads as superimposed.
+///
+/// The orig scale is restored on exit by `tick_mmrxf_needs_restore`.
 pub fn tick_mmrxf_transform(
     state: Res<UltimateState>,
-    leader: Query<&Position, With<crate::ship::Ship>>,
+    leader: Query<(&Position, &Rotation, Option<&crate::ship::ShipModes>), With<crate::ship::Ship>>,
     mut ship_xf: Query<&mut Transform, (With<crate::ship::Ship>, Without<MmrxfOverlaySprite>)>,
-    mut overlay_q: Query<&mut Transform, (With<MmrxfOverlaySprite>, Without<crate::ship::Ship>)>,
+    mut overlay_q: Query<
+        (&mut Transform, &mut Sprite),
+        (With<MmrxfOverlaySprite>, Without<crate::ship::Ship>),
+    >,
 ) {
     if state.variant != UltimateVariant::Mmrnmhrm {
         return;
@@ -3128,9 +3140,10 @@ pub fn tick_mmrxf_transform(
     }
     let Some(p1) = state.player_entity else { return };
     let Some(orig) = state.mmrxf_orig_scale else { return };
+    let Ok((pos, rot, ship_modes)) = leader.get(p1) else { return };
 
-    // Scale ramp: from 1× at MmrxfTransform start to MMRXF_SHIP_SCALE
-    // by the end of the transform phase, hold during unleashing.
+    // Scale ramp: 1× → MMRXF_SHIP_SCALE during Transform; hold at
+    // MMRXF_SHIP_SCALE during Unleashing.
     let target_factor = match state.phase {
         UltimatePhase::MmrxfTransform => {
             let p = (state.phase_timer_s / MMRXF_TRANSFORM_S).clamp(0.0, 1.0);
@@ -3143,22 +3156,82 @@ pub fn tick_mmrxf_transform(
     if let Ok(mut xf) = ship_xf.get_mut(p1) {
         xf.scale = orig * target_factor;
     }
-    // Glue the overlay sprite to the ship's world position.
+
+    // Update the overlay: glued to ship position, matches the
+    // ship's rotation, picks the alternate form's rotation frame.
     if let Some(overlay) = state.mmrxf_overlay_entity {
-        if let Ok(pos) = leader.get(p1) {
-            if let Ok(mut overlay_xf) = overlay_q.get_mut(overlay) {
-                overlay_xf.translation.x = pos.0.x;
-                overlay_xf.translation.y = pos.0.y;
-                overlay_xf.scale =
-                    Vec3::new(target_factor, target_factor, 1.0) * 1.2;
+        if let Ok((mut overlay_xf, mut overlay_sprite)) = overlay_q.get_mut(overlay) {
+            overlay_xf.translation.x = pos.0.x;
+            overlay_xf.translation.y = pos.0.y;
+            // The ship sprite is one of N pre-rotated frames + a
+            // small residual Transform.rotation; mirror the same
+            // approach for the overlay so it tracks 1:1.
+            let angle = rot.sin.atan2(rot.cos);
+            overlay_xf.rotation = Quat::from_rotation_z(0.0);
+            overlay_xf.scale = Vec3::splat(target_factor) * 1.2;
+
+            if let Some(modes) = ship_modes {
+                // Pick the OTHER mode's frames as the overlay
+                // content. With two modes (T / Y) this is just
+                // (1 - current).
+                if modes.modes.len() >= 2 {
+                    let alt_idx = if modes.current == 0 { 1 } else { 0 };
+                    let alt_frames = &modes.modes[alt_idx].frames;
+                    if !alt_frames.is_empty() {
+                        // Match swap_rotation_frame's frame-pick
+                        // math so the alt sprite faces the same
+                        // direction as the underlying ship.
+                        use std::f32::consts::{PI, TAU};
+                        let n = alt_frames.len();
+                        let nf = n as f32;
+                        let raw = ((-angle) / TAU * nf).rem_euclid(nf);
+                        let idx = (raw.round() as usize) % n;
+                        overlay_sprite.image = alt_frames[idx].clone();
+                        // Sub-frame residual rotation, same idea.
+                        let frame_angle = -(idx as f32) * TAU / nf;
+                        let mut residual = angle - frame_angle;
+                        if residual > PI {
+                            residual -= TAU;
+                        } else if residual < -PI {
+                            residual += TAU;
+                        }
+                        overlay_xf.rotation = Quat::from_rotation_z(residual);
+                    }
+                }
             }
         }
     }
 }
 
+/// Marker dropped onto the ship at cinematic exit when the
+/// Mmrnmhrm variant was active. `tick_mmrxf_needs_restore` reads
+/// it, writes Transform.scale back to `orig`, and removes the
+/// marker. Done in a follow-up tick because `exit_cinematic`
+/// doesn't have Transform access.
+#[derive(Component, Debug)]
+pub struct MmrxfNeedsRestore {
+    pub orig: Vec3,
+}
+
+/// Consume `MmrxfNeedsRestore`: write the ship's Transform.scale
+/// back to the saved value and drop the component.
+pub fn tick_mmrxf_needs_restore(
+    mut commands: Commands,
+    mut q: Query<(Entity, &MmrxfNeedsRestore, &mut Transform)>,
+) {
+    for (e, restore, mut xf) in &mut q {
+        xf.scale = restore.orig;
+        if let Ok(mut ec) = commands.get_entity(e) {
+            ec.remove::<MmrxfNeedsRestore>();
+        }
+    }
+}
+
 /// While MmrxfUnleashing is active and the player holds FIRE,
-/// the tangled-rope homing laser does continuous damage to the
-/// nearest valid target and redraws its wavy path each tick.
+/// the tangled-rope homing laser always renders three chaotic
+/// sinusoidal streams. Damage is only applied when a non-friendly
+/// target is within range; otherwise the curves still fire,
+/// pointing along the ship's forward direction.
 pub fn tick_mmrxf_tangled_laser(
     time: Res<Time<Physics>>,
     mut state: ResMut<UltimateState>,
@@ -3179,7 +3252,7 @@ pub fn tick_mmrxf_tangled_laser(
         return;
     }
     let Some(p1) = state.player_entity else { return };
-    let Ok((_, firer_ship, firer_pos, _)) = ships.get(p1) else { return };
+    let Ok((_, firer_ship, firer_pos, firer_rot)) = ships.get(p1) else { return };
     let input = crate::input::read_local_input_with_virtual(&keys, Some(&virt), firer_ship.player_slot);
     let dt = time.delta_secs();
     state.mmrxf_laser_cooldown_s = (state.mmrxf_laser_cooldown_s - dt).max(0.0);
@@ -3191,7 +3264,8 @@ pub fn tick_mmrxf_tangled_laser(
     }
     state.mmrxf_laser_cooldown_s = MMRXF_LASER_FIRE_INTERVAL_S;
 
-    // Pick nearest non-friendly non-invisible ship within range.
+    // Pick nearest non-friendly non-invisible ship within range,
+    // if any. Damage is gated on a hit; rendering is not.
     let firer_slot = firer_ship.player_slot;
     let mut best: Option<(Vec2, Entity, f32)> = None;
     for (e, s, p) in &target_ships {
@@ -3206,27 +3280,33 @@ pub fn tick_mmrxf_tangled_laser(
             best = Some((p.0, e, d2));
         }
     }
-    let Some((target_pos, target_e, _)) = best else { return };
 
-    // Apply damage to the target (shield-multiplied).
-    let factor = shields
-        .get(target_e)
-        .map(|s| s.damage_factor)
-        .unwrap_or(1.0);
-    let dmg = ((MMRXF_LASER_DAMAGE as f32 * factor).round() as i32).max(0);
-    if dmg > 0 {
-        if let Ok(mut crew) = crews.get_mut(target_e) {
-            crew.current = (crew.current - dmg).max(0);
+    // Apply damage if we have a target.
+    if let Some((_, target_e, _)) = best {
+        let factor = shields
+            .get(target_e)
+            .map(|s| s.damage_factor)
+            .unwrap_or(1.0);
+        let dmg = ((MMRXF_LASER_DAMAGE as f32 * factor).round() as i32).max(0);
+        if dmg > 0 {
+            if let Ok(mut crew) = crews.get_mut(target_e) {
+                crew.current = (crew.current - dmg).max(0);
+            }
         }
     }
 
-    // Draw the curve: sample MMRXF_LASER_SEGMENTS points along the
-    // firer→target line, perturbed by a sine wave perpendicular
-    // to the line. Each segment is a thin sprite that fades out
-    // over a short window so successive ticks layer into a
-    // tangled-rope effect.
+    // Pick the curve's endpoint: target position if any, else a
+    // point MMRXF_LASER_RANGE units along the ship's forward.
     let start = firer_pos.0;
-    let end = target_pos;
+    let end = match best {
+        Some((tp, _, _)) => tp,
+        None => {
+            // Sprite "up" maps to forward; rotate +Y by the ship's
+            // current Rotation.
+            let fwd = Vec2::new(-firer_rot.sin, firer_rot.cos);
+            start + fwd * MMRXF_LASER_RANGE
+        }
+    };
     let delta = end - start;
     let len = delta.length();
     if len < 1.0 {
@@ -3236,40 +3316,60 @@ pub fn tick_mmrxf_tangled_laser(
     let perp = Vec2::new(-along.y, along.x);
     let t_now = time.elapsed_secs();
     let amp = (len * 0.18).clamp(40.0, 180.0);
-    let freq = 6.0;
 
-    let mut prev = start;
-    for i in 1..=MMRXF_LASER_SEGMENTS {
-        let t = i as f32 / MMRXF_LASER_SEGMENTS as f32;
-        let base = start + along * (len * t);
-        // Smooth sine + faster random jitter so the rope wobbles
-        // visibly each tick rather than reading as a static curve.
-        let wave = (t * std::f32::consts::PI * freq + t_now * 12.0).sin();
-        let jitter = (fastrand::f32() - 0.5) * 0.4;
-        // Taper amplitude to 0 at the endpoints.
-        let taper = (t * (1.0 - t) * 4.0).sqrt();
-        let off = perp * (wave + jitter) * amp * taper;
-        let point = base + off;
-        // Render this segment from `prev` to `point`.
-        let mid = (prev + point) * 0.5;
-        let seg = point - prev;
-        let seg_len = seg.length().max(1.0);
-        let angle = seg.y.atan2(seg.x) - std::f32::consts::FRAC_PI_2;
-        let color = Color::srgba(0.55 + 0.45 * fastrand::f32(), 0.85, 1.0, 0.95);
-        commands.spawn((
-            MmrxfLaserSegment {
-                remaining_s: 0.10,
-                total_s: 0.10,
-                base_color: color,
-            },
-            Sprite::from_color(color, Vec2::new(6.0, seg_len)),
-            Transform {
-                translation: mid.extend(0.32),
-                rotation: Quat::from_rotation_z(angle),
-                scale: Vec3::ONE,
-            },
-        ));
-        prev = point;
+    // Three streams: distinct frequencies, phase offsets, colors,
+    // amplitudes — they cross and weave for the chaotic look.
+    let streams: [(f32, f32, f32, Color); 3] = [
+        (
+            5.0,
+            fastrand::f32() * std::f32::consts::TAU,
+            1.0,
+            Color::srgba(0.30, 1.00, 1.00, 0.95),
+        ),
+        (
+            11.0,
+            fastrand::f32() * std::f32::consts::TAU,
+            0.7,
+            Color::srgba(1.00, 0.35, 1.00, 0.90),
+        ),
+        (
+            17.0,
+            fastrand::f32() * std::f32::consts::TAU,
+            0.5,
+            Color::srgba(1.00, 1.00, 0.30, 0.85),
+        ),
+    ];
+
+    for (freq, phase, amp_mul, color) in streams {
+        let mut prev = start;
+        for i in 1..=MMRXF_LASER_SEGMENTS {
+            let t = i as f32 / MMRXF_LASER_SEGMENTS as f32;
+            let base = start + along * (len * t);
+            let wave = (t * std::f32::consts::PI * freq + t_now * 12.0 + phase).sin();
+            let jitter = (fastrand::f32() - 0.5) * 0.5;
+            // Taper amplitude to 0 at the endpoints.
+            let taper = (t * (1.0 - t) * 4.0).sqrt();
+            let off = perp * (wave + jitter) * amp * amp_mul * taper;
+            let point = base + off;
+            let mid = (prev + point) * 0.5;
+            let seg = point - prev;
+            let seg_len = seg.length().max(1.0);
+            let angle = seg.y.atan2(seg.x) - std::f32::consts::FRAC_PI_2;
+            commands.spawn((
+                MmrxfLaserSegment {
+                    remaining_s: 0.10,
+                    total_s: 0.10,
+                    base_color: color,
+                },
+                Sprite::from_color(color, Vec2::new(5.0, seg_len)),
+                Transform {
+                    translation: mid.extend(0.32),
+                    rotation: Quat::from_rotation_z(angle),
+                    scale: Vec3::ONE,
+                },
+            ));
+            prev = point;
+        }
     }
 }
 

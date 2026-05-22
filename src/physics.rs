@@ -11,7 +11,10 @@ use bevy::prelude::*;
 
 /// Arena wraps at ±this value on each axis. Matches the SC2 Super Melee feel
 /// — small enough that combat stays close, large enough that you can run.
-pub const ARENA_HALF_EXTENT: f32 = 800.0;
+/// Must comfortably exceed the spawn distance (±900 in `spawn_match`) so
+/// that ships don't immediately wrap on the very first physics step and
+/// end up on the wrong side of the arena facing outward.
+pub const ARENA_HALF_EXTENT: f32 = 1500.0;
 
 pub struct PhysicsPlugin;
 
