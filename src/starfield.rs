@@ -548,28 +548,17 @@ fn follow_ships_with_camera(
     let scale_y = needed.y / win.y;
     let raw_scale = scale_x.max(scale_y).clamp(SCALE_MIN, SCALE_MAX);
 
-    // Hysteresis: only update the target if either
-    //   - the current scale would clip the bbox (must zoom out), or
-    //   - the bbox is *much* smaller than the current framing
-    //     would suggest (zoom in is worth it).
-    // The dead-band between these two conditions kills the
-    // back-and-forth flip we'd otherwise get when the bbox's x
-    // and y dimensions trade places as the binding constraint.
+    // Light hysteresis: zoom out the moment the bbox would clip,
+    // zoom in once the bbox has shrunk by more than 10 %. The lerp
+    // below smooths the actual scale change so small frame-to-
+    // frame raw_scale wobble doesn't translate into visible
+    // jitter even with the tight 10 % band.
     let cur = zoom_state.target_scale;
     let target_scale = if raw_scale > cur {
-        // Must zoom out — the ships are about to leave the frame.
-        // Use a slight overshoot (1.05×) so we don't immediately
-        // trip the same condition next frame as the bbox grows.
         raw_scale * 1.05
-    } else if raw_scale < cur * 0.65 {
-        // Bbox has shrunk significantly (≈ 1.5× margin) — safe to
-        // tighten the frame. Snap to raw with a small margin so
-        // we don't sit exactly at the threshold.
+    } else if raw_scale < cur * 0.90 {
         raw_scale * 1.05
     } else {
-        // Inside the dead-band: keep the current framing. Stops
-        // the wobble that comes from `max(scale_x, scale_y)`
-        // alternating constraints as ships drift.
         cur
     };
 

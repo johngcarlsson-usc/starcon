@@ -724,6 +724,8 @@ impl Plugin for ShipPlugin {
                 tick_mycon_plasma,
                 spawn_chmmr_satellites,
                 tick_chmmr_satellites,
+                tick_asteroid_explosions,
+                handle_asteroid_ship_collisions,
             ),
         )
         .add_systems(
@@ -3916,11 +3918,12 @@ fn handle_projectile_hits(
     limpets: Query<&Limpet>,
     shields: Query<&ShieldActive>,
     damage_to_batt: Query<&DamageToBattery>,
-    asteroids_q: Query<(), With<Asteroid>>,
+    asteroids_q: Query<&Position, With<Asteroid>>,
     mut crews: Query<&mut Crew>,
     mut batteries: Query<&mut Battery>,
     mut velocities: Query<&mut LinearVelocity>,
     mut deriveds: Query<&mut ShipPhysicsDerived>,
+    assets: Res<AssetServer>,
 ) {
     for event in reader.read() {
         let (proj_entity, other_entity) = if projectiles.get(event.collider1).is_ok() {
@@ -3951,12 +3954,13 @@ fn handle_projectile_hits(
             continue;
         }
 
-        // Asteroid hit by projectile: 1 hp — blow up the rock and
-        // despawn the projectile. Matches canon VSmallAsteroid
-        // behaviour (handle_damage with armour ≈ 0). Projectiles
-        // do nothing else on contact with an asteroid (no chain
-        // damage; no crew loss).
-        if asteroids_q.get(other_entity).is_ok() {
+        // Asteroid hit by projectile: 1 hp — kaboom + despawn both.
+        // Matches canon VSmallAsteroid (handle_damage with armour
+        // ≈ 0). Spawn the explosion sprite at the asteroid's
+        // position so the rock visibly disintegrates instead of
+        // just blinking out.
+        if let Ok(pos) = asteroids_q.get(other_entity) {
+            spawn_asteroid_explosion(&mut commands, &assets, pos.0, 24.0);
             commands.entity(other_entity).despawn();
             commands.entity(proj_entity).despawn();
             continue;
@@ -5403,4 +5407,130 @@ pub fn preload_all_assets(
     }
 
     info!("preloaded {} asset handles", preloaded.handles.len());
+}
+
+/// Short-lived animated explosion spawned in place of an asteroid
+/// when it's destroyed. 20 KABOOM frames cycle over `total_s`,
+/// then the entity despawns. Pure visual — no physics, no damage.
+#[derive(Component, Debug)]
+pub struct AsteroidExplosion {
+    pub remaining_s: f32,
+    pub total_s: f32,
+    pub frames: Vec<Handle<Image>>,
+}
+
+/// Cycle the explosion sprite frame and fade alpha over its
+/// lifetime; despawn at zero. The frames advance through the
+/// loaded KABOOM_00..19 set linearly with `total_s` so all 20
+/// frames play across the animation window.
+fn tick_asteroid_explosions(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut AsteroidExplosion, &mut Sprite)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut expl, mut sprite) in &mut q {
+        expl.remaining_s -= dt;
+        if expl.remaining_s <= 0.0 {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
+            continue;
+        }
+        let frac_elapsed = 1.0 - (expl.remaining_s / expl.total_s).clamp(0.0, 1.0);
+        let n = expl.frames.len();
+        if n > 0 {
+            let idx = (frac_elapsed * n as f32).floor() as usize;
+            let idx = idx.min(n - 1);
+            sprite.image = expl.frames[idx].clone();
+        }
+        // Fade out over the second half so the explosion eases
+        // into the background rather than cutting hard.
+        let alpha = ((1.0 - frac_elapsed) * 2.0).clamp(0.0, 1.0);
+        sprite.color = Color::srgba(1.0, 1.0, 1.0, alpha);
+    }
+}
+
+/// Spawn a KABOOM animation at `pos`. Picks up the explosion
+/// frames from the asset server (cached after Startup preload).
+pub fn spawn_asteroid_explosion(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    pos: Vec2,
+    radius: f32,
+) {
+    let frames: Vec<Handle<Image>> = (0..20u32)
+        .map(|i| {
+            let path = format!("asteroids/explosion/kaboom_{:02}.png", i);
+            assets.load(path)
+        })
+        .collect();
+    let total = 0.4_f32;
+    commands.spawn((
+        AsteroidExplosion {
+            remaining_s: total,
+            total_s: total,
+            frames: frames.clone(),
+        },
+        Sprite {
+            image: frames.first().cloned().unwrap_or_default(),
+            color: Color::WHITE,
+            custom_size: Some(Vec2::splat(radius * 3.0)),
+            ..default()
+        },
+        Transform::from_translation(pos.extend(0.15)),
+    ));
+}
+
+/// Handle non-projectile collisions involving an asteroid: ship
+/// rams + asteroid-vs-asteroid bonks. Ship collisions blow up the
+/// asteroid AND deal a token bit of crew damage (canon collide
+/// damage). Asteroid-vs-asteroid collisions: do nothing (just
+/// bounce naturally via Avian's restitution).
+fn handle_asteroid_ship_collisions(
+    mut commands: Commands,
+    mut reader: MessageReader<CollisionStart>,
+    asteroids: Query<&Position, With<Asteroid>>,
+    ships: Query<&Ship>,
+    shields: Query<&ShieldActive>,
+    mut crews: Query<&mut Crew>,
+    assets: Res<AssetServer>,
+) {
+    for event in reader.read() {
+        // Identify which side is the asteroid.
+        let (asteroid_e, other_e) = if asteroids.get(event.collider1).is_ok() {
+            (event.collider1, event.collider2)
+        } else if asteroids.get(event.collider2).is_ok() {
+            (event.collider2, event.collider1)
+        } else {
+            continue;
+        };
+        // Only handle ships here — projectile-vs-asteroid is
+        // already handled in `handle_projectile_hits`, and
+        // asteroid-vs-asteroid we want to leave to physics.
+        if ships.get(other_e).is_err() {
+            continue;
+        }
+        let Ok(pos) = asteroids.get(asteroid_e) else { continue };
+        let world = pos.0;
+
+        // Token crew loss for the ship — ramming an asteroid
+        // hurts. shields halve / cancel as usual.
+        let factor = shields
+            .get(other_e)
+            .map(|s| s.damage_factor)
+            .unwrap_or(1.0);
+        let dmg = (2.0 * factor).round() as i32;
+        if dmg > 0 {
+            if let Ok(mut crew) = crews.get_mut(other_e) {
+                crew.current = (crew.current - dmg).max(0);
+            }
+        }
+
+        // Boom + despawn the asteroid.
+        spawn_asteroid_explosion(&mut commands, &assets, world, 24.0);
+        if let Ok(mut ec) = commands.get_entity(asteroid_e) {
+            ec.try_despawn();
+        }
+    }
 }
