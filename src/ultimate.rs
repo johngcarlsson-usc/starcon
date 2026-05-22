@@ -77,6 +77,13 @@ pub struct UltimateState {
     /// between this and the current angle when emitting trails, so
     /// the smear is continuous instead of stepped at 60 fps.
     pub last_blade_angle: Option<f32>,
+    /// Per-layer `ColorMaterial` handles — [core, mid, halo]. We
+    /// update each material's alpha each frame in `tick_ultimate_beams`
+    /// so the layered blade fades in/out cleanly. Cleared on exit.
+    pub beam_materials: Vec<Handle<bevy::sprite_render::ColorMaterial>>,
+    /// Spawned beam-entity ids — despawned on exit so repeated
+    /// triggers don't leak entities.
+    pub beam_entities: Vec<Entity>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -110,10 +117,11 @@ pub struct UltimateBeam {
     pub layer: u8,
 }
 
-/// Fading copy of an `UltimateBeam` quad — spawned each Update during
-/// `Unleashing` so the blade trails a glowing smoke smear.
-/// The trail grows wider over its lifetime (smoke billows out) while
-/// alpha falls — quadratic, not cubic, so it stays bright longer.
+/// Fading copy of an `UltimateBeam` triangle — spawned each Update
+/// during `Unleashing` so the blade trails a glowing smoke smear.
+/// Stores its own `ColorMaterial` handle so the alpha can be
+/// animated per-trail. Width grows over the lifetime (smoke billows
+/// outward) while alpha falls.
 #[derive(Component, Debug)]
 pub struct BeamTrail {
     pub remaining_s: f32,
@@ -122,6 +130,7 @@ pub struct BeamTrail {
     pub base_color: Color,
     pub start_width: f32,
     pub start_length: f32,
+    pub material: Handle<bevy::sprite_render::ColorMaterial>,
 }
 
 #[derive(Component)]
@@ -182,6 +191,11 @@ const VOICE_PATH: &str = "ultimate/arisk_voi.wav";
 /// Shared 1×1 quad mesh used by the portrait. Width/height come from
 /// `Transform.scale`.
 const QUAD_MESH_HANDLE: Handle<Mesh> = uuid_handle!("ec3a8f1e-7e8b-4f1b-9b3c-43c2e7d39001");
+/// Shared isosceles-triangle mesh used by the blade + trails. Apex at
+/// local (0, 0), base at local (±0.5, 1). Width comes from
+/// `Transform.scale.x`, length from `Transform.scale.y` — so the
+/// blade renders as a cone whose tip is wider than its origin.
+const BLADE_MESH_HANDLE: Handle<Mesh> = uuid_handle!("ec3a8f1e-7e8b-4f1b-9b3c-43c2e7d39002");
 
 // ----------------------------------------------------------------
 // Trigger.
@@ -196,6 +210,7 @@ fn hyper_trigger(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PortraitMaterial>>,
+    mut color_mats: ResMut<Assets<bevy::sprite_render::ColorMaterial>>,
     assets: Res<AssetServer>,
     mut virt: ResMut<Time<Virtual>>,
 ) {
@@ -226,6 +241,17 @@ fn hyper_trigger(
     if meshes.get(&QUAD_MESH_HANDLE).is_none() {
         let _ = meshes.insert(&QUAD_MESH_HANDLE, Rectangle::new(1.0, 1.0).into());
     }
+    if meshes.get(&BLADE_MESH_HANDLE).is_none() {
+        // Apex at local (0, 0) → at the ship. Base at (±0.5, 1) →
+        // expands outward to the tip. `Transform.scale = (width,
+        // length, 1)` shapes it into the desired cone.
+        let tri = bevy::math::primitives::Triangle2d::new(
+            Vec2::new(0.0, 0.0),
+            Vec2::new(-0.5, 1.0),
+            Vec2::new(0.5, 1.0),
+        );
+        let _ = meshes.insert(&BLADE_MESH_HANDLE, tri.into());
+    }
 
     // Portrait: Mesh2d + custom material with radial alpha fade.
     let material = materials.add(PortraitMaterial {
@@ -244,16 +270,26 @@ fn hyper_trigger(
     state.portrait_entity = Some(portrait);
     state.portrait_material = Some(material);
 
-    // Three layered beam sprites — core / mid / halo. Hidden until
-    // phase progresses past the first ramp.
+    // Three layered beam triangles — core / mid / halo. Each layer
+    // gets its own ColorMaterial so we can fade alpha independently
+    // each frame. Hidden until the phase progresses to Unleashing.
+    state.beam_materials.clear();
+    state.beam_entities.clear();
     for layer in 0u8..3 {
         let (_w, color, z) = beam_layer_pose(layer, 0.0);
-        commands.spawn((
-            UltimateBeam { layer },
-            Sprite::from_color(color, Vec2::splat(1.0)),
-            Transform::from_translation(Vec3::new(0.0, 0.0, z)),
-            Visibility::Hidden,
-        ));
+        let mat_handle =
+            color_mats.add(bevy::sprite_render::ColorMaterial::from_color(color));
+        let id = commands
+            .spawn((
+                UltimateBeam { layer },
+                Mesh2d(BLADE_MESH_HANDLE.clone()),
+                MeshMaterial2d(mat_handle.clone()),
+                Transform::from_translation(Vec3::new(0.0, 0.0, z)),
+                Visibility::Hidden,
+            ))
+            .id();
+        state.beam_materials.push(mat_handle);
+        state.beam_entities.push(id);
     }
 
     // Pause everything else.
@@ -380,6 +416,10 @@ fn exit_cinematic(
     if let Some(p) = state.portrait_entity.take() {
         commands.entity(p).despawn();
     }
+    for e in state.beam_entities.drain(..) {
+        commands.entity(e).despawn();
+    }
+    state.beam_materials.clear();
     state.portrait_material = None;
     zoom_state.target_scale = state.orig_cam_scale;
     state.phase = UltimatePhase::Idle;
@@ -496,7 +536,8 @@ fn tick_ultimate_beams(
     ships: Query<(&Position, &Rotation), With<Ship>>,
     ship_lookup: Query<&Ship>,
     mut crews: Query<&mut Crew>,
-    mut beams: Query<(&UltimateBeam, &mut Transform, &mut Sprite, &Visibility)>,
+    mut beams: Query<(&UltimateBeam, &mut Transform, &Visibility), Without<BeamTrail>>,
+    mut color_mats: ResMut<Assets<bevy::sprite_render::ColorMaterial>>,
     mut commands: Commands,
 ) {
     if state.phase == UltimatePhase::Idle {
@@ -557,15 +598,23 @@ fn tick_ultimate_beams(
     }
 
     let blade_len = HYPER_BEAM_LEN;
-    let midpoint = owner_pos + world_dir * (blade_len * 0.5);
     let angle = world_dir.y.atan2(world_dir.x) - std::f32::consts::FRAC_PI_2;
 
-    for (beam, mut xf, mut sprite, _vis) in &mut beams {
+    // Triangle mesh has apex at local (0, 0) and base at
+    // (±0.5, 1). Placing it at the ship's position with
+    // Transform.scale = (width, length, 1) makes the apex sit at the
+    // ship and the base extend to the tip — a cone whose origin is a
+    // point and whose tip is `width` units wide.
+    for (beam, mut xf, _vis) in &mut beams {
         let (w, color, z) = beam_layer_pose(beam.layer, phase_alpha);
-        xf.translation = midpoint.extend(z);
+        xf.translation = owner_pos.extend(z);
         xf.rotation = Quat::from_rotation_z(angle);
-        sprite.color = color;
-        sprite.custom_size = Some(Vec2::new(w, blade_len));
+        xf.scale = Vec3::new(w, blade_len, 1.0);
+        if let Some(mat_handle) = state.beam_materials.get(beam.layer as usize) {
+            if let Some(mat) = color_mats.get_mut(mat_handle) {
+                mat.color = color;
+            }
+        }
     }
 
     // Trail emission — interpolate between last frame's blade angle
@@ -603,31 +652,29 @@ fn tick_ultimate_beams(
         // live blade.
         let t = (i as f32 + 0.5) / TRAIL_SAMPLES_PER_FRAME as f32;
         let sample_angle = last_angle + sweep * t;
-        // Recompute world dir from the sample angle. `angle` was
-        // computed as `dir.y.atan2(dir.x) - FRAC_PI_2`, so add it back
-        // to get the dir's polar angle.
-        let dir_polar = sample_angle + std::f32::consts::FRAC_PI_2;
-        let sample_dir = Vec2::new(dir_polar.cos(), dir_polar.sin());
-        let sample_mid = owner_pos + sample_dir * (blade_len * 0.5);
 
         // Spawn all three layers as trails. Earlier interpolated
         // samples (smaller `t`) start with slightly lower alpha so
         // the freshest part of the smear is brightest.
-        let freshness = t; // 0..1, larger = closer to the live blade
+        let freshness = t;
         for layer in 0u8..3 {
             let (w, color, z) = beam_layer_pose(layer, phase_alpha);
-            // Inner core trails are short-lived and tighter (sharper
-            // luminescent line); halo trails are bigger and live
-            // slightly longer (the smoke billow).
             let (life_mult, alpha_mult) = match layer {
                 0 => (0.55, 0.65),
                 1 => (0.95, 1.00),
                 _ => (1.15, 0.85),
             };
             let lifetime = TRAIL_LIFETIME_S * life_mult;
-            let peak = TRAIL_PEAK_ALPHA * phase_alpha * alpha_mult * (0.55 + 0.45 * freshness);
+            let peak =
+                TRAIL_PEAK_ALPHA * phase_alpha * alpha_mult * (0.55 + 0.45 * freshness);
             let lin = color.to_linear();
             let trail_color = Color::srgba(lin.red, lin.green, lin.blue, peak);
+            // Per-trail ColorMaterial — alpha is animated per frame
+            // by `tick_beam_trails`. Handle lives on the BeamTrail
+            // component; when the entity despawns the handle drops
+            // and the material is GC'd.
+            let mat_handle =
+                color_mats.add(bevy::sprite_render::ColorMaterial::from_color(trail_color));
             commands.spawn((
                 BeamTrail {
                     remaining_s: lifetime,
@@ -636,12 +683,15 @@ fn tick_ultimate_beams(
                     base_color: trail_color,
                     start_width: w,
                     start_length: blade_len,
+                    material: mat_handle.clone(),
                 },
-                Sprite::from_color(trail_color, Vec2::new(w, blade_len)),
+                Mesh2d(BLADE_MESH_HANDLE.clone()),
+                MeshMaterial2d(mat_handle),
                 Transform {
-                    translation: sample_mid.extend(z - 0.05 - layer as f32 * 0.01),
+                    // Same apex-at-ship convention as the live blade.
+                    translation: owner_pos.extend(z - 0.05 - layer as f32 * 0.01),
                     rotation: Quat::from_rotation_z(sample_angle),
-                    scale: Vec3::ONE,
+                    scale: Vec3::new(w, blade_len, 1.0),
                 },
             ));
         }
@@ -663,10 +713,11 @@ fn beam_layer_pose(layer: u8, phase_alpha: f32) -> (f32, Color, f32) {
 fn tick_beam_trails(
     time: Res<Time<Real>>,
     mut commands: Commands,
-    mut q: Query<(Entity, &mut BeamTrail, &mut Sprite)>,
+    mut color_mats: ResMut<Assets<bevy::sprite_render::ColorMaterial>>,
+    mut q: Query<(Entity, &mut BeamTrail, &mut Transform)>,
 ) {
     let dt = time.delta_secs();
-    for (e, mut trail, mut sprite) in &mut q {
+    for (e, mut trail, mut xf) in &mut q {
         trail.remaining_s -= dt;
         if trail.remaining_s <= 0.0 {
             commands.entity(e).despawn();
@@ -676,21 +727,20 @@ fn tick_beam_trails(
         let frac = (trail.remaining_s / trail.total_s).clamp(0.0, 1.0);
         let age = 1.0 - frac;
 
-        // Alpha: gentle ease-out (sqrt-ish) so the trail stays bright
-        // through the first half of its life then fades. Way more
-        // visible than the previous cubic curve.
+        // Gentle alpha ease-out so the trail stays bright through
+        // most of its life.
         let alpha = trail.peak_alpha * frac.powf(0.6);
 
-        // Width: billow outward as the smoke disperses. Triples
-        // over the lifetime — a real motion-blur smear thickens as
-        // it ages and softens.
+        // Width billows outward as the smoke disperses (apex stays
+        // at the ship — only the tip widens). Length contracts so
+        // the smear becomes a "puff" rather than a line.
         let width = trail.start_width * (1.0 + 2.2 * age);
-        // Length contracts slightly as the smear becomes a "puff"
-        // rather than a line.
         let length = trail.start_length * (1.0 - 0.25 * age);
+        xf.scale = Vec3::new(width, length, 1.0);
 
-        sprite.custom_size = Some(Vec2::new(width, length));
-        let lin = trail.base_color.to_linear();
-        sprite.color = Color::srgba(lin.red, lin.green, lin.blue, alpha);
+        if let Some(mat) = color_mats.get_mut(&trail.material) {
+            let lin = trail.base_color.to_linear();
+            mat.color = Color::srgba(lin.red, lin.green, lin.blue, alpha);
+        }
     }
 }
