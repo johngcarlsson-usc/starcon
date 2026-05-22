@@ -121,7 +121,9 @@ pub struct UltimateBeam {
 /// during `Unleashing` so the blade trails a glowing smoke smear.
 /// Stores its own `ColorMaterial` handle so the alpha can be
 /// animated per-trail. Width grows over the lifetime (smoke billows
-/// outward) while alpha falls.
+/// outward) while alpha falls. `drift_vel` pushes the ghost off the
+/// blade so the smear scatters chaotically rather than sitting in
+/// place — the "fiery" wisp effect.
 #[derive(Component, Debug)]
 pub struct BeamTrail {
     pub remaining_s: f32,
@@ -131,6 +133,12 @@ pub struct BeamTrail {
     pub start_width: f32,
     pub start_length: f32,
     pub material: Handle<bevy::sprite_render::ColorMaterial>,
+    /// World-units / second the trail position drifts at. Mostly
+    /// tangential to the blade so wisps "fling off" sideways.
+    pub drift_vel: Vec2,
+    /// Width grows by `1 + width_growth * age` over the lifetime.
+    /// Randomised per-trail for chaotic flickering.
+    pub width_growth: f32,
 }
 
 #[derive(Component)]
@@ -177,7 +185,7 @@ const PHASE_UNLEASH_S: f32 = 1.6;
 /// dramatic close-up (was 0.45; 0.18 fills the screen with the
 /// ship).
 const HYPER_CAM_SCALE: f32 = 0.20;
-const HYPER_SPIN_RAD_PER_S: f32 = 42.0;
+const HYPER_SPIN_RAD_PER_S: f32 = 14.0;
 const HYPER_BEAM_LEN: f32 = 380.0;
 /// Per-second crew damage applied to anything the blade is currently
 /// touching. Scaled by `dt` each tick. ~600 dmg/sec — even high-
@@ -630,9 +638,12 @@ fn tick_ultimate_beams(
         return;
     }
 
-    const TRAIL_SAMPLES_PER_FRAME: usize = 6;
-    const TRAIL_LIFETIME_S: f32 = 0.85;
+    const TRAIL_SAMPLES_PER_FRAME: usize = 8;
+    const TRAIL_LIFETIME_S: f32 = 1.0;
     const TRAIL_PEAK_ALPHA: f32 = 0.95;
+    /// Max tangential drift speed (world units/sec) of a trail ghost.
+    /// Higher = wisps fling off sideways more aggressively.
+    const TRAIL_DRIFT_MAX: f32 = 65.0;
 
     let last_angle = state.last_blade_angle.unwrap_or(angle);
     // Take the shorter signed sweep between angles so we interpolate
@@ -651,7 +662,25 @@ fn tick_ultimate_beams(
         // this frame's pose. We never emit at t=1 because that's the
         // live blade.
         let t = (i as f32 + 0.5) / TRAIL_SAMPLES_PER_FRAME as f32;
-        let sample_angle = last_angle + sweep * t;
+        // Add a tiny per-sample angle jitter so even the interpolated
+        // ghosts don't sit on the perfect arc — feels less mechanical.
+        let angle_jitter = (fastrand::f32() - 0.5) * 0.10;
+        let sample_angle = last_angle + sweep * t + angle_jitter;
+
+        // Direction along this ghost's blade, for the tangential
+        // drift below.
+        let dir_polar = sample_angle + std::f32::consts::FRAC_PI_2;
+        let sample_dir = Vec2::new(dir_polar.cos(), dir_polar.sin());
+        // Tangent = perpendicular to the blade; flick wisps sideways
+        // off the swing.
+        let tangent = Vec2::new(-sample_dir.y, sample_dir.x);
+        // Mostly tangential, with a small radial outward component
+        // — flames lick off and outward.
+        let drift_tang = tangent
+            * (fastrand::f32() * 2.0 - 1.0)
+            * TRAIL_DRIFT_MAX;
+        let drift_rad = sample_dir * fastrand::f32() * TRAIL_DRIFT_MAX * 0.4;
+        let drift_vel = drift_tang + drift_rad;
 
         // Spawn all three layers as trails. Earlier interpolated
         // samples (smaller `t`) start with slightly lower alpha so
@@ -660,38 +689,56 @@ fn tick_ultimate_beams(
         for layer in 0u8..3 {
             let (w, color, z) = beam_layer_pose(layer, phase_alpha);
             let (life_mult, alpha_mult) = match layer {
-                0 => (0.55, 0.65),
-                1 => (0.95, 1.00),
-                _ => (1.15, 0.85),
+                0 => (0.55, 0.75),
+                1 => (1.00, 1.00),
+                _ => (1.30, 0.85),
             };
-            let lifetime = TRAIL_LIFETIME_S * life_mult;
+            // Per-ghost lifetime jitter (0.65..1.35×) so trails
+            // don't all snuff out together — flickering effect.
+            let life_jitter = 0.65 + fastrand::f32() * 0.70;
+            let lifetime = TRAIL_LIFETIME_S * life_mult * life_jitter;
+            // Width / length jitter so the smear has texture rather
+            // than reading as uniform slabs.
+            let width_jitter = 0.6 + fastrand::f32() * 0.9; // 0.6..1.5
+            let length_jitter = 0.8 + fastrand::f32() * 0.4; // 0.8..1.2
             let peak =
                 TRAIL_PEAK_ALPHA * phase_alpha * alpha_mult * (0.55 + 0.45 * freshness);
             let lin = color.to_linear();
-            let trail_color = Color::srgba(lin.red, lin.green, lin.blue, peak);
-            // Per-trail ColorMaterial — alpha is animated per frame
-            // by `tick_beam_trails`. Handle lives on the BeamTrail
-            // component; when the entity despawns the handle drops
-            // and the material is GC'd.
+            // Small per-ghost RGB jitter — hue chaos for the fiery
+            // flicker (each wisp a slightly different shade).
+            let r_jit = (fastrand::f32() - 0.5) * 0.18;
+            let g_jit = (fastrand::f32() - 0.5) * 0.12;
+            let b_jit = (fastrand::f32() - 0.5) * 0.10;
+            let trail_color = Color::srgba(
+                (lin.red + r_jit).clamp(0.0, 1.5),
+                (lin.green + g_jit).clamp(0.0, 1.5),
+                (lin.blue + b_jit).clamp(0.0, 1.5),
+                peak,
+            );
             let mat_handle =
                 color_mats.add(bevy::sprite_render::ColorMaterial::from_color(trail_color));
+            // Per-ghost width growth — some wisps puff out big,
+            // others stay tight. Range 1.5..4.0× so the mix of
+            // tight cores and big billows gives texture.
+            let width_growth = 1.5 + fastrand::f32() * 2.5;
             commands.spawn((
                 BeamTrail {
                     remaining_s: lifetime,
                     total_s: lifetime,
                     peak_alpha: peak,
                     base_color: trail_color,
-                    start_width: w,
-                    start_length: blade_len,
+                    start_width: w * width_jitter,
+                    start_length: blade_len * length_jitter,
                     material: mat_handle.clone(),
+                    drift_vel,
+                    width_growth,
                 },
                 Mesh2d(BLADE_MESH_HANDLE.clone()),
                 MeshMaterial2d(mat_handle),
                 Transform {
-                    // Same apex-at-ship convention as the live blade.
                     translation: owner_pos.extend(z - 0.05 - layer as f32 * 0.01),
                     rotation: Quat::from_rotation_z(sample_angle),
-                    scale: Vec3::new(w, blade_len, 1.0),
+                    scale: Vec3::new(w * width_jitter, blade_len * length_jitter, 1.0),
                 },
             ));
         }
@@ -723,20 +770,33 @@ fn tick_beam_trails(
             commands.entity(e).despawn();
             continue;
         }
-        // frac: 1.0 at spawn, 0.0 at end.
         let frac = (trail.remaining_s / trail.total_s).clamp(0.0, 1.0);
         let age = 1.0 - frac;
 
-        // Gentle alpha ease-out so the trail stays bright through
-        // most of its life.
-        let alpha = trail.peak_alpha * frac.powf(0.6);
+        // Alpha: gentle ease-out so the trail stays bright through
+        // most of its life. Then *flickers* in the last 25% of the
+        // lifetime — a low-amplitude sinusoid in `age` adds the
+        // "ember sputtering out" feel.
+        let mut alpha = trail.peak_alpha * frac.powf(0.6);
+        if age > 0.75 {
+            let flicker = (age * 60.0).sin() * 0.18;
+            alpha = (alpha + alpha * flicker).max(0.0);
+        }
 
         // Width billows outward as the smoke disperses (apex stays
-        // at the ship — only the tip widens). Length contracts so
-        // the smear becomes a "puff" rather than a line.
-        let width = trail.start_width * (1.0 + 2.2 * age);
-        let length = trail.start_length * (1.0 - 0.25 * age);
+        // at the ship — only the tip widens). Per-trail growth rate
+        // so the puffs don't all expand uniformly. Length contracts
+        // so the smear becomes a "puff" rather than a line.
+        let width = trail.start_width * (1.0 + trail.width_growth * age);
+        let length = trail.start_length * (1.0 - 0.30 * age);
         xf.scale = Vec3::new(width, length, 1.0);
+
+        // Drift the ghost off the blade — wisps fling outward as
+        // they age, gradually slowing (linear decel).
+        let drift_factor = 1.0 - age * 0.6;
+        let drift = trail.drift_vel * dt * drift_factor.max(0.0);
+        xf.translation.x += drift.x;
+        xf.translation.y += drift.y;
 
         if let Some(mat) = color_mats.get_mut(&trail.material) {
             let lin = trail.base_color.to_linear();
