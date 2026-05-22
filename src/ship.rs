@@ -726,6 +726,7 @@ impl Plugin for ShipPlugin {
                 tick_chmmr_satellites,
                 tick_asteroid_explosions,
                 handle_asteroid_ship_collisions,
+                replenish_asteroids,
             ),
         )
         .add_systems(
@@ -4283,10 +4284,12 @@ fn tick_beams(
     mut beams: Query<(Entity, &mut Beam, &mut Transform, &mut Sprite)>,
     owners: Query<(&Ship, &Position, &Rotation)>,
     ship_pos: Query<(Entity, &Ship, &Position), Without<Invisible>>,
+    asteroid_pos: Query<&Position, With<Asteroid>>,
     mut crews: Query<&mut Crew>,
     shields: Query<&ShieldActive>,
     ship_class_of: Query<&Ship>,
     hypers: Query<&crate::ultimate::HyperActive>,
+    assets: Res<AssetServer>,
 ) {
     use avian2d::prelude::SpatialQueryFilter;
     use bevy::math::Dir2;
@@ -4359,7 +4362,13 @@ fn tick_beams(
         let damage_ticks = beam.damage_accum.floor() as i32;
         beam.damage_accum -= damage_ticks as f32;
         if let Some(target) = hit_target {
-            if let Ok(target_ship) = ship_class_of.get(target) {
+            // Asteroid hit by a laser: same 1-hp blow-up as
+            // projectile-vs-asteroid. The beam continues raycasting
+            // through but we kaboom the rock + despawn here.
+            if let Ok(ast_pos) = asteroid_pos.get(target) {
+                spawn_asteroid_explosion(&mut commands, &assets, ast_pos.0, 24.0);
+                commands.entity(target).despawn();
+            } else if let Ok(target_ship) = ship_class_of.get(target) {
                 let invisible_or_friendly = target_ship.player_slot == owner_ship.player_slot
                     || ship_pos.get(target).is_err();
                 if !invisible_or_friendly && damage_ticks > 0 {
@@ -5482,18 +5491,16 @@ pub fn spawn_asteroid_explosion(
     ));
 }
 
-/// Handle non-projectile collisions involving an asteroid: ship
-/// rams + asteroid-vs-asteroid bonks. Ship collisions blow up the
-/// asteroid AND deal a token bit of crew damage (canon collide
-/// damage). Asteroid-vs-asteroid collisions: do nothing (just
-/// bounce naturally via Avian's restitution).
+/// Handle non-projectile collisions involving an asteroid: a ship
+/// rams an asteroid, the asteroid breaks apart. The ship itself
+/// takes no contact damage from the rock — only the Slylandro
+/// ultimate (which uses its own SlylandroLaunched marker +
+/// dedicated handler) deals crew damage via asteroid impact.
 fn handle_asteroid_ship_collisions(
     mut commands: Commands,
     mut reader: MessageReader<CollisionStart>,
     asteroids: Query<&Position, With<Asteroid>>,
     ships: Query<&Ship>,
-    shields: Query<&ShieldActive>,
-    mut crews: Query<&mut Crew>,
     assets: Res<AssetServer>,
 ) {
     for event in reader.read() {
@@ -5505,32 +5512,114 @@ fn handle_asteroid_ship_collisions(
         } else {
             continue;
         };
-        // Only handle ships here — projectile-vs-asteroid is
-        // already handled in `handle_projectile_hits`, and
-        // asteroid-vs-asteroid we want to leave to physics.
+        // Only ship rams break the asteroid — projectile-vs-asteroid
+        // is already handled in `handle_projectile_hits`,
+        // asteroid-vs-asteroid bonks fall through to Avian's
+        // restitution physics.
         if ships.get(other_e).is_err() {
             continue;
         }
         let Ok(pos) = asteroids.get(asteroid_e) else { continue };
-        let world = pos.0;
-
-        // Token crew loss for the ship — ramming an asteroid
-        // hurts. shields halve / cancel as usual.
-        let factor = shields
-            .get(other_e)
-            .map(|s| s.damage_factor)
-            .unwrap_or(1.0);
-        let dmg = (2.0 * factor).round() as i32;
-        if dmg > 0 {
-            if let Ok(mut crew) = crews.get_mut(other_e) {
-                crew.current = (crew.current - dmg).max(0);
-            }
-        }
-
-        // Boom + despawn the asteroid.
-        spawn_asteroid_explosion(&mut commands, &assets, world, 24.0);
+        spawn_asteroid_explosion(&mut commands, &assets, pos.0, 24.0);
         if let Ok(mut ec) = commands.get_entity(asteroid_e) {
             ec.try_despawn();
         }
     }
+}
+
+/// Replenish asteroids when the field gets thin: each FixedUpdate
+/// check the live count, and if it's below `TARGET_ASTEROID_COUNT`,
+/// spawn a fresh rock at a random arena position that's off the
+/// camera's visible region. Keeps the arena populated through
+/// long matches where lasers + ship rams keep destroying rocks.
+fn replenish_asteroids(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    cameras: Query<(&Transform, &Projection), With<Camera2d>>,
+    windows: Query<&Window>,
+    asteroids: Query<(), With<Asteroid>>,
+) {
+    use std::f32::consts::TAU;
+    const TARGET_ASTEROID_COUNT: usize = 8;
+    const HALF: f32 = 3000.0;
+    const KEEP_OUT_X: f32 = 600.0;
+    const KEEP_OUT_Y: f32 = 350.0;
+    const ASTEROID_FRAMES: usize = 64;
+
+    let count = asteroids.iter().count();
+    if count >= TARGET_ASTEROID_COUNT {
+        return;
+    }
+
+    // Compute the camera's visible half-extents so we can prefer
+    // spawn positions outside the current view ("off-screen").
+    let (cam_xy, view_hx, view_hy) = if let (Ok((cam_xf, proj)), Ok(win)) =
+        (cameras.single(), windows.single())
+    {
+        let scale = match proj {
+            Projection::Orthographic(o) => o.scale,
+            _ => 1.0,
+        };
+        (
+            cam_xf.translation.truncate(),
+            win.width() * 0.5 * scale,
+            win.height() * 0.5 * scale,
+        )
+    } else {
+        (Vec2::ZERO, 1280.0 * 0.5, 720.0 * 0.5)
+    };
+
+    // Try a handful of random positions; prefer the first one that
+    // is (a) outside the spawn corridor, (b) outside the camera's
+    // current view. If we can't find an off-screen pick after a
+    // bunch of attempts, fall back to whatever's valid — better
+    // than skipping the spawn.
+    let pos = (0..16)
+        .map(|_| {
+            let x = (fastrand::f32() - 0.5) * HALF * 2.0;
+            let y = (fastrand::f32() - 0.5) * HALF * 2.0;
+            Vec2::new(x, y)
+        })
+        .find(|p| {
+            let near_left = (p.x - (-900.0)).abs() < KEEP_OUT_X && p.y.abs() < KEEP_OUT_Y;
+            let near_right = (p.x - 900.0).abs() < KEEP_OUT_X && p.y.abs() < KEEP_OUT_Y;
+            let off_screen = (p.x - cam_xy.x).abs() > view_hx
+                || (p.y - cam_xy.y).abs() > view_hy;
+            !near_left && !near_right && off_screen
+        })
+        .unwrap_or_else(|| {
+            // Fallback: pick any position avoiding spawn corridors.
+            let theta = fastrand::f32() * TAU;
+            let r = HALF * (0.6 + 0.4 * fastrand::f32());
+            cam_xy + Vec2::new(theta.cos(), theta.sin()) * r
+        });
+
+    let theta = fastrand::f32() * TAU;
+    let speed = 18.0 + fastrand::f32() * 28.0;
+    let vel = Vec2::new(theta.cos(), theta.sin()) * speed;
+    let radius = 22.0 + fastrand::f32() * 16.0;
+    let visual = radius * 2.2;
+    let frame_idx = 1 + (fastrand::usize(..) % ASTEROID_FRAMES);
+    let sprite_path = format!("asteroids/astero{:02}.png", frame_idx);
+    commands.spawn((
+        Asteroid,
+        Sprite {
+            image: assets.load(sprite_path),
+            color: Color::WHITE,
+            custom_size: Some(Vec2::splat(visual)),
+            ..default()
+        },
+        Transform::from_translation(pos.extend(0.1)),
+        RigidBody::Dynamic,
+        Collider::circle(radius),
+        Mass(4.0 + fastrand::f32() * 3.0),
+        Position(pos),
+        Restitution::new(0.7),
+        Friction::new(0.0),
+        LinearVelocity(vel),
+        AngularVelocity((fastrand::f32() - 0.5) * 0.6),
+        LinearDamping(0.0),
+        AngularDamping(0.0),
+        CollisionEventsEnabled,
+    ));
 }

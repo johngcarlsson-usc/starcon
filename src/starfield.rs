@@ -591,19 +591,30 @@ fn follow_ships_with_camera(
     let blend = if snap { 1.0 } else { (4.0 * dt).min(1.0) };
 
     if let Ok((mut cam_xf, mut projection)) = cameras.single_mut() {
-        cam_xf.translation.x += (center.x - cam_xf.translation.x) * blend;
-        cam_xf.translation.y += (center.y - cam_xf.translation.y) * blend;
         if snap {
-            // Match the actual orthographic scale as well so the
-            // first rendered frame already fits the bbox.
+            // Direct assign — no lerp — so the very first rendered
+            // frame already has camera + scale fitted to the bbox.
+            // Lerp can leave the first frame at a stale pose if
+            // the centroid is far from the camera's prior
+            // position (e.g. after the cinematic exited at a
+            // wide framing).
+            cam_xf.translation.x = center.x;
+            cam_xf.translation.y = center.y;
             if let Projection::Orthographic(ref mut ortho) = *projection {
                 ortho.scale = snap_scale;
             }
+        } else {
+            cam_xf.translation.x += (center.x - cam_xf.translation.x) * blend;
+            cam_xf.translation.y += (center.y - cam_xf.translation.y) * blend;
         }
     }
     let final_target = if snap { snap_scale } else { target_scale };
-    let cur = zoom_state.target_scale;
-    zoom_state.target_scale = cur + (final_target - cur) * blend;
+    if snap {
+        zoom_state.target_scale = final_target;
+    } else {
+        let cur = zoom_state.target_scale;
+        zoom_state.target_scale = cur + (final_target - cur) * blend;
+    }
 }
 
 /// Set the `pending_initial_snap` flag so the very next Update

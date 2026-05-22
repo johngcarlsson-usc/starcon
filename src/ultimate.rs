@@ -310,11 +310,15 @@ pub enum UltimatePhase {
     // ---- Slylandro asteroid storm ----
     /// Paused. Every asteroid in the field gets the
     /// `SlylandroLaunched` marker and starts glowing in place —
-    /// energy buildup for the impending barrage.
+    /// energy buildup for the impending barrage. Camera stays
+    /// tight on the firer.
     SlylandroCharging,
+    /// Paused. Camera pulls back from the close-up to the
+    /// original perspective — the player surveys the field of
+    /// glowing asteroids before they fly. Time stays stopped.
+    SlylandroPullback,
     /// Unpaused. Each asteroid receives a one-shot impulse along
-    /// the bearing to the nearest enemy ship (with random speed
-    /// + small angular jitter so the barrage feels chaotic) and
+    /// the predicted intercept of the nearest enemy ship and
     /// deals contact damage for the duration.
     SlylandroStorm,
 }
@@ -555,7 +559,8 @@ const PKUNK_FORMATION_SIDE: f32 = 240.0;
 const PKUNK_PAN_FAR_SCALE: f32 = 1.2;
 
 // -- Slylandro asteroid storm --
-const SLYP_CHARGE_S: f32 = 0.8;
+const SLYP_CHARGE_S: f32 = 0.7;
+const SLYP_PULLBACK_S: f32 = 0.7;
 const SLYP_STORM_S: f32 = 4.0;
 /// Min/max launch speed of each asteroid (world units / second).
 /// Doubled from the first pass + narrower spread so the swarm
@@ -922,6 +927,7 @@ fn tick_ultimate_phases(
                 (PKUNK_FORMATION_S, 1.0 - portrait_p, false, 0.0, false)
             }
             UltimatePhase::SlylandroCharging => (SLYP_CHARGE_S, 1.0, false, 0.0, true),
+            UltimatePhase::SlylandroPullback => (SLYP_PULLBACK_S, 1.0, false, 0.0, true),
             UltimatePhase::SlylandroStorm => {
                 let p = (state.phase_timer_s / SLYP_STORM_S).clamp(0.0, 1.0);
                 let portrait_p = (p / 0.5).clamp(0.0, 1.0);
@@ -1016,7 +1022,8 @@ fn tick_ultimate_phases(
             (UltimatePhase::ShofixtiCharging, _) => UltimatePhase::ShofixtiNova,
             (UltimatePhase::PkunkSummoning, _) => UltimatePhase::PkunkPan,
             (UltimatePhase::PkunkPan, _) => UltimatePhase::PkunkFormation,
-            (UltimatePhase::SlylandroCharging, _) => UltimatePhase::SlylandroStorm,
+            (UltimatePhase::SlylandroCharging, _) => UltimatePhase::SlylandroPullback,
+            (UltimatePhase::SlylandroPullback, _) => UltimatePhase::SlylandroStorm,
             // Final phases: exit.
             (UltimatePhase::ArilouUnleashing, _)
             | (UltimatePhase::EarthlingBlasting, _)
@@ -1238,18 +1245,28 @@ fn drive_camera_during_ultimate(
                 PKUNK_PAN_FAR_SCALE * (1.0 - eased) + zoom_far * eased,
             )
         }
-        // Slylandro: tight on the firer while asteroids charge,
-        // then pull back to a wide framing during the storm so
-        // the swarm reads on screen.
+        // Slylandro: tight on the firer through Charging; the
+        // dedicated Pullback phase eases the camera back to the
+        // player's original framing (time still paused), then
+        // Storm fires the impulse the moment time resumes.
         UltimatePhase::SlylandroCharging => (1.0, HYPER_CAM_SCALE),
-        UltimatePhase::SlylandroStorm => {
-            let p = (state.phase_timer_s / (SLYP_STORM_S * 0.5)).clamp(0.0, 1.0);
+        UltimatePhase::SlylandroPullback => {
+            let p = (state.phase_timer_s / SLYP_PULLBACK_S).clamp(0.0, 1.0);
+            // Ease-out cubic — quick at the start, settling
+            // into the wide framing.
             let eased = 1.0 - (1.0 - p).powi(3);
-            let zoom_far = state.orig_cam_scale.max(2.0);
+            let zoom_far = state.orig_cam_scale.max(1.4);
             (
                 1.0 - eased,
                 HYPER_CAM_SCALE * (1.0 - eased) + zoom_far * eased,
             )
+        }
+        UltimatePhase::SlylandroStorm => {
+            // Pullback already eased us to the wide framing before
+            // time resumed; stay there so the impulse fires
+            // against a stable view.
+            let zoom_far = state.orig_cam_scale.max(1.4);
+            (0.0, zoom_far)
         }
         UltimatePhase::Idle => return,
     };
