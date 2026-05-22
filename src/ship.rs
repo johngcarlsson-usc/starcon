@@ -717,6 +717,7 @@ impl Plugin for ShipPlugin {
                 handle_projectile_hits,
                 handle_sub_entity_collisions,
                 handle_mode_contact_damage,
+                apply_syreen_drain,
             ),
         )
         .add_systems(
@@ -1868,7 +1869,12 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 1.0 / 20.0,
             },
             special: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "Supox held-strafe (shpsupbl.cpp:calculate_thrust)" },
+                // Supox held-strafe is implemented directly inside
+                // apply_player_input (Supbl-specific branch). The
+                // dispatcher doesn't need to do anything per-press —
+                // an empty Sequence keeps the cooldown / battery
+                // bookkeeping wired up while emitting no side effects.
+                kind: AbilityKind::Sequence(vec![]),
                 cooldown_s: 1.0 / 20.0,
             },
         }),
@@ -1940,57 +1946,14 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 8.0 / 20.0,
             },
             special: AbilitySpec {
-                // shpsyrpe.cpp activate_special: damage enemy crew in
-                // specialRange, spawn that many CrewPod sub-entities
-                // around them. Friendly Syreen ships can collect the
-                // pods to add to their crew.
-                //
-                // We don't have target tracking yet, so we approximate
-                // by spawning a handful of pods radially around the
-                // firer. Friendly contact picks them up; enemy contact
-                // does nothing. Range/Damage tuning from .ini Special
-                // (Range=11→440, Damage=5, Velocity=4→38.4).
-                kind: AbilityKind::Sequence(vec![
-                    AbilityKind::SpawnSubEntity {
-                        local_offset: Vec2::new(-30.0, 0.0),
-                        initial_angle_offset: -std::f32::consts::FRAC_PI_2,
-                        initial_speed: 4.0 * SC2_VEL_SCALE,
-                        sprite_path: Some("ships/syrpe/sprites/shot_b01.png".into()),
-                        sprite_size: 8.0,
-                        color: Color::srgb(1.0, 0.6, 0.9),
-                        hp: 1,
-                        lifetime_s: 12.0,
-                        ai: crate::ability::SubEntityAiSpec::DriftAndCollect {
-                            crew_value: 1,
-                        },
-                    },
-                    AbilityKind::SpawnSubEntity {
-                        local_offset: Vec2::new(30.0, 0.0),
-                        initial_angle_offset: std::f32::consts::FRAC_PI_2,
-                        initial_speed: 4.0 * SC2_VEL_SCALE,
-                        sprite_path: Some("ships/syrpe/sprites/shot_b01.png".into()),
-                        sprite_size: 8.0,
-                        color: Color::srgb(1.0, 0.6, 0.9),
-                        hp: 1,
-                        lifetime_s: 12.0,
-                        ai: crate::ability::SubEntityAiSpec::DriftAndCollect {
-                            crew_value: 1,
-                        },
-                    },
-                    AbilityKind::SpawnSubEntity {
-                        local_offset: Vec2::new(0.0, 30.0),
-                        initial_angle_offset: 0.0,
-                        initial_speed: 4.0 * SC2_VEL_SCALE,
-                        sprite_path: Some("ships/syrpe/sprites/shot_b01.png".into()),
-                        sprite_size: 8.0,
-                        color: Color::srgb(1.0, 0.6, 0.9),
-                        hp: 1,
-                        lifetime_s: 12.0,
-                        ai: crate::ability::SubEntityAiSpec::DriftAndCollect {
-                            crew_value: 1,
-                        },
-                    },
-                ]),
+                // shpsyrpe.cpp activate_special: drain crew from every
+                // valid enemy within specialRange. Damage scales with
+                // proximity (closer = more), plus a random bonus.
+                // .ini Special: Range=11→440 wu, Damage=5.
+                kind: AbilityKind::DrainNearbyCrew {
+                    range: 11.0 * SC2_RANGE_SCALE,
+                    max_drain: 5,
+                },
                 cooldown_s: 20.0 / 20.0,
             },
         }),
@@ -2521,6 +2484,30 @@ fn apply_player_input(
                 }
                 // else: leave ang_vel as-is (collision spin survives).
             }
+        }
+
+        // Supox held-strafe (shpsupbl.cpp:calculate_thrust): while
+        // Special is held, L / R map to lateral thrust (perpendicular
+        // to facing), THRUST maps to backward thrust, and rotation
+        // is suppressed entirely. Ship can still fire its primary.
+        if matches!(class, ShipClass::Supbl) && input.pressed(input::INPUT_SPECIAL) {
+            // No rotation while strafing.
+            torque.0 = 0.0;
+            ang_vel.0 = 0.0;
+            // Build a local-frame thrust vector from the inputs.
+            // ConstantLocalForce auto-rotates this into world space.
+            let mut local = Vec2::ZERO;
+            if input.pressed(input::INPUT_LEFT) {
+                local.x -= derived.thrust_force; // lateral left
+            }
+            if input.pressed(input::INPUT_RIGHT) {
+                local.x += derived.thrust_force; // lateral right
+            }
+            if input.pressed(input::INPUT_THRUST) {
+                local.y -= derived.thrust_force; // backwards
+            }
+            thrust.0 = local;
+            continue;
         }
 
         // Inertialess drive (Arilou): direct velocity control,
@@ -4690,5 +4677,74 @@ fn tick_invisible_visual(
         if sprite.color != target {
             sprite.color = target;
         }
+    }
+}
+
+/// Stamped on the Syreen ship by `DrainNearbyCrew` in apply_kind;
+/// consumed (and removed) by `apply_syreen_drain` next FixedUpdate
+/// tick where we have full access to other ships' positions / crew.
+#[derive(Component, Debug)]
+pub struct SyreenDrainRequest {
+    pub range: f32,
+    pub max_drain: i32,
+}
+
+/// One-shot crew drain: for each enemy ship within `range` of the
+/// firer, subtract crew proportional to proximity (closer = more)
+/// plus a small random bonus, capped at `max_drain` per target.
+/// Implements shpsyrpe.cpp:activate_special — the Syreen siren song.
+fn apply_syreen_drain(
+    mut commands: Commands,
+    requesters: Query<(Entity, &Ship, &Position, &SyreenDrainRequest)>,
+    ship_pos: Query<(Entity, &Ship, &Position), Without<Invisible>>,
+    shields: Query<&ShieldActive>,
+    mut crews: Query<&mut Crew>,
+) {
+    for (firer_entity, firer_ship, firer_pos, req) in &requesters {
+        let firer_xy = firer_pos.0;
+        let mut drained_total = 0;
+        for (target_entity, target_ship, target_pos) in &ship_pos {
+            if target_entity == firer_entity {
+                continue;
+            }
+            if target_ship.player_slot == firer_ship.player_slot {
+                continue;
+            }
+            let dist = (target_pos.0 - firer_xy).length();
+            if dist >= req.range {
+                continue;
+            }
+            // Linear proximity weight 1.0 (touching) → 0.0 (edge).
+            let prox = 1.0 - (dist / req.range);
+            let base = (req.max_drain as f32 * prox).round() as i32;
+            let jitter = fastrand::i32(0..=req.max_drain);
+            let mut dmg = (base + jitter).clamp(0, req.max_drain * 2);
+            // Shields halve / cancel as usual.
+            let factor = shields
+                .get(target_entity)
+                .map(|s| s.damage_factor)
+                .unwrap_or(1.0);
+            dmg = ((dmg as f32) * factor).round() as i32;
+            if dmg <= 0 {
+                continue;
+            }
+            if let Ok(mut crew) = crews.get_mut(target_entity) {
+                let actual = dmg.min(crew.current);
+                if actual > 0 {
+                    crew.current -= actual;
+                    drained_total += actual;
+                }
+            }
+        }
+        if drained_total > 0 {
+            info!(
+                "P{} Syreen song drained {} crew",
+                firer_ship.player_slot + 1,
+                drained_total
+            );
+        }
+        commands
+            .entity(firer_entity)
+            .remove::<SyreenDrainRequest>();
     }
 }

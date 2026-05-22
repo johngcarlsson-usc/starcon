@@ -105,6 +105,13 @@ pub enum AbilityKind {
     /// and similar.
     BrakeImpulse { max_dv: f32 },
 
+    /// Canonical Syreen siren song: drain crew from every valid
+    /// enemy within `range` world-units of the firer. Damage is
+    /// proximity-weighted — close enemies lose more — capped at
+    /// `max_drain` per target per cast, plus a small random bonus.
+    /// (shpsyrpe.cpp activate_special.)
+    DrainNearbyCrew { range: f32, max_drain: i32 },
+
     /// Fire one or more beams (sustained line damage). Each beam is
     /// owned by the firer and follows its pose; lives for `duration_s`,
     /// damaging the nearest enemy along its ray per tick. Canonical
@@ -604,6 +611,17 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
                 local_dir.x * ctx.rot.sin + local_dir.y * ctx.rot.cos,
             );
             ctx.vel.0 += world_dir * (*impulse / mass);
+        }
+        AbilityKind::DrainNearbyCrew { range, max_drain } => {
+            // Stamp a pending request on the firer; `apply_syreen_drain`
+            // (in ship.rs) consumes it next FixedUpdate tick where it
+            // has access to the full ship query.
+            ctx.commands
+                .entity(ctx.entity)
+                .insert(crate::ship::SyreenDrainRequest {
+                    range: *range,
+                    max_drain: *max_drain,
+                });
         }
         AbilityKind::BrakeImpulse { max_dv } => {
             let speed = ctx.vel.0.length();
