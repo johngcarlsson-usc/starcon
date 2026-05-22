@@ -604,23 +604,23 @@ pub struct ShipFrames {
     pub frames: Vec<Handle<Image>>,
 }
 
-/// Per-ship state for Melnorme charge-and-release primary. The shot
-/// is spawned on fire-press, stays attached to the ship's muzzle
-/// while held (Position snapped each tick, no forward motion), and
-/// accumulates charge phases over time. Each phase doubles damage
-/// and adds `RangeUp` to its range. Up to 3 phases. On fire-release
-/// the shot detaches and flies forward at full power.
-///
-/// Mirrors `shpmeltr.cpp:MelnormeShot::calculate`. 2.5 seconds per
-/// charge phase (5 charge_frames × 500 ms anim cycle in legacy).
+/// Per-ship state for Melnorme charge-and-release primary. Continuous
+/// linear interpolation of damage / scale / colour from base to max
+/// over `max_charge_s` of hold time.
 #[derive(Component, Debug, Default)]
 pub struct MeltrChargeState {
     pub active: Option<Entity>,
-    /// Current charge phase: 0..=3. Each phase doubles damage.
-    pub phase: i32,
-    /// Seconds accumulated toward the next phase.
+    /// Seconds the fire key has been held since this charge started.
     pub sub_charge_s: f32,
     pub last_fire_held: bool,
+    /// Last integer damage the shot was set to. When the next tick's
+    /// computed damage rounds to a different integer, we flash the
+    /// shot — the underlying interpolation is smooth but the damage
+    /// *value* is discrete, so the player needs a visual cue every
+    /// time it actually ticks up.
+    pub last_damage: i32,
+    /// Seconds remaining of a "charge tier crossed" white flash.
+    pub flash_remaining_s: f32,
 }
 
 /// Per-ship state for ships whose primary launches a charging or
@@ -3298,7 +3298,12 @@ fn tick_chebr_crystal(
             batt.current = (batt.current - ship.stats.weapon_drain).max(0);
 
             let forward = Vec2::new(0.0, 1.0);
-            let local_pos = Vec2::new(0.0, 32.0); // (0, size.y/2-ish)
+            // Spawn well clear of the Chebr hull (collider radius ~28
+            // for Chebr's polygon). At 60 units forward the crystal
+            // has clean separation — Avian's solver previously fought
+            // the crystal's initial velocity when they overlapped at
+            // (0, 32), leaving the crystal stuck near the ship.
+            let local_pos = Vec2::new(0.0, 60.0);
             let world_off = Vec2::new(
                 local_pos.x * ship_rot.cos - local_pos.y * ship_rot.sin,
                 local_pos.x * ship_rot.sin + local_pos.y * ship_rot.cos,
@@ -3321,12 +3326,16 @@ fn tick_chebr_crystal(
                     Sprite {
                         image: assets.load("ships/chebr/sprites/shot_a_01_tga.png"),
                         color: Color::srgb(1.0, 1.0, 1.0),
-                        custom_size: Some(Vec2::splat(14.0)),
+                        custom_size: Some(Vec2::splat(20.0)),
                         ..default()
                     },
                     Transform::from_translation(muzzle.extend(0.5)),
                     RigidBody::Dynamic,
-                    Collider::circle(7.0),
+                    Collider::circle(10.0),
+                    // Sensor so Avian doesn't bat the crystal around
+                    // on contact — collision events still fire for
+                    // damage handling (handle_projectile_hits).
+                    Sensor,
                     Mass(0.5 + weapon_damage as f32 * 0.4),
                     Position(muzzle),
                     Rotation::radians(initial_angle),
@@ -3343,102 +3352,128 @@ fn tick_chebr_crystal(
 
         if just_released {
             if let Some(crystal_entity) = carrier.current.take() {
-                // Query its world Position so the shards spawn from
-                // wherever the crystal *currently* is, not the ship.
                 if let Ok(crystal_pos) = projectiles.get(crystal_entity) {
                     let burst_at = crystal_pos.0;
-                    let crystal_angle = (ship_rot.sin).atan2(ship_rot.cos); // not great — better to read crystal Rotation but Position-only query
-                    let n_shards = 8;
-                    for i in 0..n_shards {
-                        let theta = crystal_angle
-                            + std::f32::consts::PI / 4.0 * (i as f32);
+                    // Stochastic chaotic shatter: 14-22 shards at
+                    // random angles, random speeds, random small
+                    // triangular polygon colliders. More visually
+                    // satisfying than the canonical 8 uniform shards;
+                    // can be reverted by replacing this block with
+                    // the 8 × π/4 uniform pattern.
+                    let n_shards = 14 + (fastrand::u32(..8) as usize);
+                    for _ in 0..n_shards {
+                        let theta = fastrand::f32() * std::f32::consts::TAU;
+                        let speed_mult = 0.6 + fastrand::f32() * 1.4; // 0.6× to 2.0×
                         let dir = Vec2::new(theta.cos(), theta.sin());
-                        // Velocity inherits a fraction of the crystal's
-                        // motion via shardRelativity=0 in .ini, so we
-                        // don't add the crystal's velocity here —
-                        // shards fire outward from the burst point.
-                        let shard_vel = dir * weapon_velocity;
-                        let init_angle =
-                            dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
+                        let shard_vel = dir * weapon_velocity * speed_mult;
+                        let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
+                        let init_spin = (fastrand::f32() - 0.5) * 20.0;
+                        let size = 4.0 + fastrand::f32() * 6.0;
+                        let shard_color = Color::srgb(
+                            0.7 + fastrand::f32() * 0.3,
+                            0.75 + fastrand::f32() * 0.25,
+                            0.9 + fastrand::f32() * 0.1,
+                        );
+                        // Random triangular polygon collider for that
+                        // "jagged crystal shard" feel. Three vertices
+                        // around a circle with jittered radius and
+                        // angle — Avian's `Collider::triangle` takes
+                        // them directly.
+                        let mut verts = [Vec2::ZERO; 3];
+                        for (i, v) in verts.iter_mut().enumerate() {
+                            let base_a = i as f32 * std::f32::consts::TAU / 3.0;
+                            let a = base_a + (fastrand::f32() - 0.5) * 0.7;
+                            let r = size * (0.6 + fastrand::f32() * 0.5);
+                            *v = Vec2::new(a.cos() * r, a.sin() * r);
+                        }
+                        let collider = Collider::triangle(verts[0], verts[1], verts[2]);
                         commands.spawn((
                             Projectile {
                                 owner: entity,
                                 damage: shard_damage,
                                 lifetime: shard_lifetime,
                             },
-                            Sprite {
-                                image: assets
-                                    .load("ships/chebr/sprites/shot_c_00_tga.png"),
-                                color: Color::srgb(0.9, 0.9, 1.0),
-                                custom_size: Some(Vec2::splat(8.0)),
-                                ..default()
-                            },
+                            Sprite::from_color(shard_color, Vec2::splat(size * 1.8)),
                             Transform::from_translation(burst_at.extend(0.5)),
                             RigidBody::Dynamic,
-                            Collider::circle(4.0),
+                            collider,
                             Mass(0.5 + shard_damage as f32 * 0.4),
                             Position(burst_at),
                             Rotation::radians(init_angle),
                             LinearVelocity(shard_vel),
-                            AngularVelocity::ZERO,
+                            AngularVelocity(init_spin),
                             LinearDamping(0.0),
                             AngularDamping(0.0),
                             CollisionEventsEnabled,
                         ));
                     }
-                    // Despawn the crystal itself.
                     commands.entity(crystal_entity).despawn();
-                    info!("chebr crystal shatter: 8 shards");
+                    info!("chebr crystal shatter: {} chaotic shards", n_shards);
                 }
             }
         }
     }
 }
 
-/// Melnorme charge-and-release primary. Mirrors
-/// `shpmeltr.cpp:MelnormeShot::calculate`.
+/// Melnorme charge-and-release primary.
 ///
-///   - press fire: spawn one charging-shot projectile at the
-///     muzzle. damage = base, lifetime = huge (so it doesn't expire
-///     mid-charge). Battery drain deducted on press.
-///   - hold fire: each tick snap the shot's `Position` to the
-///     ship's muzzle and its `LinearVelocity` to the ship's vel
-///     (so it tracks the ship without drifting forward). Accumulate
-///     `sub_charge_s`; every 2.5 s cross a phase boundary →
-///     phase += 1, projectile.damage *= 2. Cap at phase 3.
-///   - release fire: detach the shot — set its `LinearVelocity` to
-///     `ship_vel + forward * speed`, recompute lifetime from
-///     `(base_range + phase * RangeUp) / speed`. Clear state.
-///   - shot hits something during charge: still damages (the
-///     charging shot is canonically dangerous to touch).
-///     handle_projectile_hits despawns; state clears next tick.
+/// The user opted to replace the canonical discrete 3-phase charge
+/// (each phase doubles damage, +RangeUp range) with a **continuous
+/// linear** interpolation — the shot grows and shifts colour
+/// smoothly with hold duration instead of stepping in chunks. Max
+/// hold time still matches the canonical full-charge (7.5 s).
 ///
-/// All projectiles use Avian colliders + Position/Velocity, so
-/// damage is delivered through `CollisionStart` events the same
-/// way every other projectile in the game is.
+///   - press fire: spawn one charging-shot projectile at the muzzle,
+///     scale 1.0, base damage 2, base colour pale green, sensor
+///     collider so Avian doesn't shove it on contact with the ship.
+///   - hold fire: each tick:
+///       - position = ship muzzle (rides with the ship)
+///       - charge_fraction = (sub_charge_s / max_charge_s).min(1.0)
+///       - damage = base + (max - base) · charge_fraction  (rounded)
+///       - Transform.scale = 1.0 + (max_scale - 1.0) · charge_fraction
+///         (collider scales with Transform thanks to
+///         `transform_to_collider_scale`)
+///       - Sprite.color = lerp(base_color, max_color, charge_fraction)
+///   - release fire: detach — set LinearVelocity = ship_vel +
+///     forward · speed; recompute lifetime from
+///     `(base_range + charge_fraction · max_extra_range) / speed`.
+///   - hit during charge: still damages (charging shot is dangerous
+///     to touch). handle_projectile_hits despawns via Avian
+///     CollisionStart events; state clears next tick.
 fn tick_meltr_charge(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     assets: Res<AssetServer>,
     time: Res<Time<Physics>>,
-    mut projectiles: Query<(&mut Projectile, &mut Position, &mut LinearVelocity)>,
-    mut ships: Query<(
-        Entity,
-        &Ship,
-        &Position,
-        &Rotation,
-        &LinearVelocity,
-        &mut MeltrChargeState,
-        &mut Battery,
-    ), Without<Projectile>>,
+    mut projectiles: Query<(
+        &mut Projectile,
+        &mut Position,
+        &mut LinearVelocity,
+        &mut Transform,
+        &mut Sprite,
+    )>,
+    mut ships: Query<
+        (
+            Entity,
+            &Ship,
+            &Position,
+            &Rotation,
+            &LinearVelocity,
+            &mut MeltrChargeState,
+            &mut Battery,
+        ),
+        Without<Projectile>,
+    >,
 ) {
     let dt = time.delta_secs();
-    let charge_period_s = 2.5;
-    let base_damage = 2;
-    let base_range_world = 21.0 * SC2_RANGE_SCALE;
-    let range_up_world = 3.0 * SC2_RANGE_SCALE;
-    let speed = 112.0 * SC2_VEL_SCALE;
-    let muzzle_local = Vec2::new(0.0, 28.0);
+    let max_charge_s: f32 = 7.5; // 3 canonical phases × 2.5 s each
+    let base_damage: i32 = 2;
+    let max_damage: i32 = 16; // 2·2³ — canon max
+    let base_range_world: f32 = 21.0 * SC2_RANGE_SCALE;
+    let max_extra_range: f32 = 3.0 * 3.0 * SC2_RANGE_SCALE;
+    let speed: f32 = 112.0 * SC2_VEL_SCALE;
+    let muzzle_local = Vec2::new(0.0, 60.0); // clear of ship hull, like Chebr crystal
+    let max_scale: f32 = 3.0; // shot 3× bigger at full charge
 
     for (entity, ship, ship_pos, ship_rot, ship_vel, mut state, mut batt) in &mut ships {
         let input = input::read_local_input(&keys, ship.player_slot);
@@ -3448,16 +3483,15 @@ fn tick_meltr_charge(
         let just_pressed = fire_held && !was_held;
         let just_released = !fire_held && was_held;
 
-        // Clean up stale entity ref.
         if let Some(e) = state.active {
             if projectiles.get(e).is_err() {
                 state.active = None;
-                state.phase = 0;
                 state.sub_charge_s = 0.0;
+                state.last_damage = 0;
+                state.flash_remaining_s = 0.0;
             }
         }
 
-        // Forward / muzzle world position from ship pose.
         let forward_local = Vec2::new(0.0, 1.0);
         let world_forward = Vec2::new(
             forward_local.x * ship_rot.cos - forward_local.y * ship_rot.sin,
@@ -3469,33 +3503,33 @@ fn tick_meltr_charge(
         );
         let muzzle = ship_pos.0 + world_muzzle_off;
 
-        // Press → spawn charging shot.
         if just_pressed && state.active.is_none() {
             if ship.stats.weapon_drain > 0 && batt.current < ship.stats.weapon_drain {
                 continue;
             }
             batt.current = (batt.current - ship.stats.weapon_drain).max(0);
 
-            let initial_angle = world_forward.y.atan2(world_forward.x) - std::f32::consts::FRAC_PI_2;
+            let initial_angle =
+                world_forward.y.atan2(world_forward.x) - std::f32::consts::FRAC_PI_2;
             let shot_entity = commands
                 .spawn((
                     Projectile {
                         owner: entity,
                         damage: base_damage,
-                        // Huge lifetime so the shot survives the
-                        // longest possible charge (7.5 s). Reset on
-                        // release to a sane range-based value.
                         lifetime: 60.0,
                     },
                     Sprite {
                         image: assets.load("ships/meltr/sprites/shot_a01.png"),
-                        color: Color::srgb(1.0, 1.0, 1.0),
+                        // Initial pale-green tint; the per-tick lerp
+                        // below ramps toward bright yellow-white.
+                        color: Color::srgb(0.5, 1.0, 0.5),
                         custom_size: Some(Vec2::splat(10.0)),
                         ..default()
                     },
                     Transform::from_translation(muzzle.extend(0.5)),
                     RigidBody::Dynamic,
                     Collider::circle(5.0),
+                    Sensor, // charging shot is "attached" — no impulse exchange
                     Mass(0.5 + base_damage as f32 * 0.4),
                     Position(muzzle),
                     Rotation::radians(initial_angle),
@@ -3507,54 +3541,83 @@ fn tick_meltr_charge(
                 ))
                 .id();
             state.active = Some(shot_entity);
-            state.phase = 0;
             state.sub_charge_s = 0.0;
-            info!("meltr charge: shot fired (phase 0, dmg {})", base_damage);
+            state.last_damage = base_damage;
+            state.flash_remaining_s = 0.0;
+            info!("meltr charge: shot spawned (base dmg {})", base_damage);
         }
 
-        // While shot exists: charge and track.
         if let Some(shot_entity) = state.active {
+            // Flash timer ticks down whether or not fire is held — a
+            // step-up that happened a few frames ago still fades.
+            state.flash_remaining_s = (state.flash_remaining_s - dt).max(0.0);
+
             if fire_held {
-                // Charge tick.
-                if state.phase < 3 {
-                    state.sub_charge_s += dt;
-                    while state.sub_charge_s >= charge_period_s && state.phase < 3 {
-                        state.sub_charge_s -= charge_period_s;
-                        state.phase += 1;
-                        if let Ok((mut proj, _, _)) = projectiles.get_mut(shot_entity) {
-                            proj.damage *= 2;
-                        }
-                        info!(
-                            "meltr charge: phase → {}, dmg now {}",
-                            state.phase,
-                            base_damage * (1 << state.phase)
-                        );
-                    }
+                state.sub_charge_s = (state.sub_charge_s + dt).min(max_charge_s);
+                let charge_fraction = state.sub_charge_s / max_charge_s;
+                let new_damage = base_damage
+                    + ((max_damage - base_damage) as f32 * charge_fraction).round() as i32;
+
+                // Damage is integer (Crew is integer), so it crosses
+                // discrete tiers as the player holds. Each time it
+                // does, kick off a brief white flash so the player
+                // sees the "now this shot is meaningfully stronger"
+                // moment — the otherwise-smooth lerp doesn't signal
+                // when the actual game-state value steps up.
+                if new_damage > state.last_damage {
+                    state.flash_remaining_s = 0.15;
+                    state.last_damage = new_damage;
+                    info!("meltr charge tier: dmg now {}", new_damage);
                 }
-                // Snap pose to muzzle — shot rides with the ship.
-                if let Ok((_, mut pos, mut vel)) = projectiles.get_mut(shot_entity) {
+
+                let scale = 1.0 + (max_scale - 1.0) * charge_fraction;
+                // Pale-green → bright yellow-white as the shot charges.
+                let mut r = 0.5 + 0.5 * charge_fraction;
+                let mut g = 1.0;
+                let mut b = 0.5 + 0.1 * charge_fraction;
+                // Flash: lerp toward pure white over the flash window.
+                if state.flash_remaining_s > 0.0 {
+                    let f = (state.flash_remaining_s / 0.15).clamp(0.0, 1.0);
+                    r = r + (1.0 - r) * f;
+                    g = g + (1.0 - g) * f;
+                    b = b + (1.0 - b) * f;
+                }
+
+                if let Ok((mut proj, mut pos, mut vel, mut xf, mut sprite)) =
+                    projectiles.get_mut(shot_entity)
+                {
+                    proj.damage = new_damage;
                     pos.0 = muzzle;
                     vel.0 = ship_vel.0;
+                    xf.scale = Vec3::new(scale, scale, 1.0);
+                    sprite.color = Color::srgb(r, g, b);
                 }
             }
 
-            // Release → detach.
             if just_released {
-                let final_range = base_range_world + state.phase as f32 * range_up_world;
+                let charge_fraction = (state.sub_charge_s / max_charge_s).min(1.0);
+                let final_range = base_range_world + max_extra_range * charge_fraction;
                 let final_lifetime = final_range / speed;
-                if let Ok((mut proj, _, mut vel)) = projectiles.get_mut(shot_entity) {
+                if let Ok((mut proj, _, mut vel, _, _)) = projectiles.get_mut(shot_entity) {
                     vel.0 = ship_vel.0 + world_forward * speed;
                     proj.lifetime = final_lifetime;
+                    // Demote from Sensor to a real Dynamic projectile
+                    // now that it's flying — heavy released shots
+                    // should impart impulse on the target like every
+                    // other projectile.
+                    commands.entity(shot_entity).remove::<Sensor>();
                 }
                 info!(
-                    "meltr charge: released phase {} (final dmg {}, range {:.0})",
-                    state.phase,
-                    base_damage * (1 << state.phase),
+                    "meltr release: charge {:.0}%, dmg {}, range {:.0}",
+                    charge_fraction * 100.0,
+                    base_damage
+                        + ((max_damage - base_damage) as f32 * charge_fraction).round() as i32,
                     final_range
                 );
                 state.active = None;
-                state.phase = 0;
                 state.sub_charge_s = 0.0;
+                state.last_damage = 0;
+                state.flash_remaining_s = 0.0;
             }
         }
     }
@@ -4040,10 +4103,10 @@ fn tick_beams(
         );
 
         // Auto-aim: pick nearest non-friendly non-invisible ship as
-        // target. Spatial scan against ship positions — this is
-        // *target acquisition*, not the hit test. (Avian doesn't
-        // expose a nearest-collider query that filters by component;
-        // see docs/SHIP_AUDIT.md → "Engine systems".)
+        // target, regardless of range. The beam still only damages
+        // out to `beam.range` (raycast distance below), but visually
+        // it always tracks the opponent — canonical Arilou tells you
+        // exactly where the other ship is.
         if beam.auto_aim {
             let mut best: Option<(Vec2, f32)> = None;
             for (_, s, p) in &ship_pos {
@@ -4051,9 +4114,6 @@ fn tick_beams(
                     continue;
                 }
                 let d2 = (p.0 - world_origin).length_squared();
-                if d2 > beam.range * beam.range {
-                    continue;
-                }
                 if best.map_or(true, |(_, b)| d2 < b) {
                     best = Some((p.0, d2));
                 }
