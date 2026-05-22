@@ -42,12 +42,24 @@ pub struct ZoomStar {
     pub peak_alpha: f32,
 }
 
-/// Scratch state for the zoom system — we want to know whether the
-/// player is *currently* scrolling vs just stopped, so we can hold
-/// off spawning new ZoomStars during quiet moments.
-#[derive(Resource, Default)]
+/// Scratch state for the zoom system. Tracks the player's desired
+/// scale (`target_scale`) separately from the camera's actual
+/// rendered scale — `smooth_zoom_scale` tweens between them each
+/// frame so a scroll notch produces an *animated* zoom rather than
+/// an instant snap.
+#[derive(Resource)]
 pub struct ZoomState {
+    pub target_scale: f32,
     pub last_scroll_dir: f32,
+}
+
+impl Default for ZoomState {
+    fn default() -> Self {
+        Self {
+            target_scale: 1.0,
+            last_scroll_dir: 0.0,
+        }
+    }
 }
 
 pub struct StarfieldPlugin;
@@ -56,7 +68,10 @@ impl Plugin for StarfieldPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ZoomState>()
             .add_systems(Startup, setup_starfield)
-            .add_systems(Update, (handle_zoom_input, tick_zoom_stars));
+            .add_systems(
+                Update,
+                (handle_zoom_input, smooth_zoom_scale, tick_zoom_stars),
+            );
     }
 }
 
@@ -90,25 +105,27 @@ fn setup_starfield(mut commands: Commands) {
     }
 }
 
-/// Scroll wheel handler. Each notch multiplies the orthographic
-/// scale by ZOOM_STEP (inverse for zoom-in). Spawns a few
-/// `ZoomStar`s per scrolled notch as the "you're moving" cue.
+const ZOOM_STEP: f32 = 1.05;
+const SCALE_MIN: f32 = 0.25;
+const SCALE_MAX: f32 = 6.0;
+/// Higher = snappier tween (1/seconds). At 8.0 the actual scale
+/// reaches ~95% of target in ~0.4 s — smooth but not laggy.
+const SMOOTHING_RATE: f32 = 8.0;
+
+/// Read scroll wheel, adjust the *target* scale only. The actual
+/// camera scale is tweened toward this target by `smooth_zoom_scale`
+/// each frame, so a scroll notch produces a smooth animated zoom
+/// instead of an instant snap.
 fn handle_zoom_input(
     mut commands: Commands,
     mut scroll: MessageReader<MouseWheel>,
-    mut camera_q: Query<&mut Projection, With<Camera2d>>,
     mut zoom_state: ResMut<ZoomState>,
 ) {
-    const ZOOM_STEP: f32 = 1.15;
-    const SCALE_MIN: f32 = 0.25;
-    const SCALE_MAX: f32 = 6.0;
-
     let mut delta_total = 0.0_f32;
     for ev in scroll.read() {
         // Pixel-mode wheels (trackpads) report many small deltas;
         // line-mode (mouse wheels) reports ±1 per notch. Normalise
-        // by clamping the per-event contribution so a trackpad
-        // fling doesn't shoot the zoom to the floor.
+        // by clamping the per-event contribution.
         delta_total += ev.y.clamp(-3.0, 3.0);
     }
     if delta_total.abs() < 0.001 {
@@ -119,27 +136,23 @@ fn handle_zoom_input(
     let zoom_dir = delta_total.signum();
     zoom_state.last_scroll_dir = zoom_dir;
 
-    // Apply the scale change.
-    for mut projection in &mut camera_q {
-        if let Projection::Orthographic(ref mut ortho) = *projection {
-            let factor = ZOOM_STEP.powf(delta_total.abs());
-            if delta_total > 0.0 {
-                ortho.scale /= factor; // zoom in
-            } else {
-                ortho.scale *= factor; // zoom out
-            }
-            ortho.scale = ortho.scale.clamp(SCALE_MIN, SCALE_MAX);
-        }
+    // Adjust the target scale only. Small step per scroll notch
+    // (5%) keeps each "tick" feeling like one smooth nudge rather
+    // than a big jump. The visible animation comes from the tween.
+    let factor = ZOOM_STEP.powf(delta_total.abs());
+    if delta_total > 0.0 {
+        zoom_state.target_scale /= factor; // zoom in
+    } else {
+        zoom_state.target_scale *= factor; // zoom out
     }
+    zoom_state.target_scale = zoom_state.target_scale.clamp(SCALE_MIN, SCALE_MAX);
 
     // Spawn a handful of zoom-burst stars. Count scales with the
     // scroll magnitude — a single notch gets 4 stars; a fling gets
-    // a dozen or so.
+    // a dozen or so. These animate in their own system and live
+    // through the duration of the tween.
     let n = (3.0 + delta_total.abs() * 2.0).round() as i32;
     for _ in 0..n {
-        // Start radius: closer to the origin = more visible motion.
-        // Larger range keeps the effect from looking like a tight
-        // bullseye.
         let start_r = 60.0 + fastrand::f32() * 240.0;
         let theta = fastrand::f32() * std::f32::consts::TAU;
         let pos = Vec2::new(theta.cos() * start_r, theta.sin() * start_r);
@@ -163,6 +176,29 @@ fn handle_zoom_input(
             ),
             Transform::from_translation(pos.extend(STAR_Z_ZOOM_BURST)),
         ));
+    }
+}
+
+/// Each frame, ease the camera's actual orthographic scale toward
+/// the `ZoomState.target_scale`. Exponential decay with rate
+/// `SMOOTHING_RATE` — the higher the rate the snappier the tween.
+fn smooth_zoom_scale(
+    time: Res<Time>,
+    zoom_state: Res<ZoomState>,
+    mut camera_q: Query<&mut Projection, With<Camera2d>>,
+) {
+    let dt = time.delta_secs();
+    let blend = (SMOOTHING_RATE * dt).min(1.0);
+    for mut projection in &mut camera_q {
+        if let Projection::Orthographic(ref mut ortho) = *projection {
+            let current = ortho.scale;
+            let target = zoom_state.target_scale;
+            if (current - target).abs() < 1e-4 {
+                ortho.scale = target;
+            } else {
+                ortho.scale = current + (target - current) * blend;
+            }
+        }
     }
 }
 
