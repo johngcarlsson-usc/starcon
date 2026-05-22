@@ -300,9 +300,10 @@ fn dispatch_primary(
         &mut Battery,
         &mut Crew,
         Option<&crate::ultimate::MmrxfActive>,
+        Option<&crate::ultimate::PkunkClone>,
     )>,
 ) {
-    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active) in &mut q {
+    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active, pkunk_clone) in &mut q {
         // While Mmrnmhrm's ultimate is active the tangled laser
         // owns the primary. Skip the normal Mmrxf beams so the
         // two don't stack.
@@ -318,9 +319,15 @@ fn dispatch_primary(
         if cd.0 > 0.0 {
             continue;
         }
-        let input = input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot);
-        if !input.pressed(input::INPUT_FIRE) {
-            continue;
+        // Pkunk clones auto-fire continuously (the leader's input
+        // is irrelevant for them). Otherwise read the local input
+        // for this player_slot.
+        let force_fire = pkunk_clone.is_some();
+        if !force_fire {
+            let input = input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot);
+            if !input.pressed(input::INPUT_FIRE) {
+                continue;
+            }
         }
         if ship.stats.weapon_drain > 0 && batt.current < ship.stats.weapon_drain {
             continue;

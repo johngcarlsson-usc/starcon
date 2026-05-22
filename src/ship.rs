@@ -710,13 +710,14 @@ impl Plugin for ShipPlugin {
                 tick_tractors,
             ),
         );
-        // Pkunk formation correction lives in its own
-        // add_systems so we can apply `.after(apply_player_input)`
-        // without spilling the 21-element tuple limit on the main
-        // FixedUpdate set.
+        // Pkunk aggressive-clone AI lives in its own add_systems
+        // so we can apply `.after(apply_player_input)` without
+        // spilling the 21-element tuple limit on the main
+        // FixedUpdate set. The .after dependency is what lets it
+        // override the leader's player input on the clones.
         app.add_systems(
             FixedUpdate,
-            crate::ultimate::tick_pkunk_formation_correction
+            crate::ultimate::tick_pkunk_aggressive_clones
                 .after(apply_player_input),
         );
         app.add_systems(

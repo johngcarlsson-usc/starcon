@@ -552,8 +552,10 @@ impl Plugin for UltimatePlugin {
                 tick_mmrxf_transform,
                 tick_mmrxf_laser_segments,
                 tick_mmrxf_needs_restore,
+                strip_white_background_once,
             ),
         )
+        .init_resource::<MmrxfUnleashedSprite>()
         .add_systems(
             FixedUpdate,
             (
@@ -630,7 +632,10 @@ const SHOSC_NOVA_RADIUS: f32 = 1500.0;
 // -- Pkunk formation --
 const PKUNK_SUMMON_S: f32 = 0.5;
 const PKUNK_PAN_S: f32 = 1.6;
-const PKUNK_FORMATION_S: f32 = 5.0;
+/// Clones live this long in aggressive-AI mode after the pan ends.
+/// Doubled from the original 5s — gives the swarm enough time to
+/// actually pressure the opponent.
+const PKUNK_FORMATION_S: f32 = 10.0;
 /// Side length of the equilateral formation triangle (world units).
 const PKUNK_FORMATION_SIDE: f32 = 240.0;
 /// How wide the camera frames the three ships at the end of the pan.
@@ -670,7 +675,6 @@ const MMRXF_SHIP_SCALE: f32 = 3.0;
 /// number of curve segments to render per tick.
 const MMRXF_LASER_RANGE: f32 = 2.0 * 8.0 * crate::ship::SC2_VEL_SCALE * 5.0; // 768 wu  (2 * canon)
 const MMRXF_LASER_DAMAGE: i32 = 1;
-const MMRXF_LASER_SEGMENTS: usize = 14;
 /// Refire interval for the tangled beam tick (damage application
 /// rate cap, in SC2 frames).
 const MMRXF_LASER_FIRE_INTERVAL_S: f32 = 0.05;
@@ -906,6 +910,19 @@ fn hyper_trigger(
                             warp_in_t: 0.0,
                             formation_offset_local: offset,
                         });
+                        // Half-HP clones — they're aggressive but
+                        // fragile. crew_max from catalog; if the
+                        // class is missing, fall back to a small
+                        // value so the clone still spawns alive.
+                        let half = catalog
+                            .ships
+                            .get(class.code())
+                            .map(|s| (s.crew_max / 2).max(1))
+                            .unwrap_or(5);
+                        commands.entity(clone_entity).insert(crate::ship::Crew {
+                            current: half,
+                            max: half,
+                        });
                         state.pkunk_clones.push(clone_entity);
                     }
                 }
@@ -919,21 +936,21 @@ fn hyper_trigger(
             if let Ok((_, _, _, ship_xf)) = ships.get(entity) {
                 state.mmrxf_orig_scale = Some(ship_xf.scale);
             }
-            // Spawn the alt-form overlay sprite at the ship's
-            // position. Tinted cyan, semi-transparent so the eye
-            // reads "both forms phasing into one another". Uses
-            // a Y-form shot_b sprite if available (the ship's
-            // alternate-mode frames), else falls back to the
-            // standard ship_p00 — either way it shows up as a
-            // second layered silhouette.
+            // Spawn the unified "unleashed" overlay sprite. This
+            // replaces the previous stack-two-sprites approach
+            // which read as ghostly and unclear. The PNG at
+            // ultimate/mmrxf_unleashed.png is loaded once and has
+            // its white background stripped to alpha by
+            // `strip_white_background_once` so we render only the
+            // ship art over the underlying ship sprite.
             if let Ok((_, _, _, ship_xf)) = ships.get(entity) {
                 let overlay = commands
                     .spawn((
                         MmrxfOverlaySprite,
                         Sprite {
-                            image: assets.load("ships/mmrxf/sprites/shot_b01.png"),
-                            color: Color::srgba(0.5, 0.9, 1.0, 0.55),
-                            custom_size: Some(Vec2::splat(80.0 * MMRXF_SHIP_SCALE)),
+                            image: assets.load("ultimate/mmrxf_unleashed.png"),
+                            color: Color::srgba(1.0, 1.0, 1.0, 1.0),
+                            custom_size: Some(Vec2::splat(120.0 * MMRXF_SHIP_SCALE)),
                             ..default()
                         },
                         Transform::from_translation(
@@ -3026,29 +3043,26 @@ pub fn build_ultimate_meshes(
     ultimate_meshes.blade = meshes.add(tri);
 }
 
-/// Pkunk formation auto-correction. Each FixedUpdate during the
-/// `PkunkFormation` phase, for every clone:
-///   - Compute the desired world pose from the leader's
-///     `(Position, Rotation)` and the clone's
-///     `formation_offset_local`.
-///   - If the clone is far from its desired position, override
-///     `ConstantLocalForce` + `AngularVelocity` to steer toward
-///     it (turn first if mis-aligned, thrust forward once roughly
-///     pointed the right way) — same controls the player would
-///     use, applied automatically.
-///   - If the clone is in position but the heading is off from
-///     the leader's, rotate to match without thrusting.
-///   - If both are within tolerance, leave the values that
-///     `apply_player_input` already wrote so the clone keeps
-///     responding to the player's input.
+/// Aggressive Pkunk clone AI. Each FixedUpdate during the
+/// `PkunkFormation` phase, every clone:
+///   - Picks the nearest enemy ship (different player_slot).
+///   - Steers toward that enemy and thrusts at full power. Always
+///     thrusts — fragile clones trade survivability for pressure.
+///   - Overlays a constant whirl (death-spiral) so the clone reads
+///     as an aggressive spinning threat. Sign alternates per clone.
+///   - FIRE is force-pressed by `dispatch_primary`'s PkunkClone
+///     branch — this system only owns motion.
 ///
-/// The system runs `.after(apply_player_input)` so its overrides
-/// take precedence when the clone is out of formation.
-pub fn tick_pkunk_formation_correction(
+/// Runs `.after(apply_player_input)` so its overrides take effect
+/// (clones share the player's input slot, so `apply_player_input`
+/// would otherwise be writing the leader's controls to them).
+pub fn tick_pkunk_aggressive_clones(
     state: Res<crate::ultimate::UltimateState>,
-    leader_pose: Query<(&Position, &Rotation), With<crate::ship::Ship>>,
+    enemies: Query<(Entity, &crate::ship::Ship, &Position), With<crate::ship::Ship>>,
     mut clones: Query<
         (
+            Entity,
+            &crate::ship::Ship,
             &PkunkClone,
             &Position,
             &Rotation,
@@ -3064,77 +3078,56 @@ pub fn tick_pkunk_formation_correction(
     {
         return;
     }
-    let Some(leader) = state.player_entity else { return };
-    let Ok((leader_pos, leader_rot)) = leader_pose.get(leader) else { return };
-    let leader_xy = leader_pos.0;
-    let leader_angle = leader_rot.sin.atan2(leader_rot.cos);
-    let cos_l = leader_rot.cos;
-    let sin_l = leader_rot.sin;
 
     use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-    for (clone, pos, rot, derived, mut thrust, mut ang_vel) in &mut clones {
-        // Desired world position = leader_pos +
-        // rotate(formation_offset_local, leader_rotation).
-        let off = clone.formation_offset_local;
-        let world_off = Vec2::new(
-            off.x * cos_l - off.y * sin_l,
-            off.x * sin_l + off.y * cos_l,
-        );
-        let desired_pos = leader_xy + world_off;
-        let pos_err = desired_pos - pos.0;
-        let pos_err_dist = pos_err.length();
+    /// Constant whirl overlay (rad/s) so clones spin as they
+    /// charge. Sign alternates per clone via formation_offset_local.x.
+    const PKUNK_AGGRO_SPIN: f32 = 6.0;
+
+    for (clone_e, clone_ship, clone, pos, rot, derived, mut thrust, mut ang_vel) in &mut clones {
+        // Pick nearest non-friendly ship.
+        let mut best: Option<(Vec2, f32)> = None;
+        for (e, s, p) in &enemies {
+            if e == clone_e || s.player_slot == clone_ship.player_slot {
+                continue;
+            }
+            let d2 = (p.0 - pos.0).length_squared();
+            if best.map_or(true, |(_, bd2)| d2 < bd2) {
+                best = Some((p.0, d2));
+            }
+        }
+        let Some((target_pos, _)) = best else { continue };
 
         let cur_heading = rot.sin.atan2(rot.cos);
-        let mut heading_err = leader_angle - cur_heading;
-        while heading_err > PI {
-            heading_err -= TAU;
+        let to_target = target_pos - pos.0;
+        let bearing = to_target.y.atan2(to_target.x) - FRAC_PI_2;
+        let mut steer_err = bearing - cur_heading;
+        while steer_err > PI {
+            steer_err -= TAU;
         }
-        while heading_err < -PI {
-            heading_err += TAU;
+        while steer_err < -PI {
+            steer_err += TAU;
         }
 
-        // Tolerances. Pretty generous so small-amplitude wiggles
-        // (collision impulses, asset float jitter) don't trigger
-        // continuous "correction" thrash.
-        const POS_TOL: f32 = 35.0;
-        const ANG_TOL: f32 = 0.10;
+        // Spin sign biased by spawn-side so one clone whirls left
+        // and the other whirls right.
+        let spin_sign = if clone.formation_offset_local.x < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        // Blend: when far off-bearing, steer hard; once nearly
+        // on-course, hand over to the constant whirl. Result is
+        // a clone that points at the enemy long enough to commit,
+        // then spins through the kill.
+        let steer_omega = steer_err.signum() * derived.target_omega;
+        let blend = (steer_err.abs() / FRAC_PI_2).clamp(0.0, 1.0);
+        ang_vel.0 = steer_omega * blend + spin_sign * PKUNK_AGGRO_SPIN * (1.0 - blend);
 
-        if pos_err_dist > POS_TOL {
-            // Out of position. Aim the ship at the desired point,
-            // thrust forward once roughly pointing the right way.
-            // Steering target is the bearing TO `desired_pos`,
-            // expressed in the ship's "0 = facing +Y" frame.
-            let bearing = pos_err.y.atan2(pos_err.x) - FRAC_PI_2;
-            let mut steer_err = bearing - cur_heading;
-            while steer_err > PI {
-                steer_err -= TAU;
-            }
-            while steer_err < -PI {
-                steer_err += TAU;
-            }
-            let omega_sign = if steer_err.abs() < 1e-3 {
-                0.0
-            } else {
-                steer_err.signum()
-            };
-            ang_vel.0 = omega_sign * derived.target_omega;
-            // Thrust only if the ship is roughly facing the target
-            // (cos > ~0.5 → within ~60°). Stops the clone burning
-            // thrust away from where it needs to go.
-            thrust.0 = if steer_err.abs() < FRAC_PI_2 * 0.8 {
-                Vec2::new(0.0, derived.thrust_force)
-            } else {
-                Vec2::ZERO
-            };
-        } else if heading_err.abs() > ANG_TOL {
-            // In position but heading off. Rotate to match the
-            // leader without thrusting.
-            ang_vel.0 = heading_err.signum() * derived.target_omega;
-            thrust.0 = Vec2::ZERO;
-        }
-        // Else: in formation — leave whatever apply_player_input
-        // wrote in place so the clone keeps responding to input.
+        // Always thrust. Beelines into the kill regardless of
+        // alignment — matches "aggressive beeline" feel.
+        thrust.0 = Vec2::new(0.0, derived.thrust_force);
     }
 }
 
@@ -3144,18 +3137,16 @@ pub fn tick_pkunk_formation_correction(
 
 /// During MmrxfTransform + MmrxfUnleashing:
 ///   - Lerp the ship's Transform.scale toward MMRXF_SHIP_SCALE.
-///   - Glue the overlay sprite to the ship's world position.
-///   - Match the overlay's rotation to the ship's rotation.
-///   - Cycle the overlay's sprite frame from the *other* form's
-///     rotation frames so the alt form reads as superimposed.
+///   - Glue the unified overlay sprite to the ship's world
+///     position and rotate it to match the ship's heading.
 ///
 /// The orig scale is restored on exit by `tick_mmrxf_needs_restore`.
 pub fn tick_mmrxf_transform(
     state: Res<UltimateState>,
-    leader: Query<(&Position, &Rotation, Option<&crate::ship::ShipModes>), With<crate::ship::Ship>>,
+    leader: Query<(&Position, &Rotation), With<crate::ship::Ship>>,
     mut ship_xf: Query<&mut Transform, (With<crate::ship::Ship>, Without<MmrxfOverlaySprite>)>,
     mut overlay_q: Query<
-        (&mut Transform, &mut Sprite),
+        &mut Transform,
         (With<MmrxfOverlaySprite>, Without<crate::ship::Ship>),
     >,
 ) {
@@ -3171,7 +3162,7 @@ pub fn tick_mmrxf_transform(
     }
     let Some(p1) = state.player_entity else { return };
     let Some(orig) = state.mmrxf_orig_scale else { return };
-    let Ok((pos, rot, ship_modes)) = leader.get(p1) else { return };
+    let Ok((pos, rot)) = leader.get(p1) else { return };
 
     // Scale ramp: 1× → MMRXF_SHIP_SCALE during Transform; hold at
     // MMRXF_SHIP_SCALE during Unleashing.
@@ -3188,50 +3179,96 @@ pub fn tick_mmrxf_transform(
         xf.scale = orig * target_factor;
     }
 
-    // Update the overlay: glued to ship position, matches the
-    // ship's rotation, picks the alternate form's rotation frame.
+    // Update the overlay: glued to ship position and rotated to
+    // match the ship's heading. The sprite is a single unified
+    // image (not pre-rotated frames), so a direct Quat from the
+    // ship's angle does the right thing. The ship sprite art is
+    // drawn facing +Y (up) — the same convention as the original
+    // ship_p00 frames — so no axis offset is needed.
     if let Some(overlay) = state.mmrxf_overlay_entity {
-        if let Ok((mut overlay_xf, mut overlay_sprite)) = overlay_q.get_mut(overlay) {
+        if let Ok(mut overlay_xf) = overlay_q.get_mut(overlay) {
             overlay_xf.translation.x = pos.0.x;
             overlay_xf.translation.y = pos.0.y;
-            // The ship sprite is one of N pre-rotated frames + a
-            // small residual Transform.rotation; mirror the same
-            // approach for the overlay so it tracks 1:1.
-            let angle = rot.sin.atan2(rot.cos);
-            overlay_xf.rotation = Quat::from_rotation_z(0.0);
-            overlay_xf.scale = Vec3::splat(target_factor) * 1.2;
-
-            if let Some(modes) = ship_modes {
-                // Pick the OTHER mode's frames as the overlay
-                // content. With two modes (T / Y) this is just
-                // (1 - current).
-                if modes.modes.len() >= 2 {
-                    let alt_idx = if modes.current == 0 { 1 } else { 0 };
-                    let alt_frames = &modes.modes[alt_idx].frames;
-                    if !alt_frames.is_empty() {
-                        // Match swap_rotation_frame's frame-pick
-                        // math so the alt sprite faces the same
-                        // direction as the underlying ship.
-                        use std::f32::consts::{PI, TAU};
-                        let n = alt_frames.len();
-                        let nf = n as f32;
-                        let raw = ((-angle) / TAU * nf).rem_euclid(nf);
-                        let idx = (raw.round() as usize) % n;
-                        overlay_sprite.image = alt_frames[idx].clone();
-                        // Sub-frame residual rotation, same idea.
-                        let frame_angle = -(idx as f32) * TAU / nf;
-                        let mut residual = angle - frame_angle;
-                        if residual > PI {
-                            residual -= TAU;
-                        } else if residual < -PI {
-                            residual += TAU;
-                        }
-                        overlay_xf.rotation = Quat::from_rotation_z(residual);
-                    }
-                }
-            }
+            let angle = rot.sin.atan2(rot.cos) - std::f32::consts::FRAC_PI_2;
+            overlay_xf.rotation = Quat::from_rotation_z(angle);
+            overlay_xf.scale = Vec3::splat(target_factor);
         }
     }
+}
+
+/// Strong handle to `ultimate/mmrxf_unleashed.png`. Held by a
+/// resource so the asset stays loaded once we've stripped its
+/// white background — without it, the GC would drop the image
+/// between cinematics and the next ultimate would see a blank
+/// sprite (or a re-load that needs another strip pass).
+#[derive(Resource, Default)]
+pub struct MmrxfUnleashedSprite {
+    pub handle: Option<Handle<Image>>,
+    pub stripped: bool,
+}
+
+/// Post-load post-process for `ultimate/mmrxf_unleashed.png`. The
+/// source PNG has a white (RGB ≈ 255,255,255) studio background
+/// that the user didn't manually clip; instead of doing it in an
+/// editor we walk the loaded image data once, set alpha → 0 on
+/// near-white pixels, and fade alpha down on near-white edge
+/// pixels to keep antialiasing.
+///
+/// Runs every Update until the image actually appears in
+/// `Assets<Image>` (loads happen asynchronously). On the first
+/// successful pass, sets `stripped = true` so subsequent ticks
+/// no-op. If the file doesn't exist at runtime the system just
+/// keeps polling — harmless.
+pub fn strip_white_background_once(
+    asset_server: Res<AssetServer>,
+    mut res: ResMut<MmrxfUnleashedSprite>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if res.stripped {
+        return;
+    }
+    // Lazily load on first call. assets.load returns the same
+    // strong handle as the overlay spawn's, so they share asset
+    // identity.
+    if res.handle.is_none() {
+        res.handle = Some(asset_server.load("ultimate/mmrxf_unleashed.png"));
+    }
+    let Some(handle) = res.handle.as_ref() else { return };
+    let Some(img) = images.get_mut(handle) else { return };
+    // Bail safely on unexpected formats. Bevy decodes PNG with
+    // alpha into Rgba8UnormSrgb by default.
+    use bevy::render::render_resource::TextureFormat;
+    let fmt = img.texture_descriptor.format;
+    if fmt != TextureFormat::Rgba8UnormSrgb && fmt != TextureFormat::Rgba8Unorm {
+        // Mark as stripped to stop polling — we can't help here.
+        res.stripped = true;
+        return;
+    }
+    let Some(data) = img.data.as_mut() else {
+        // Data isn't accessible (CPU side not retained). Mark
+        // stripped so we don't churn forever.
+        res.stripped = true;
+        return;
+    };
+    for chunk in data.chunks_exact_mut(4) {
+        let r = chunk[0];
+        let g = chunk[1];
+        let b = chunk[2];
+        // Treat "white" as the channel min — anti-aliased edges
+        // where one channel drops while the other two stay high
+        // still count as not-quite-white.
+        let m = r.min(g).min(b);
+        if m >= 245 {
+            chunk[3] = 0;
+        } else if m >= 210 {
+            // Partial fade so anti-aliased edges blend instead of
+            // cutting hard. Linear ramp from 245 → 210 maps alpha
+            // 0 → ~255.
+            let frac = ((245 - m) as u32 * 7).min(255) as u8;
+            chunk[3] = chunk[3].min(frac);
+        }
+    }
+    res.stripped = true;
 }
 
 /// Marker dropped onto the ship at cinematic exit when the
@@ -3326,82 +3363,122 @@ pub fn tick_mmrxf_tangled_laser(
         }
     }
 
-    // Pick the curve's endpoint: target position if any, else a
-    // point MMRXF_LASER_RANGE units along the ship's forward.
+    // Slylandro-style chaotic lightning. The bolt is a random
+    // walk that takes biased steps toward `end`: each step picks
+    // a heading roughly along the remaining-to-target vector but
+    // perturbed by a wide random angle, so the bolt zig-zags
+    // wildly. Multiple bolts in distinct colors fire each tick,
+    // and some steps fork short dead-end branches off into space.
     let start = firer_pos.0;
     let end = match best {
         Some((tp, _, _)) => tp,
         None => {
-            // Sprite "up" maps to forward; rotate +Y by the ship's
-            // current Rotation.
             let fwd = Vec2::new(-firer_rot.sin, firer_rot.cos);
             start + fwd * MMRXF_LASER_RANGE
         }
     };
-    let delta = end - start;
-    let len = delta.length();
-    if len < 1.0 {
-        return;
-    }
-    let along = delta / len;
-    let perp = Vec2::new(-along.y, along.x);
-    let t_now = time.elapsed_secs();
-    let amp = (len * 0.18).clamp(40.0, 180.0);
 
-    // Three streams: distinct frequencies, phase offsets, colors,
-    // amplitudes — they cross and weave for the chaotic look.
-    let streams: [(f32, f32, f32, Color); 3] = [
-        (
-            5.0,
-            fastrand::f32() * std::f32::consts::TAU,
-            1.0,
-            Color::srgba(0.30, 1.00, 1.00, 0.95),
-        ),
-        (
-            11.0,
-            fastrand::f32() * std::f32::consts::TAU,
-            0.7,
-            Color::srgba(1.00, 0.35, 1.00, 0.90),
-        ),
-        (
-            17.0,
-            fastrand::f32() * std::f32::consts::TAU,
-            0.5,
-            Color::srgba(1.00, 1.00, 0.30, 0.85),
-        ),
+    /// Bolts per tick (one per color).
+    const BOLT_COUNT: usize = 3;
+    /// Steps in each main bolt. More = more jaggedness.
+    const STEPS: usize = 18;
+    /// Max angular deviation per step (radians). The bolt picks a
+    /// new heading uniformly in [-DEV, DEV] off the current
+    /// remaining-to-target bearing. ~1.0 rad ≈ 57° per step =>
+    /// very jagged.
+    const STEP_ANGLE_DEV: f32 = 1.0;
+    /// Probability per main-bolt step of forking a short
+    /// dead-end branch off into space.
+    const FORK_PROB: f32 = 0.18;
+    /// Steps in a fork branch (short).
+    const FORK_STEPS: usize = 5;
+    /// Step length as fraction of remaining distance, floored.
+    const STEP_FRAC: f32 = 0.10;
+    const STEP_MIN: f32 = 20.0;
+
+    let colors: [Color; BOLT_COUNT] = [
+        Color::srgba(0.55, 0.95, 1.00, 0.95), // cyan-white core
+        Color::srgba(1.00, 0.35, 1.00, 0.85), // magenta arc
+        Color::srgba(1.00, 1.00, 0.55, 0.80), // yellow arc
     ];
 
-    for (freq, phase, amp_mul, color) in streams {
-        let mut prev = start;
-        for i in 1..=MMRXF_LASER_SEGMENTS {
-            let t = i as f32 / MMRXF_LASER_SEGMENTS as f32;
-            let base = start + along * (len * t);
-            let wave = (t * std::f32::consts::PI * freq + t_now * 12.0 + phase).sin();
-            let jitter = (fastrand::f32() - 0.5) * 0.5;
-            // Taper amplitude to 0 at the endpoints.
-            let taper = (t * (1.0 - t) * 4.0).sqrt();
-            let off = perp * (wave + jitter) * amp * amp_mul * taper;
-            let point = base + off;
-            let mid = (prev + point) * 0.5;
-            let seg = point - prev;
-            let seg_len = seg.length().max(1.0);
-            let angle = seg.y.atan2(seg.x) - std::f32::consts::FRAC_PI_2;
-            commands.spawn((
-                MmrxfLaserSegment {
-                    remaining_s: 0.10,
-                    total_s: 0.10,
-                    base_color: color,
-                },
-                Sprite::from_color(color, Vec2::new(5.0, seg_len)),
-                Transform {
-                    translation: mid.extend(0.32),
-                    rotation: Quat::from_rotation_z(angle),
-                    scale: Vec3::ONE,
-                },
-            ));
-            prev = point;
+    for color in colors {
+        let mut cursor = start;
+        for _ in 0..STEPS {
+            let remaining = end - cursor;
+            let remaining_len = remaining.length();
+            if remaining_len < 4.0 {
+                break;
+            }
+            let dir = remaining / remaining_len;
+            let base_angle = dir.y.atan2(dir.x);
+            let dev = (fastrand::f32() - 0.5) * 2.0 * STEP_ANGLE_DEV;
+            let step_angle = base_angle + dev;
+            let step_len = (remaining_len * STEP_FRAC)
+                .max(STEP_MIN)
+                .min(remaining_len);
+            let next = cursor
+                + Vec2::new(step_angle.cos(), step_angle.sin()) * step_len;
+            spawn_lightning_segment(&mut commands, cursor, next, color, 5.0, 0.10);
+
+            // Dead-end fork: shoots roughly perpendicular for
+            // FORK_STEPS short steps. Adds the "tangled rope"
+            // fingers without changing where the main bolt ends.
+            if fastrand::f32() < FORK_PROB {
+                let mut fork_cursor = cursor;
+                let fork_perp_sign = if fastrand::bool() { 1.0 } else { -1.0 };
+                let mut fork_angle =
+                    base_angle + fork_perp_sign * std::f32::consts::FRAC_PI_2;
+                for _ in 0..FORK_STEPS {
+                    fork_angle += (fastrand::f32() - 0.5) * 2.0 * STEP_ANGLE_DEV;
+                    let fork_step = step_len * 0.6;
+                    let fork_next = fork_cursor
+                        + Vec2::new(fork_angle.cos(), fork_angle.sin()) * fork_step;
+                    spawn_lightning_segment(
+                        &mut commands,
+                        fork_cursor,
+                        fork_next,
+                        color,
+                        3.5,
+                        0.07,
+                    );
+                    fork_cursor = fork_next;
+                }
+            }
+
+            cursor = next;
         }
     }
+}
+
+/// Spawn one short bright line segment that fades alpha → 0 over
+/// `lifetime_s` via `tick_mmrxf_laser_segments`. Helper for the
+/// lightning random-walk above.
+fn spawn_lightning_segment(
+    commands: &mut Commands,
+    from: Vec2,
+    to: Vec2,
+    color: Color,
+    width: f32,
+    lifetime_s: f32,
+) {
+    let mid = (from + to) * 0.5;
+    let seg = to - from;
+    let seg_len = seg.length().max(1.0);
+    let angle = seg.y.atan2(seg.x) - std::f32::consts::FRAC_PI_2;
+    commands.spawn((
+        MmrxfLaserSegment {
+            remaining_s: lifetime_s,
+            total_s: lifetime_s,
+            base_color: color,
+        },
+        Sprite::from_color(color, Vec2::new(width, seg_len)),
+        Transform {
+            translation: mid.extend(0.32),
+            rotation: Quat::from_rotation_z(angle),
+            scale: Vec3::ONE,
+        },
+    ));
 }
 
 /// Fade laser-segment alpha out over their short lifetime.
