@@ -723,6 +723,11 @@ fn spawn_one_projectile(
         });
     }
     if volley.is_limpet {
-        ent.insert(Limpet);
+        // VUX-style: 0.5 = halve target speed on each hit. Canonical
+        // .ini Vuxin Special.Slowdown=0.5. If we ever add a non-VUX
+        // limpet with a different factor, lift this onto VolleySpec.
+        ent.insert(Limpet {
+            slowdown_factor: 0.5,
+        });
     }
 }

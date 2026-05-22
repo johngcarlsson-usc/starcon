@@ -608,10 +608,9 @@ impl Plugin for ShipPlugin {
                 tick_sub_entities,
                 handle_projectile_hits,
                 handle_sub_entity_collisions,
-                handle_ship_collisions,
             ),
         )
-        .add_systems(Update, swap_rotation_frame);
+        .add_systems(Update, (swap_rotation_frame, update_overlay_sprites));
     }
 }
 
@@ -803,6 +802,7 @@ pub fn teardown_match(
     beams: Query<Entity, With<Beam>>,
     tractors: Query<Entity, With<TractorBeam>>,
     sub_entities: Query<Entity, With<SubEntity>>,
+    overlays: Query<Entity, With<OverlaySprite>>,
 ) {
     for e in &ships {
         commands.entity(e).despawn();
@@ -823,6 +823,9 @@ pub fn teardown_match(
         commands.entity(e).despawn();
     }
     for e in &sub_entities {
+        commands.entity(e).despawn();
+    }
+    for e in &overlays {
         commands.entity(e).despawn();
     }
 }
@@ -849,6 +852,7 @@ fn spawn_class(
     }
     spawn_ship(
         commands,
+        assets,
         class,
         &stats,
         &frames,
@@ -869,6 +873,7 @@ fn spawn_class(
 /// free as their bigger moment of inertia naturally fights the torque.
 fn spawn_ship(
     commands: &mut Commands,
+    assets: &AssetServer,
     class: ShipClass,
     stats: &ShipStats,
     frames: &[Handle<Image>],
@@ -957,6 +962,55 @@ fn spawn_ship(
     if let Some(abilities) = abilities_for(class) {
         entity.insert(abilities);
     }
+    let entity_id = entity.id();
+
+    // Per-class visual overlays. Canonical use: the Orz turret
+    // (`data->spriteExtra`, 64 .tga frames) drawn on top of the hull
+    // with its own rotation. As more ships need composite visuals
+    // (Chmmr satellites, accessories), they slot in here.
+    if let Some(builder) = overlay_frames_for(class, assets) {
+        let initial = builder.frames.first().cloned().unwrap_or_default();
+        commands.spawn((
+            OverlaySprite {
+                parent: entity_id,
+                frames: builder.frames,
+                extra_angle: builder.extra_angle,
+                z_offset: builder.z_offset,
+            },
+            Sprite::from_image(initial),
+            Transform::from_translation(position.extend(builder.z_offset)),
+        ));
+    }
+}
+
+/// Per-class overlay sprite spec. Returns `None` for ships with no
+/// turret / satellite / accessory.
+fn overlay_frames_for(class: ShipClass, assets: &AssetServer) -> Option<OverlaySpriteBuilder> {
+    match class {
+        // Orz Nemesis — the turret on top of the hull. 64 rotation
+        // frames at shot_d_NN_tga.png. Currently rendered aligned
+        // with the hull (extra_angle = 0); held-L/R turret aim
+        // lands when we wire the special-held input remap.
+        ShipClass::Orzne => {
+            let frames: Vec<_> = (0..64)
+                .map(|i| assets.load(format!("ships/orzne/sprites/shot_d_{:02}_tga.png", i)))
+                .collect();
+            Some(OverlaySpriteBuilder {
+                frames,
+                extra_angle: 0.0,
+                z_offset: 0.5,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Plain-data overlay description used by `spawn_ship` to defer
+/// component construction until the parent entity id is known.
+struct OverlaySpriteBuilder {
+    frames: Vec<Handle<Image>>,
+    extra_angle: f32,
+    z_offset: f32,
 }
 
 /// Per-class data manifest builder. The numbers come straight from
@@ -2309,19 +2363,78 @@ pub(crate) fn spawn_beam(
     ));
 }
 
-/// Marker on a projectile spawned from a VUX-style limpet weapon. When
-/// such a projectile hits a non-owner ship, that ship's Avian Mass is
-/// incremented by `LIMPET_MASS` and the projectile despawns. No joint,
-/// no parent-child reparenting — the slowing is emergent from giving
-/// the same thruster force more mass to push.
+/// VUX-style limpet projectile. On hit the target's current velocity
+/// is multiplied by `slowdown_factor` — that's the canonical VUX
+/// mechanic from `shpvuxin.cpp:VuxLimpet::inflict_damage`:
+/// `target->handle_speed_loss(this, slowdown_factor)`. Limpets do
+/// **not** deal crew damage in canon; they only slow.
+///
+/// .ini Vuxin Special: `Slowdown = 0.5` — each hit halves the
+/// target's speed. Stacks multiplicatively across hits.
 #[derive(Component, Debug)]
-pub struct Limpet;
+pub struct Limpet {
+    pub slowdown_factor: f32,
+}
 
-/// How much each limpet adds to the target's mass (kg). Tunable; canonical
-/// SC2 limpets are bulkier than the small fast projectiles I have today,
-/// so 3 kg per stick is fairly aggressive — three of them on a Spathi
-/// (mass 16 kg) is a 60 % heavier ship.
-pub const LIMPET_MASS: f32 = 3.0;
+/// Render-only child of a ship: a sprite that follows the ship's
+/// position each tick and picks its rotation frame from
+/// `parent_angle + extra_angle`. No collider, no physics body — it's
+/// purely visual.
+///
+/// First instance: the Orz turret, which rotates *separately* from
+/// the hull (canonical `data->spriteExtra` drawn at the ship's pos
+/// with angle = ship.angle + turret_angle). Future composite-ship
+/// work generalises this primitive into proper jointed Parts, but
+/// this is enough for visible turrets / satellites / decorative
+/// accessories that don't need their own collider.
+#[derive(Component, Debug)]
+pub struct OverlaySprite {
+    pub parent: Entity,
+    /// 64 rotation frames indexed by angle, same convention as
+    /// `ShipFrames` (frame 0 = north, CCW).
+    pub frames: Vec<Handle<Image>>,
+    /// Additional rotation applied on top of the parent's, in radians.
+    /// For the Orz turret this is the turret_angle (currently always
+    /// 0; held-L/R-during-special turret aim is a follow-up).
+    pub extra_angle: f32,
+    /// Z layer offset above the ship hull so the turret renders on
+    /// top instead of under.
+    pub z_offset: f32,
+}
+
+/// Each tick, snap every `OverlaySprite` onto its parent's pose and
+/// pick the right rotation frame. Despawns the overlay if the parent
+/// is gone (avoids dangling turrets after the ship is killed).
+fn update_overlay_sprites(
+    mut commands: Commands,
+    parents: Query<(&Position, &Rotation), With<Ship>>,
+    mut overlays: Query<(Entity, &OverlaySprite, &mut Sprite, &mut Transform)>,
+) {
+    for (overlay_entity, overlay, mut sprite, mut transform) in &mut overlays {
+        let Ok((parent_pos, parent_rot)) = parents.get(overlay.parent) else {
+            commands.entity(overlay_entity).despawn();
+            continue;
+        };
+        let n = overlay.frames.len();
+        if n == 0 {
+            continue;
+        }
+        let parent_angle = parent_rot.sin.atan2(parent_rot.cos);
+        let total = parent_angle + overlay.extra_angle;
+        let n_f = n as f32;
+        let mut idx = ((-total) / std::f32::consts::TAU * n_f).rem_euclid(n_f) as usize;
+        if idx >= n {
+            idx = 0;
+        }
+        sprite.image = overlay.frames[idx].clone();
+        transform.translation = parent_pos.0.extend(overlay.z_offset);
+        // Same trick as `swap_rotation_frame` — the chosen frame
+        // already encodes the rotation, so cancel any Transform-side
+        // rotation. Avian doesn't touch this entity (no RigidBody),
+        // so this stays at IDENTITY across frames.
+        transform.rotation = Quat::IDENTITY;
+    }
+}
 
 /// Small autonomous body spawned by a ship's special — Chenjesu DOGI,
 /// Orz marine, Syreen crew pod, Kzer-Za fighter. Has its own physics
@@ -2625,7 +2738,7 @@ fn handle_projectile_hits(
     damage_to_batt: Query<&DamageToBattery>,
     mut crews: Query<&mut Crew>,
     mut batteries: Query<&mut Battery>,
-    mut masses: Query<&mut Mass>,
+    mut velocities: Query<&mut LinearVelocity>,
 ) {
     for event in reader.read() {
         let (proj_entity, other_entity) = if projectiles.get(event.collider1).is_ok() {
@@ -2645,10 +2758,30 @@ fn handle_projectile_hits(
             continue;
         }
 
-        // Shield first; fortitude (DamageToBattery) routes the post-
-        // shield damage into the target's battery instead of its
-        // crew. Order matches the canonical Utwig path: shield
-        // multiplies first, then fortitude consumes what's left.
+        // Limpets are NOT damage projectiles in canon — they slow
+        // the target instead. shpvuxin.cpp:VuxLimpet::inflict_damage
+        // calls `handle_speed_loss(slowdown_factor)` and bypasses
+        // the normal damage path entirely. We do the same: multiply
+        // the target's current LinearVelocity by `slowdown_factor`,
+        // skip crew/battery damage.
+        if let Ok(limpet) = limpets.get(proj_entity) {
+            if let Ok(mut vel) = velocities.get_mut(other_entity) {
+                vel.0 *= limpet.slowdown_factor;
+                info!(
+                    "limpet hit: target velocity ×{:.2} (now |v|={:.0})",
+                    limpet.slowdown_factor,
+                    vel.0.length()
+                );
+            }
+            commands.entity(proj_entity).despawn();
+            continue;
+        }
+
+        // Normal damage path. Shield first; fortitude
+        // (DamageToBattery) routes the post-shield damage into the
+        // target's battery instead of its crew. Order matches the
+        // canonical Utwig path: shield multiplies first, then
+        // fortitude consumes what's left.
         let factor = shields
             .get(other_entity)
             .map(|s| s.damage_factor)
@@ -2674,24 +2807,6 @@ fn handle_projectile_hits(
                 if factor < 1.0 { " [shielded]" } else { "" }
             );
         }
-
-        // Limpet attach: instead of "just despawn", the limpet's mass
-        // is transferred onto the target ship before the projectile
-        // dies. Avian recomputes thrust/acceleration response from
-        // the new Mass next tick, so the target accelerates more
-        // slowly *and* its terminal speed at full throttle drops
-        // (terminal_v = thrust / (mass · damping)). Stack hits → more
-        // mass → progressively immobilised target. No special-case
-        // "slow effect" timer needed; it's just heavier.
-        if limpets.get(proj_entity).is_ok() {
-            if let Ok(mut mass) = masses.get_mut(other_entity) {
-                mass.0 += LIMPET_MASS;
-                info!(
-                    "limpet stuck: target mass now {:.1} kg",
-                    mass.0
-                );
-            }
-        }
         commands.entity(proj_entity).despawn();
     }
 }
@@ -2701,44 +2816,17 @@ fn handle_projectile_hits(
 /// spin); on top of that we deduct crew proportional to how fast they
 /// were closing. Below a threshold relative speed it's just a love tap,
 /// no damage.
-fn handle_ship_collisions(
-    mut reader: MessageReader<CollisionStart>,
-    mut q: Query<(&LinearVelocity, &mut Crew), With<Ship>>,
-    shields: Query<&ShieldActive>,
-) {
-    const RAM_DAMAGE_THRESHOLD: f32 = 80.0;
-    const RAM_DAMAGE_SCALE: f32 = 60.0;
-
-    for event in reader.read() {
-        let Ok([(v1, _), (v2, _)]) = q.get_many([event.collider1, event.collider2]) else {
-            continue;
-        };
-        let rel_speed = (v1.0 - v2.0).length();
-        if rel_speed < RAM_DAMAGE_THRESHOLD {
-            continue;
-        }
-        let base = ((rel_speed - RAM_DAMAGE_THRESHOLD) / RAM_DAMAGE_SCALE)
-            .ceil()
-            .max(1.0);
-
-        for entity in [event.collider1, event.collider2] {
-            let factor = shields
-                .get(entity)
-                .map(|s| s.damage_factor)
-                .unwrap_or(1.0);
-            let dmg = ((base * factor).round() as i32).max(0);
-            if let Ok((_, mut crew)) = q.get_mut(entity) {
-                crew.current = (crew.current - dmg).max(0);
-                info!(
-                    "ram: -{dmg} crew (now {}/{}){}",
-                    crew.current,
-                    crew.max,
-                    if factor < 1.0 { " [shielded]" } else { "" }
-                );
-            }
-        }
-    }
-}
+// Ship-ship ramming damage was an invention — canon SC2 / TW melee
+// has ZERO baseline ram damage. Ships just bounce off each other
+// (Avian's solver handles the elastic-ish collision response). The
+// few classes that *do* damage on contact (Androsynth Blazer mode,
+// Arilou post-teleport telefrag, Pkunk reborn-phaser) get it via
+// per-special components/abilities, not via a generic system.
+//
+// If we need ram damage again as an opt-in (e.g. for a custom mode
+// or a future ship that's all about ramming), add it as an
+// `AbilityKind::GrantRamDamage` or a class-marker component rather
+// than as a global rule.
 
 fn tick_shield(
     mut commands: Commands,
