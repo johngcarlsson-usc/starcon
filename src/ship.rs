@@ -2389,6 +2389,7 @@ fn apply_player_input(
         Option<&ShipModes>,
         &mut LastTurnInput,
         Option<&InertialessDrive>,
+        Option<&crate::ultimate::HyperActive>,
     )>,
 ) {
     for (
@@ -2403,8 +2404,16 @@ fn apply_player_input(
         modes,
         mut last_turn,
         inertialess,
+        hyper,
     ) in &mut q
     {
+        // Ultimate cinematic: force-locked spin; skip player ang_vel
+        // and thrust updates so the cinematic owns the ship's motion.
+        if hyper.is_some() {
+            torque.0 = 0.0;
+            thrust.0 = Vec2::ZERO;
+            continue;
+        }
         let rot_cos = rot.cos;
         let rot_sin = rot.sin;
         let input = input::read_local_input(&keys, ship.player_slot);
@@ -4132,6 +4141,7 @@ fn tick_beams(
     mut crews: Query<&mut Crew>,
     shields: Query<&ShieldActive>,
     ship_class_of: Query<&Ship>,
+    hypers: Query<&crate::ultimate::HyperActive>,
 ) {
     use avian2d::prelude::SpatialQueryFilter;
     use bevy::math::Dir2;
@@ -4226,7 +4236,12 @@ fn tick_beams(
         let angle = world_dir.y.atan2(world_dir.x) - std::f32::consts::FRAC_PI_2;
         beam_xf.translation = midpoint.extend(0.3);
         beam_xf.rotation = Quat::from_rotation_z(angle);
-        beam_sprite.custom_size = Some(Vec2::new(beam.width * 2.0, hit_t.max(1.0)));
+        let width_mult = hypers
+            .get(beam.owner)
+            .map(|h| h.beam_width_mult)
+            .unwrap_or(1.0);
+        beam_sprite.custom_size =
+            Some(Vec2::new(beam.width * 2.0 * width_mult, hit_t.max(1.0)));
         beam_sprite.color = beam.color;
 
         beam.remaining -= dt;

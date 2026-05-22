@@ -7,6 +7,7 @@ mod physics;
 mod ship;
 mod starfield;
 mod timeflow;
+mod ultimate;
 
 use bevy::prelude::*;
 
@@ -62,6 +63,7 @@ fn main() {
             timeflow::TimeflowPlugin,
             hud::HudPlugin,
             starfield::StarfieldPlugin,
+            ultimate::UltimatePlugin,
         ))
         .add_systems(Startup, setup_camera)
         .add_systems(OnEnter(AppState::Loading), ship::load_ship_catalog)
