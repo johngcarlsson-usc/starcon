@@ -2312,26 +2312,34 @@ fn apply_player_input(
                 torque.0 = 0.0;
             }
             AngularControl::Inertial => {
+                // Three cases, mutually exclusive on each tick:
+                //   1. Player is HOLDING a turn key — snap to target
+                //      rate (feels like Classic). Any external spin
+                //      from collisions gets overwritten while the
+                //      key is held.
+                //   2. Player JUST RELEASED a turn key — snap ang_vel
+                //      to zero. Kills the player-induced spin so
+                //      deliberate steering doesn't leave momentum
+                //      behind. Collision-induced spin acquired
+                //      between presses survives — those ticks fall
+                //      into case 3, not case 2.
+                //   3. No input AND no release transition — leave
+                //      ang_vel and torque alone. Collision impulses
+                //      now persist as visible tumble. With
+                //      AngularDamping=0 the tumble lasts until the
+                //      player taps a turn key (case 1 takes over and
+                //      brakes / reverses it) or another collision.
+                torque.0 = 0.0;
+                let just_released =
+                    input::read_local_just_released(&keys, ship.player_slot);
                 if dir != 0.0 {
-                    // Player is steering — drive toward target_omega
-                    // with the per-ship gain. Rise time ≈ 70 ms so it
-                    // *feels* close to Classic snap; the gain
-                    // automatically fights any existing spin (collision
-                    // impulse, or the opposite turn key cancelling the
-                    // current rate).
-                    let error = target_omega - ang_vel.0;
-                    torque.0 = error * derived.inertial_torque_gain;
-                } else {
-                    // No input — let the ship spin freely. With
-                    // AngularDamping=0 the rate persists indefinitely
-                    // until either the player taps a turn key (which
-                    // re-engages the controller above and brakes /
-                    // reverses the spin) or another collision changes
-                    // it. This is the "out of control after a heavy
-                    // hit, right yourself with deliberate input"
-                    // behaviour the user asked for.
-                    torque.0 = 0.0;
+                    ang_vel.0 = target_omega;
+                } else if just_released.pressed(input::INPUT_LEFT)
+                    || just_released.pressed(input::INPUT_RIGHT)
+                {
+                    ang_vel.0 = 0.0;
                 }
+                // else: leave ang_vel as-is (preserves collision spin).
             }
         }
 

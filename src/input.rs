@@ -69,6 +69,21 @@ pub fn read_local_just_pressed(keys: &ButtonInput<KeyCode>, slot: usize) -> Play
     PlayerInput { buttons }
 }
 
+/// Like `read_local_just_pressed` but for the *falling edge* — the
+/// tick the key transitioned from down to up. Used by Inertial-mode
+/// steering to detect "player just released their turn key" so the
+/// player-induced spin can be cancelled without affecting any
+/// collision-induced spin that arrived while the key was held.
+pub fn read_local_just_released(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput {
+    let mut buttons = 0u8;
+    for (key, mask) in keymap(slot) {
+        if keys.just_released(*key) {
+            buttons |= mask;
+        }
+    }
+    PlayerInput { buttons }
+}
+
 pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
