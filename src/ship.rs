@@ -842,7 +842,7 @@ fn spawn_class(
         error!("{code} missing from catalog");
         return;
     };
-    let frames = load_rotation_frames(assets, code);
+    let frames = load_rotation_frames(assets, code, class);
     if frames.is_empty() {
         error!("no rotation frames found for {code}");
         return;
@@ -1857,17 +1857,57 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
     }
 }
 
-fn load_rotation_frames(assets: &AssetServer, code: &str) -> Vec<Handle<Image>> {
-    // Every salvaged ship has 64 rotation frames named ship_s01..ship_s64
-    // (VUX is the lone exception — its rotation uses ship_x## with a
-    // _bmp suffix; left as-is for now, VUX will look static until we
-    // ship a per-class sprite-prefix lookup). Issuing 64 loads
-    // unconditionally avoids needing `std::fs::exists`, which doesn't
-    // work in the browser sandbox. AssetServer.load() is fire-and-
-    // forget on both native and WASM: missing files just don't render.
+/// Filename of the rotation sprite for a ship at frame index 0..64
+/// (0 = north, increasing CCW). The dat extractor wrote different
+/// suffix conventions for different ships depending on whether the
+/// source bitmap was a PNG, BMP, or TGA in the original .dat — so
+/// the canonical 1-indexed `ship_sNN.png` pattern doesn't cover the
+/// whole roster. This is the one place where the per-class oddities
+/// live; both `load_rotation_frames` (game render) and the collider
+/// polygon loader read through here.
+pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
+    match class {
+        // chebr & orzne: 0-indexed `ship_s_NN_tga.png`. Frame 0 is north.
+        ShipClass::Chebr | ShipClass::Orzne => format!("ship_s_{:02}_tga.png", frame),
+
+        // druma: frame 0 is `ship_s00.png` (no suffix), frames 1-63
+        // are `ship_sNN_bmp.png`.
+        ShipClass::Druma => {
+            if frame == 0 {
+                "ship_s00.png".to_string()
+            } else {
+                format!("ship_s{:02}_bmp.png", frame)
+            }
+        }
+
+        // vuxin: frames 0-1 are `ship_s0N.png`, 2-63 are `ship_xNN_bmp.png`.
+        ShipClass::Vuxin => {
+            if frame <= 1 {
+                format!("ship_s{:02}.png", frame)
+            } else {
+                format!("ship_x{:02}_bmp.png", frame)
+            }
+        }
+
+        // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
+        _ => format!("ship_s{:02}.png", frame + 1),
+    }
+}
+
+fn load_rotation_frames(
+    assets: &AssetServer,
+    code: &str,
+    class: ShipClass,
+) -> Vec<Handle<Image>> {
+    // 64 rotation frames per ship, 0-indexed (frame 0 = north, CCW).
+    // The naming convention varies per ship; `rotation_frame_filename`
+    // hides that. Issuing 64 loads unconditionally avoids needing
+    // `std::fs::exists`, which doesn't work in the browser sandbox.
+    // AssetServer.load() is fire-and-forget on both native and WASM:
+    // missing files just don't render.
     let mut frames = Vec::with_capacity(64);
-    for i in 1..=64 {
-        let name = format!("ship_s{i:02}.png");
+    for i in 0..64 {
+        let name = rotation_frame_filename(class, i);
         frames.push(assets.load(format!("ships/{code}/sprites/{name}")));
     }
     frames

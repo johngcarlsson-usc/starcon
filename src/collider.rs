@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use avian2d::prelude::*;
 use bevy::prelude::*;
 
-use crate::ship::{ShipClass, ALL_CLASSES};
+use crate::ship::{rotation_frame_filename, ShipClass, ALL_CLASSES};
 
 /// Convex-hull polygons per ship class, in ship-local coordinates
 /// centred on the sprite (origin = sprite centre, +Y up). Avian
@@ -60,25 +60,13 @@ impl Plugin for ColliderPlugin {
 /// in flight by the time we need polygons.
 fn kick_off_polygon_loads(assets: Res<AssetServer>, mut pending: ResMut<PendingPolygons>) {
     for class in ALL_CLASSES.iter().copied() {
-        // Most ships use `ship_s01.png` directly; three classes
-        // (chebr/orzne/druma) kept the dat-extractor's `_bmp`/`_tga`
-        // suffix on their filenames. We pick the right name per
-        // class so polygon extraction works for the full roster.
-        let filename = sprite_filename_for(class);
+        // Reuse the same per-class filename function the game render
+        // uses for hull frames. Frame 0 = north-facing, which is the
+        // canonical pose we want the collider polygon to match.
+        let filename = rotation_frame_filename(class, 0);
         let path = format!("ships/{}/sprites/{}", class.code(), filename);
         let handle: Handle<Image> = assets.load(path);
         pending.handles.insert(class, handle);
-    }
-}
-
-/// Maps a class to the filename of its "north-facing" frame-1 sprite.
-/// Centralised so the per-class oddities of the legacy dat extractor
-/// don't leak into multiple loaders.
-fn sprite_filename_for(class: ShipClass) -> &'static str {
-    match class {
-        ShipClass::Chebr | ShipClass::Orzne => "ship_s_01_tga.png",
-        ShipClass::Druma => "ship_s01_bmp.png",
-        _ => "ship_s01.png",
     }
 }
 
