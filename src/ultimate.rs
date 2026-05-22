@@ -77,6 +77,26 @@ impl Material2d for GlowMaterial {
     }
 }
 
+/// Soft-edge blade triangle material. Used by the Arilou blade
+/// layers and the BeamTrail / BlastTrail ghosts so each triangle
+/// fades to transparent at its edges instead of reading as a hard
+/// polygon. `color` is the full RGBA tint; the shader multiplies
+/// the alpha by a barycentric-distance smoothstep.
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct SoftBladeMaterial {
+    #[uniform(0)]
+    pub color: LinearRgba,
+}
+
+impl Material2d for SoftBladeMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/soft_blade.wgsl".into()
+    }
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+}
+
 // ----------------------------------------------------------------
 // Sequencer state + components.
 // ----------------------------------------------------------------
@@ -99,7 +119,7 @@ pub struct UltimateState {
     /// Per-layer `ColorMaterial` handles — [core, mid, halo]. We
     /// update each material's alpha each frame in `tick_ultimate_beams`
     /// so the layered blade fades in/out cleanly. Cleared on exit.
-    pub beam_materials: Vec<Handle<bevy::sprite_render::ColorMaterial>>,
+    pub beam_materials: Vec<Handle<SoftBladeMaterial>>,
     /// Spawned beam-entity ids — despawned on exit so repeated
     /// triggers don't leak entities.
     pub beam_entities: Vec<Entity>,
@@ -192,7 +212,7 @@ pub struct BlastTrail {
     pub total_s: f32,
     pub peak_alpha: f32,
     pub base_color: Color,
-    pub material: Handle<bevy::sprite_render::ColorMaterial>,
+    pub material: Handle<SoftBladeMaterial>,
 }
 
 /// One of the layered beam sprites that make up the lightsaber:
@@ -217,7 +237,7 @@ pub struct BeamTrail {
     pub base_color: Color,
     pub start_width: f32,
     pub start_length: f32,
-    pub material: Handle<bevy::sprite_render::ColorMaterial>,
+    pub material: Handle<SoftBladeMaterial>,
     /// World-units / second the trail position drifts at. Mostly
     /// tangential to the blade so wisps "fling off" sideways.
     pub drift_vel: Vec2,
@@ -240,6 +260,7 @@ impl Plugin for UltimatePlugin {
         app.add_plugins((
             Material2dPlugin::<PortraitMaterial>::default(),
             Material2dPlugin::<GlowMaterial>::default(),
+            Material2dPlugin::<SoftBladeMaterial>::default(),
         ))
         .init_resource::<UltimateState>()
         .add_systems(
@@ -344,7 +365,7 @@ fn hyper_trigger(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PortraitMaterial>>,
     mut glow_materials: ResMut<Assets<GlowMaterial>>,
-    mut color_mats: ResMut<Assets<bevy::sprite_render::ColorMaterial>>,
+    mut color_mats: ResMut<Assets<SoftBladeMaterial>>,
     assets: Res<AssetServer>,
     mut virt: ResMut<Time<Virtual>>,
 ) {
@@ -380,13 +401,35 @@ fn hyper_trigger(
     if meshes.get(&BLADE_MESH_HANDLE).is_none() {
         // Apex at local (0, 0) → at the ship. Base at (±0.5, 1) →
         // expands outward to the tip. `Transform.scale = (width,
-        // length, 1)` shapes it into the desired cone.
-        let tri = bevy::math::primitives::Triangle2d::new(
-            Vec2::new(0.0, 0.0),
-            Vec2::new(-0.5, 1.0),
-            Vec2::new(0.5, 1.0),
+        // length, 1)` shapes it into the desired cone. We build
+        // the mesh by hand instead of using Triangle2d::into() so
+        // we can write barycentric weights into UV_0 — the
+        // soft_blade.wgsl shader reads them to feather the edges.
+        use bevy::asset::RenderAssetUsages;
+        use bevy::mesh::{Indices, PrimitiveTopology};
+        let mut tri = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
         );
-        let _ = meshes.insert(&BLADE_MESH_HANDLE, tri.into());
+        tri.insert_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            vec![[0.0, 0.0, 0.0], [-0.5, 1.0, 0.0], [0.5, 1.0, 0.0]],
+        );
+        // Barycentric weights as UVs. Each vertex sets one
+        // coordinate to 1, the rest to 0; inside the triangle,
+        // interpolated (u, v, 1-u-v) gives the barycentric coords
+        // — the shader uses `min` of those three as the edge
+        // distance for the soft-fade.
+        tri.insert_attribute(
+            Mesh::ATTRIBUTE_UV_0,
+            vec![[1.0_f32, 0.0_f32], [0.0_f32, 0.0_f32], [0.0_f32, 1.0_f32]],
+        );
+        tri.insert_attribute(
+            Mesh::ATTRIBUTE_NORMAL,
+            vec![[0.0_f32, 0.0, 1.0]; 3],
+        );
+        tri.insert_indices(Indices::U32(vec![0, 1, 2]));
+        let _ = meshes.insert(&BLADE_MESH_HANDLE, tri);
     }
 
     // Portrait: Mesh2d + custom material with radial alpha fade.
@@ -421,7 +464,7 @@ fn hyper_trigger(
             for layer in 0u8..3 {
                 let (_w, color, z) = beam_layer_pose(layer, 0.0);
                 let mat_handle = color_mats
-                    .add(bevy::sprite_render::ColorMaterial::from_color(color));
+                    .add(SoftBladeMaterial { color: color.to_linear() });
                 let id = commands
                     .spawn((
                         UltimateBeam { layer },
@@ -711,7 +754,10 @@ fn drive_camera_during_ultimate(
         }
         UltimatePhase::ArilouUnleashing => {
             let p = (state.phase_timer_s / PHASE_UNLEASH_S).clamp(0.0, 1.0);
-            let eased = p * p;
+            // Ease-out cubic — fast pull-back at the start so the
+            // player sees the whole arena while the blade swings,
+            // then smooth into the final framing.
+            let eased = 1.0 - (1.0 - p).powi(3);
             (
                 1.0 - eased,
                 HYPER_CAM_SCALE * (1.0 - eased) + state.orig_cam_scale * eased,
@@ -789,7 +835,7 @@ fn tick_ultimate_beams(
     ship_lookup: Query<&Ship>,
     mut crews: Query<&mut Crew>,
     mut beams: Query<(&UltimateBeam, &mut Transform, &Visibility), Without<BeamTrail>>,
-    mut color_mats: ResMut<Assets<bevy::sprite_render::ColorMaterial>>,
+    mut color_mats: ResMut<Assets<SoftBladeMaterial>>,
     mut commands: Commands,
 ) {
     if state.phase == UltimatePhase::Idle {
@@ -864,7 +910,7 @@ fn tick_ultimate_beams(
         xf.scale = Vec3::new(w, blade_len, 1.0);
         if let Some(mat_handle) = state.beam_materials.get(beam.layer as usize) {
             if let Some(mat) = color_mats.get_mut(mat_handle) {
-                mat.color = color;
+                mat.color = color.to_linear();
             }
         }
     }
@@ -960,7 +1006,7 @@ fn tick_ultimate_beams(
                 peak,
             );
             let mat_handle =
-                color_mats.add(bevy::sprite_render::ColorMaterial::from_color(trail_color));
+                color_mats.add(SoftBladeMaterial { color: trail_color.to_linear() });
             // Per-ghost width growth — some wisps puff out big,
             // others stay tight. Range 1.5..4.0× so the mix of
             // tight cores and big billows gives texture.
@@ -1004,7 +1050,7 @@ fn beam_layer_pose(layer: u8, phase_alpha: f32) -> (f32, Color, f32) {
 fn tick_beam_trails(
     time: Res<Time<Real>>,
     mut commands: Commands,
-    mut color_mats: ResMut<Assets<bevy::sprite_render::ColorMaterial>>,
+    mut color_mats: ResMut<Assets<SoftBladeMaterial>>,
     mut q: Query<(Entity, &mut BeamTrail, &mut Transform)>,
 ) {
     let dt = time.delta_secs();
@@ -1044,7 +1090,7 @@ fn tick_beam_trails(
 
         if let Some(mat) = color_mats.get_mut(&trail.material) {
             let lin = trail.base_color.to_linear();
-            mat.color = Color::srgba(lin.red, lin.green, lin.blue, alpha);
+            mat.color = LinearRgba::new(lin.red, lin.green, lin.blue, alpha);
         }
     }
 }
@@ -1169,7 +1215,7 @@ fn tick_earthling_blast(
     derived_q: Query<&crate::ship::ShipPhysicsDerived>,
     mut lin_vels: Query<&mut LinearVelocity, With<Ship>>,
     mut crews: Query<&mut Crew>,
-    mut color_mats: ResMut<Assets<bevy::sprite_render::ColorMaterial>>,
+    mut color_mats: ResMut<Assets<SoftBladeMaterial>>,
     mut commands: Commands,
 ) {
     if state.variant != UltimateVariant::Earthling
@@ -1273,7 +1319,7 @@ fn tick_earthling_blast(
             peak,
         );
         let mat_handle =
-            color_mats.add(bevy::sprite_render::ColorMaterial::from_color(color));
+            color_mats.add(SoftBladeMaterial { color: color.to_linear() });
         commands.spawn((
             BlastTrail {
                 remaining_s: lifetime,
@@ -1300,7 +1346,7 @@ fn tick_earthling_blast(
 fn tick_blast_trails(
     time: Res<Time<Real>>,
     mut commands: Commands,
-    mut color_mats: ResMut<Assets<bevy::sprite_render::ColorMaterial>>,
+    mut color_mats: ResMut<Assets<SoftBladeMaterial>>,
     mut q: Query<(Entity, &mut BlastTrail, &mut Transform)>,
 ) {
     let dt = time.delta_secs();
@@ -1320,7 +1366,7 @@ fn tick_blast_trails(
         let alpha = trail.peak_alpha * frac.powf(0.8) * (1.0 - 0.4 * age);
         if let Some(mat) = color_mats.get_mut(&trail.material) {
             let lin = trail.base_color.to_linear();
-            mat.color = Color::srgba(lin.red, lin.green, lin.blue, alpha.max(0.0));
+            mat.color = LinearRgba::new(lin.red, lin.green, lin.blue, alpha.max(0.0));
         }
     }
 }

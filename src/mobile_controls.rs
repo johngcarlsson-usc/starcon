@@ -28,6 +28,10 @@ pub enum TouchAction {
     Fire,
     Special,
     Ultimate,
+    /// Toggle visibility of every other touch button. Marker
+    /// remains visible; used by desktop players to hide the
+    /// mobile-only buttons.
+    HideButtons,
 }
 
 impl TouchAction {
@@ -39,6 +43,7 @@ impl TouchAction {
             TouchAction::Fire => Some(INPUT_FIRE),
             TouchAction::Special => Some(INPUT_SPECIAL),
             TouchAction::Ultimate => None,
+            TouchAction::HideButtons => None,
         }
     }
     fn label(self) -> &'static str {
@@ -49,6 +54,7 @@ impl TouchAction {
             TouchAction::Fire => "FIRE",
             TouchAction::Special => "SPEC",
             TouchAction::Ultimate => "ULT",
+            TouchAction::HideButtons => "T",
         }
     }
 }
@@ -58,12 +64,32 @@ impl TouchAction {
 #[derive(Component, Debug, Default)]
 pub struct LastInteraction(pub Interaction);
 
+/// Set to `false` by the on-screen toggle button to hide every
+/// touch-input button (for desktop play where they're just clutter).
+#[derive(Resource, Debug)]
+pub struct TouchButtonsVisible(pub bool);
+
+impl Default for TouchButtonsVisible {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+/// Marker on the cluster nodes that hold the input buttons. The
+/// toggle button itself is NOT marked so it stays visible.
+#[derive(Component)]
+pub struct TouchButtonCluster;
+
 pub struct MobileControlsPlugin;
 
 impl Plugin for MobileControlsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_touch_controls)
-            .add_systems(Update, drive_virtual_input);
+        app.init_resource::<TouchButtonsVisible>()
+            .add_systems(Startup, spawn_touch_controls)
+            .add_systems(
+                Update,
+                (drive_virtual_input, drive_visibility_toggle, apply_visibility),
+            );
     }
 }
 
@@ -76,17 +102,21 @@ fn spawn_touch_controls(mut commands: Commands) {
     let fire_color = Color::srgba(0.95, 0.45, 0.25, BTN_ALPHA);
     let spec_color = Color::srgba(0.65, 0.30, 0.95, BTN_ALPHA);
     let ult_color = Color::srgba(1.0, 0.85, 0.20, BTN_ALPHA);
+    let hide_color = Color::srgba(0.4, 0.4, 0.4, BTN_ALPHA);
 
     // Bottom-left cluster: turn-left, turn-right, thrust.
     commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(BTN_MARGIN),
-            left: Val::Px(BTN_MARGIN),
-            flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(10.0),
-            ..default()
-        })
+        .spawn((
+            TouchButtonCluster,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(BTN_MARGIN),
+                left: Val::Px(BTN_MARGIN),
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(10.0),
+                ..default()
+            },
+        ))
         .with_children(|row| {
             for action in [TouchAction::Left, TouchAction::Right, TouchAction::Thrust] {
                 spawn_btn(row, action, dpad_color);
@@ -96,14 +126,17 @@ fn spawn_touch_controls(mut commands: Commands) {
     // Bottom-right cluster: fire, special. Offset further left so it
     // clears the HUD column (220 px wide on the right edge).
     commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(BTN_MARGIN),
-            right: Val::Px(230.0),
-            flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(10.0),
-            ..default()
-        })
+        .spawn((
+            TouchButtonCluster,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(BTN_MARGIN),
+                right: Val::Px(230.0),
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(10.0),
+                ..default()
+            },
+        ))
         .with_children(|row| {
             spawn_btn(row, TouchAction::Fire, fire_color);
             spawn_btn(row, TouchAction::Special, spec_color);
@@ -111,18 +144,33 @@ fn spawn_touch_controls(mut commands: Commands) {
 
     // Top-center ULTIMATE button — bigger, brighter, harder to miss.
     commands
+        .spawn((
+            TouchButtonCluster,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(BTN_MARGIN),
+                left: Val::Percent(50.0),
+                margin: UiRect {
+                    left: Val::Px(-60.0),
+                    ..default()
+                },
+                ..default()
+            },
+        ))
+        .with_children(|root| {
+            spawn_btn_sized(root, TouchAction::Ultimate, ult_color, 120.0, 58.0);
+        });
+
+    // Hide/show toggle — small tab in the top-left, always visible.
+    commands
         .spawn(Node {
             position_type: PositionType::Absolute,
             top: Val::Px(BTN_MARGIN),
-            left: Val::Percent(50.0),
-            margin: UiRect {
-                left: Val::Px(-60.0),
-                ..default()
-            },
+            left: Val::Px(BTN_MARGIN),
             ..default()
         })
         .with_children(|root| {
-            spawn_btn_sized(root, TouchAction::Ultimate, ult_color, 120.0, 58.0);
+            spawn_btn_sized(root, TouchAction::HideButtons, hide_color, 64.0, 28.0);
         });
 }
 
@@ -199,4 +247,47 @@ fn drive_virtual_input(
     virt.just_pressed = pressed;
     virt.just_released = released;
     virt.ultimate_just_pressed = ultimate_edge;
+}
+
+/// Watch the HideButtons touch — on press, flip
+/// `TouchButtonsVisible`. Edge-triggered so a held tap doesn't
+/// chatter.
+fn drive_visibility_toggle(
+    mut visible: ResMut<TouchButtonsVisible>,
+    mut q: Query<(&Interaction, &TouchAction, &mut LastInteraction)>,
+) {
+    for (interaction, action, mut last) in &mut q {
+        if !matches!(action, TouchAction::HideButtons) {
+            continue;
+        }
+        let is_active = matches!(interaction, Interaction::Pressed);
+        let was_active = matches!(last.0, Interaction::Pressed);
+        if is_active && !was_active {
+            visible.0 = !visible.0;
+            info!("touch buttons: {}", if visible.0 { "shown" } else { "hidden" });
+        }
+        // NOTE: don't overwrite `last.0` here — drive_virtual_input
+        // already manages it for every button, including this one,
+        // and we want exactly one writer per component.
+    }
+}
+
+/// Sync each cluster's Visibility with `TouchButtonsVisible`. The
+/// hide/show toggle button itself is NOT in any cluster, so it
+/// stays visible regardless.
+fn apply_visibility(
+    visible: Res<TouchButtonsVisible>,
+    mut clusters: Query<&mut Visibility, With<TouchButtonCluster>>,
+) {
+    if !visible.is_changed() {
+        return;
+    }
+    let target = if visible.0 {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut clusters {
+        *v = target;
+    }
 }

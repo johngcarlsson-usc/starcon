@@ -17,8 +17,11 @@
 //! Avian (documented in docs/SHIP_AUDIT.md as an expected
 //! non-physics system: background visuals).
 
+use avian2d::prelude::Position;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
+
+use crate::ship::Ship;
 
 /// Persistent background star. Currently only carries brightness so
 /// we could later modulate it (twinkle, gradient, etc).
@@ -85,20 +88,35 @@ impl Default for ZoomState {
     }
 }
 
+/// Camera follow behaviour. `Auto` (default) is the canonical SC2-
+/// style follow: the camera centres on the midpoint of the two ships
+/// and zooms to fit them with some padding. `Manual` lets the user
+/// pan/zoom freely (wheel/pinch). Use `C` to toggle.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CameraFollowMode {
+    #[default]
+    Auto,
+    Manual,
+}
+
 pub struct StarfieldPlugin;
 
 impl Plugin for StarfieldPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ZoomState>()
+            .init_resource::<CameraFollowMode>()
             .add_systems(Startup, setup_starfield)
             .add_systems(
                 Update,
                 (
+                    toggle_camera_follow_mode,
+                    follow_ships_with_camera,
                     handle_zoom_input,
                     handle_pinch_zoom,
                     smooth_zoom_scale,
                     tick_zoom_stars,
-                ),
+                )
+                    .chain(),
             );
     }
 }
@@ -148,6 +166,7 @@ fn handle_zoom_input(
     mut commands: Commands,
     mut scroll: MessageReader<MouseWheel>,
     mut zoom_state: ResMut<ZoomState>,
+    mut follow_mode: ResMut<CameraFollowMode>,
     windows: Query<&Window>,
     cameras: Query<(&Transform, &Projection), With<Camera2d>>,
 ) {
@@ -162,6 +181,11 @@ fn handle_zoom_input(
         zoom_state.last_scroll_dir = 0.0;
         return;
     }
+
+    // Any wheel input switches the camera to Manual mode so the
+    // auto-follow doesn't immediately undo the zoom on the next
+    // frame. Press `C` to return to Auto.
+    *follow_mode = CameraFollowMode::Manual;
 
     let zoom_dir = delta_total.signum();
     zoom_state.last_scroll_dir = zoom_dir;
@@ -317,7 +341,11 @@ fn tick_zoom_stars(
 /// Sits alongside `handle_zoom_input` and writes to the same
 /// `ZoomState.target_scale`, so the existing `smooth_zoom_scale`
 /// tween picks up the change automatically.
-fn handle_pinch_zoom(touches: Res<Touches>, mut zoom_state: ResMut<ZoomState>) {
+fn handle_pinch_zoom(
+    touches: Res<Touches>,
+    mut zoom_state: ResMut<ZoomState>,
+    mut follow_mode: ResMut<CameraFollowMode>,
+) {
     // Collect up to two active touches. If there's a third we still
     // pinch on the first two — common mobile-browser idiom and
     // tolerates accidental third-finger taps.
@@ -343,8 +371,101 @@ fn handle_pinch_zoom(touches: Res<Touches>, mut zoom_state: ResMut<ZoomState>) {
         zoom_state.last_pinch_dist = Some(dist);
         return;
     }
+    // Active pinch implies the user is intentionally zooming —
+    // switch to Manual so auto-follow doesn't fight it.
+    *follow_mode = CameraFollowMode::Manual;
     // Spread fingers (ratio>1) = zoom in = smaller ortho scale.
     let new_scale = (zoom_state.target_scale / ratio).clamp(SCALE_MIN, SCALE_MAX);
     zoom_state.target_scale = new_scale;
     zoom_state.last_pinch_dist = Some(dist);
+}
+
+/// Toggle camera-follow mode with `C`. Once switched to Manual,
+/// wheel / pinch zoom works as before and the camera stays where
+/// the user left it. Switching back to Auto re-centres on the
+/// midpoint of all live ships.
+fn toggle_camera_follow_mode(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut mode: ResMut<CameraFollowMode>,
+) {
+    if keys.just_pressed(KeyCode::KeyC) {
+        *mode = match *mode {
+            CameraFollowMode::Auto => CameraFollowMode::Manual,
+            CameraFollowMode::Manual => CameraFollowMode::Auto,
+        };
+        info!("camera follow: {:?}", *mode);
+    }
+}
+
+/// Canonical SC2-style "fit both ships in frame" camera.
+///
+/// Each frame (when mode is `Auto` and a cinematic isn't running):
+///   - compute the centroid + half-extents of every live ship,
+///   - lerp the camera position toward the centroid,
+///   - lerp `ZoomState.target_scale` toward the scale that fits
+///     the bounding box plus a generous padding.
+///
+/// The lerps make the follow feel weighty rather than snapping.
+/// The cinematic-aware skip is so the Ultimate's dramatic zoom-in
+/// isn't fought by this system.
+fn follow_ships_with_camera(
+    time: Res<Time>,
+    mode: Res<CameraFollowMode>,
+    ultimate: Option<Res<crate::ultimate::UltimateState>>,
+    mut zoom_state: ResMut<ZoomState>,
+    ships: Query<&Position, With<Ship>>,
+    windows: Query<&Window>,
+    mut cameras: Query<&mut Transform, With<Camera2d>>,
+) {
+    if *mode != CameraFollowMode::Auto {
+        return;
+    }
+    if let Some(u) = ultimate {
+        if u.phase != crate::ultimate::UltimatePhase::Idle {
+            return;
+        }
+    }
+
+    // Aggregate ship positions.
+    let mut count = 0usize;
+    let mut center = Vec2::ZERO;
+    let mut min = Vec2::splat(f32::INFINITY);
+    let mut max = Vec2::splat(f32::NEG_INFINITY);
+    for p in &ships {
+        count += 1;
+        center += p.0;
+        min = min.min(p.0);
+        max = max.max(p.0);
+    }
+    if count == 0 {
+        return;
+    }
+    center /= count as f32;
+    let span = (max - min).max(Vec2::splat(200.0));
+
+    // Window pixel size — needed to convert "fit span into screen"
+    // to an orthographic scale.
+    let Ok(window) = windows.single() else { return };
+    let win = Vec2::new(window.width().max(1.0), window.height().max(1.0));
+
+    // Pad the bounding box so the ships don't sit at the screen
+    // edges, then choose the scale that fits the longer dimension.
+    // 500 wu is generous — when ships are close you still see a
+    // big chunk of arena around them.
+    const PAD_WU: f32 = 500.0;
+    let needed = span + Vec2::splat(PAD_WU * 2.0);
+    let scale_x = needed.x / win.x;
+    let scale_y = needed.y / win.y;
+    let target_scale = scale_x.max(scale_y).clamp(SCALE_MIN, SCALE_MAX);
+
+    // Lerp toward both target position and target scale. Higher
+    // rate = snappier follow.
+    let dt = time.delta_secs();
+    let blend = (4.0 * dt).min(1.0);
+    if let Ok(mut cam_xf) = cameras.single_mut() {
+        cam_xf.translation.x += (center.x - cam_xf.translation.x) * blend;
+        cam_xf.translation.y += (center.y - cam_xf.translation.y) * blend;
+    }
+    let cur = zoom_state.target_scale;
+    zoom_state.target_scale = cur + (target_scale - cur) * blend;
 }
