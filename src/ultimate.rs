@@ -165,6 +165,20 @@ pub struct PkunkClone {
     pub warp_in_t: f32,
 }
 
+/// Marker on an asteroid that's been thrown by the Slylandro
+/// ultimate. While present, the asteroid glows luminescent and any
+/// CollisionStart with a ship that isn't the firer dispenses
+/// `damage` crew. The marker self-removes when `remaining_s` hits
+/// 0, at which point the asteroid returns to being an inert
+/// drifting rock.
+#[derive(Component, Debug)]
+pub struct SlylandroLaunched {
+    pub owner: Entity,
+    pub damage: i32,
+    pub remaining_s: f32,
+    pub total_s: f32,
+}
+
 /// Yehat ultimate sub-entity — a fighter orbiting the parent
 /// Terminator. Fires periodically at the nearest enemy ship.
 #[derive(Component, Debug)]
@@ -208,6 +222,11 @@ pub enum UltimateVariant {
     /// during the paused reveal, then time resumes and the
     /// formation flies until the clones expire.
     Pkunk,
+    /// Slylandro: every asteroid in the arena glows hot, then
+    /// launches itself with a one-shot impulse toward the
+    /// opponent at randomised chaotic speeds. Each hit on the
+    /// opponent (or anything else) deducts crew.
+    Slylandro,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -272,6 +291,16 @@ pub enum UltimatePhase {
     /// every input the player gives drives all three identically.
     /// Clones tick down their lifetime and fade as they expire.
     PkunkFormation,
+    // ---- Slylandro asteroid storm ----
+    /// Paused. Every asteroid in the field gets the
+    /// `SlylandroLaunched` marker and starts glowing in place —
+    /// energy buildup for the impending barrage.
+    SlylandroCharging,
+    /// Unpaused. Each asteroid receives a one-shot impulse along
+    /// the bearing to the nearest enemy ship (with random speed
+    /// + small angular jitter so the barrage feels chaotic) and
+    /// deals contact damage for the duration.
+    SlylandroStorm,
 }
 
 /// Marker on the ship while the cinematic is active.
@@ -382,6 +411,9 @@ impl Plugin for UltimatePlugin {
                 tick_shofixti_nova,
                 tick_pkunk_clones,
                 tick_pkunk_clone_visual,
+                tick_slylandro_storm,
+                tick_slylandro_glow,
+                handle_slylandro_asteroid_hits,
             )
                 .chain(),
         );
@@ -459,6 +491,21 @@ const PKUNK_FORMATION_SIDE: f32 = 240.0;
 /// How wide the camera frames the three ships at the end of the pan.
 const PKUNK_PAN_FAR_SCALE: f32 = 1.2;
 
+// -- Slylandro asteroid storm --
+const SLYP_CHARGE_S: f32 = 0.8;
+const SLYP_STORM_S: f32 = 4.0;
+/// Min/max launch speed of each asteroid (world units / second).
+/// The randomisation across this range gives the swarm its chaotic
+/// feel.
+const SLYP_LAUNCH_SPEED_MIN: f32 = 220.0;
+const SLYP_LAUNCH_SPEED_MAX: f32 = 620.0;
+/// How long an asteroid stays "armed" — glowing and dealing contact
+/// damage — after launch. Once it expires the rock returns to
+/// being an inert physical obstacle.
+const SLYP_ARMED_LIFE_S: f32 = 5.0;
+/// Crew damage dealt per asteroid contact event.
+const SLYP_ASTEROID_DAMAGE: i32 = 6;
+
 fn portrait_path(variant: UltimateVariant) -> &'static str {
     match variant {
         UltimateVariant::Earthling => "ultimate/portrait_earcr.png",
@@ -467,6 +514,7 @@ fn portrait_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Chenjesu => "ultimate/portrait_chebr.png",
         UltimateVariant::Shofixti => "ultimate/portrait_shosc.png",
         UltimateVariant::Pkunk => "ultimate/portrait_pkufu.png",
+        UltimateVariant::Slylandro => "ultimate/portrait_slypr.png",
         _ => "ultimate/portrait_arisk.png",
     }
 }
@@ -483,6 +531,7 @@ fn voice_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Chenjesu => "ultimate/chebr_voi.wav",
         UltimateVariant::Shofixti => "ultimate/shosc_voi.wav",
         UltimateVariant::Pkunk => "ultimate/pkufu_voi.wav",
+        UltimateVariant::Slylandro => "ultimate/slypr_voi.wav",
         _ => "ultimate/arisk_voi.wav",
     }
 }
@@ -495,6 +544,7 @@ fn variant_for_class(class: ShipClass) -> UltimateVariant {
         ShipClass::Chebr => UltimateVariant::Chenjesu,
         ShipClass::Shosc => UltimateVariant::Shofixti,
         ShipClass::Pkufu => UltimateVariant::Pkunk,
+        ShipClass::Slypr => UltimateVariant::Slylandro,
         _ => UltimateVariant::Arilou,
     }
 }
@@ -718,6 +768,7 @@ fn hyper_trigger(
         | UltimateVariant::Spathi
         | UltimateVariant::Chenjesu
         | UltimateVariant::Shofixti
+        | UltimateVariant::Slylandro
         | UltimateVariant::None => {}
     }
 
@@ -823,6 +874,12 @@ fn tick_ultimate_phases(
                 let portrait_p = (p / 0.35).clamp(0.0, 1.0);
                 (PKUNK_FORMATION_S, 1.0 - portrait_p, false, 0.0, false)
             }
+            UltimatePhase::SlylandroCharging => (SLYP_CHARGE_S, 1.0, false, 0.0, true),
+            UltimatePhase::SlylandroStorm => {
+                let p = (state.phase_timer_s / SLYP_STORM_S).clamp(0.0, 1.0);
+                let portrait_p = (p / 0.5).clamp(0.0, 1.0);
+                (SLYP_STORM_S, 1.0 - portrait_p, false, 0.0, false)
+            }
             UltimatePhase::Idle => unreachable!(),
         };
 
@@ -849,14 +906,19 @@ fn tick_ultimate_phases(
         }
     }
 
-    // The Pkunk ultimate is unusual: the player should keep
-    // *normal* input control of the original ship during
-    // PkunkFormation so they can fly all three in formation. So we
-    // skip the HyperActive lock + the forced ang_vel write for
-    // Pkunk entirely. (During the paused Pkunk phases nothing
-    // integrates anyway, so leaving these alone doesn't break
-    // anything.)
-    if state.variant != UltimateVariant::Pkunk {
+    // Some variants want the player to keep *normal* input
+    // control of their ship during the active phases:
+    //   - Pkunk: player flies a three-ship formation, so the
+    //     original needs to respond to input alongside the clones.
+    //   - Slylandro: the asteroids do the work; the ship just
+    //     flies around dodging the chaos like normal.
+    // For everything else we lock the input via HyperActive + a
+    // forced ang_vel write (the cinematic owns the ship's motion).
+    let needs_lock = !matches!(
+        state.variant,
+        UltimateVariant::Pkunk | UltimateVariant::Slylandro
+    );
+    if needs_lock {
         if let Ok(mut av) = ships.get_mut(p1) {
             av.0 = match state.variant {
                 UltimateVariant::Arilou => spin,
@@ -896,6 +958,9 @@ fn tick_ultimate_phases(
             (UltimatePhase::DramaticZoomIn, UltimateVariant::Pkunk) => {
                 UltimatePhase::PkunkSummoning
             }
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Slylandro) => {
+                UltimatePhase::SlylandroCharging
+            }
             (UltimatePhase::EarthlingCharging, _) => UltimatePhase::EarthlingStretching,
             (UltimatePhase::EarthlingStretching, _) => UltimatePhase::EarthlingBlasting,
             (UltimatePhase::YehatSummoning, _) => UltimatePhase::YehatBattle,
@@ -904,6 +969,7 @@ fn tick_ultimate_phases(
             (UltimatePhase::ShofixtiCharging, _) => UltimatePhase::ShofixtiNova,
             (UltimatePhase::PkunkSummoning, _) => UltimatePhase::PkunkPan,
             (UltimatePhase::PkunkPan, _) => UltimatePhase::PkunkFormation,
+            (UltimatePhase::SlylandroCharging, _) => UltimatePhase::SlylandroStorm,
             // Final phases: exit.
             (UltimatePhase::ArilouUnleashing, _)
             | (UltimatePhase::EarthlingBlasting, _)
@@ -911,7 +977,8 @@ fn tick_ultimate_phases(
             | (UltimatePhase::SpathiBarrage, _)
             | (UltimatePhase::ChenjesuTempest, _)
             | (UltimatePhase::ShofixtiNova, _)
-            | (UltimatePhase::PkunkFormation, _) => {
+            | (UltimatePhase::PkunkFormation, _)
+            | (UltimatePhase::SlylandroStorm, _) => {
                 exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
                 return;
             }
@@ -1122,6 +1189,19 @@ fn drive_camera_during_ultimate(
             (
                 1.0 - eased,
                 PKUNK_PAN_FAR_SCALE * (1.0 - eased) + zoom_far * eased,
+            )
+        }
+        // Slylandro: tight on the firer while asteroids charge,
+        // then pull back to a wide framing during the storm so
+        // the swarm reads on screen.
+        UltimatePhase::SlylandroCharging => (1.0, HYPER_CAM_SCALE),
+        UltimatePhase::SlylandroStorm => {
+            let p = (state.phase_timer_s / (SLYP_STORM_S * 0.5)).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - p).powi(3);
+            let zoom_far = state.orig_cam_scale.max(2.0);
+            (
+                1.0 - eased,
+                HYPER_CAM_SCALE * (1.0 - eased) + zoom_far * eased,
             )
         }
         UltimatePhase::Idle => return,
@@ -2240,5 +2320,177 @@ fn detect_portrait_aspect(
     let size = image.size();
     if size.x > 0 && size.y > 0 {
         state.portrait_aspect = size.x as f32 / size.y as f32;
+    }
+}
+
+// ----------------------------------------------------------------
+// Slylandro — asteroid storm ultimate
+// ----------------------------------------------------------------
+
+/// On entry to SlylandroCharging: stamp every Asteroid with the
+/// `SlylandroLaunched` marker (full life = SLYP_ARMED_LIFE_S) and
+/// kick its velocity to a random launch direction roughly toward
+/// the nearest enemy ship. The asteroid then glows + does
+/// CollisionStart damage via `handle_slylandro_asteroid_hits`.
+fn tick_slylandro_storm(
+    mut state: ResMut<UltimateState>,
+    mut commands: Commands,
+    ships: Query<(Entity, &crate::ship::Ship, &Position)>,
+    mut asteroids: Query<
+        (Entity, &mut LinearVelocity, &Position, Option<&SlylandroLaunched>),
+        (With<crate::ship::Asteroid>, Without<crate::ship::Ship>),
+    >,
+) {
+    if state.variant != UltimateVariant::Slylandro {
+        return;
+    }
+    // Single-frame launch trigger on entry to SlylandroStorm.
+    if state.phase != UltimatePhase::SlylandroStorm {
+        return;
+    }
+    // Use phase_timer to fire-once.
+    if state.phase_timer_s > 0.02 {
+        return;
+    }
+
+    let Some(firer) = state.player_entity else { return };
+    let Ok((_, firer_ship, firer_pos)) = ships.get(firer) else { return };
+    let firer_slot = firer_ship.player_slot;
+
+    // Find the nearest non-friendly ship — the target of the swarm.
+    let mut target_pos: Option<Vec2> = None;
+    let mut best_d2 = f32::INFINITY;
+    for (e, s, p) in &ships {
+        if e == firer || s.player_slot == firer_slot {
+            continue;
+        }
+        let d2 = (p.0 - firer_pos.0).length_squared();
+        if d2 < best_d2 {
+            best_d2 = d2;
+            target_pos = Some(p.0);
+        }
+    }
+    // If no enemy is alive, aim at the centroid of the arena
+    // (more useful than aiming nowhere — at least the swarm flies).
+    let target = target_pos.unwrap_or(Vec2::ZERO);
+
+    let mut count = 0;
+    for (asteroid, mut vel, pos, marker) in &mut asteroids {
+        if marker.is_some() {
+            // Already launched (e.g. left over from a previous ult).
+            continue;
+        }
+        // Aim toward the target, but with up to ±25° random angle
+        // jitter so the swarm spreads instead of becoming a tight
+        // line.
+        let delta = target - pos.0;
+        let base = if delta.length_squared() > 1.0 {
+            delta.normalize()
+        } else {
+            // Random direction if the asteroid is right at the
+            // target's position.
+            let theta = fastrand::f32() * std::f32::consts::TAU;
+            Vec2::new(theta.cos(), theta.sin())
+        };
+        let jitter = (fastrand::f32() - 0.5) * 0.85; // ±0.42 rad ≈ ±24°
+        let (c, s) = (jitter.cos(), jitter.sin());
+        let dir = Vec2::new(base.x * c - base.y * s, base.x * s + base.y * c);
+        let speed = SLYP_LAUNCH_SPEED_MIN
+            + fastrand::f32() * (SLYP_LAUNCH_SPEED_MAX - SLYP_LAUNCH_SPEED_MIN);
+        // One-shot impulse: just rewrite the velocity. The asteroid
+        // keeps its mass/restitution so subsequent bounces feel
+        // physical.
+        vel.0 = dir * speed;
+        commands.entity(asteroid).insert(SlylandroLaunched {
+            owner: firer,
+            damage: SLYP_ASTEROID_DAMAGE,
+            remaining_s: SLYP_ARMED_LIFE_S,
+            total_s: SLYP_ARMED_LIFE_S,
+        });
+        count += 1;
+    }
+    info!(
+        "Slylandro storm launched {} asteroids toward ({:.0}, {:.0})",
+        count, target.x, target.y
+    );
+    // Bump phase_timer just enough that we don't re-trigger next tick.
+    state.phase_timer_s = 0.05;
+}
+
+/// While `SlylandroLaunched` is on an asteroid, tick its remaining
+/// armed time + pulse a bright cyan-white tint on the sprite so
+/// the eye reads it as glowing-hot. Expiry removes the marker and
+/// restores the asteroid's normal grey tint so it goes back to
+/// being a benign drifting rock.
+fn tick_slylandro_glow(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut SlylandroLaunched, &mut Sprite)>,
+) {
+    let dt = time.delta_secs();
+    let t = time.elapsed_secs();
+    for (e, mut launched, mut sprite) in &mut q {
+        launched.remaining_s -= dt;
+        if launched.remaining_s <= 0.0 {
+            // Done glowing — restore default asteroid color.
+            sprite.color = Color::srgba(0.55, 0.50, 0.45, 1.0);
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.remove::<SlylandroLaunched>();
+            }
+            continue;
+        }
+        // Glow pulses fast — feels like crackling energy.
+        let pulse = (t * 18.0).sin() * 0.5 + 0.5;
+        let life_frac = (launched.remaining_s / launched.total_s).clamp(0.0, 1.0);
+        // Hot-core white + cyan halo. Brightness drops as the
+        // asteroid's energy dissipates near the end.
+        let r = 0.65 + 0.35 * pulse * life_frac;
+        let g = 0.85 + 0.15 * pulse;
+        let b = 1.0;
+        let a = 0.6 + 0.4 * pulse * life_frac;
+        sprite.color = Color::srgba(r, g, b, a);
+    }
+}
+
+/// CollisionStart handler for launched asteroids. On any contact
+/// between a SlylandroLaunched asteroid and a Ship that isn't the
+/// firer, deduct `damage` crew (shield-multiplied). The asteroid
+/// itself isn't despawned — it keeps bouncing through the field
+/// for the rest of its glow timer, potentially hitting the same
+/// target multiple times.
+fn handle_slylandro_asteroid_hits(
+    mut reader: MessageReader<CollisionStart>,
+    launched: Query<&SlylandroLaunched>,
+    ships: Query<&crate::ship::Ship>,
+    shields: Query<&crate::ship::ShieldActive>,
+    mut crews: Query<&mut crate::ship::Crew>,
+) {
+    for event in reader.read() {
+        let (asteroid, ship_e) = if launched.get(event.collider1).is_ok() {
+            (event.collider1, event.collider2)
+        } else if launched.get(event.collider2).is_ok() {
+            (event.collider2, event.collider1)
+        } else {
+            continue;
+        };
+        let Ok(launch) = launched.get(asteroid) else { continue };
+        if launch.owner == ship_e {
+            continue;
+        }
+        // Only damage ships — bounces off other asteroids or
+        // projectiles are physics-only.
+        if ships.get(ship_e).is_err() {
+            continue;
+        }
+        let factor = shields
+            .get(ship_e)
+            .map(|s| s.damage_factor)
+            .unwrap_or(1.0);
+        let dmg = ((launch.damage as f32 * factor).round() as i32).max(0);
+        if dmg > 0 {
+            if let Ok(mut crew) = crews.get_mut(ship_e) {
+                crew.current = (crew.current - dmg).max(0);
+            }
+        }
     }
 }
