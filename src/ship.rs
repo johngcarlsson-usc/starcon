@@ -1257,7 +1257,12 @@ fn modes_for(
                             recoil_impulse: 0.0,
                         }],
                     },
-                    cooldown_s: 1.0 / 20.0,
+                    // .ini [Special] WeaponRate = 20 → one volley
+                    // per 20 SC2 frames = 1.0 s. (T-form uses [Ship]
+                    // WeaponRate = 0, so it fires every frame; the
+                    // Y-form's homing missiles are deliberately slow
+                    // — that's the trade for tracking + speed.)
+                    cooldown_s: 20.0 / 20.0,
                 },
                 special: AbilitySpec {
                     kind: AbilityKind::ToggleMode,
@@ -3467,14 +3472,24 @@ fn tick_meltr_charge(
     >,
 ) {
     let dt = time.delta_secs();
-    let max_charge_s: f32 = 7.5; // 3 canonical phases × 2.5 s each
+    // Canon: 5 charge_frames × 10 sprite_frames × 50 ms = 2.5 s per
+    // phase × 3 phases = 7.5 s. We use 10 s here — the user found
+    // the canonical pace feels too fast in continuous mode (without
+    // the discrete sound/phase cues from legacy you don't perceive
+    // tier crossings until the flash), so the longer window gives
+    // the size+colour ramp more time to read.
+    let max_charge_s: f32 = 10.0;
     let base_damage: i32 = 2;
     let max_damage: i32 = 16; // 2·2³ — canon max
     let base_range_world: f32 = 21.0 * SC2_RANGE_SCALE;
     let max_extra_range: f32 = 3.0 * 3.0 * SC2_RANGE_SCALE;
     let speed: f32 = 112.0 * SC2_VEL_SCALE;
     let muzzle_local = Vec2::new(0.0, 60.0); // clear of ship hull, like Chebr crystal
-    let max_scale: f32 = 3.0; // shot 3× bigger at full charge
+    // At full charge the shot is 6× its base size — substantially
+    // "really big" per the user's request. Combined with the
+    // colour shift + sprite-frame cycling this makes the peak
+    // unambiguous.
+    let max_scale: f32 = 6.0;
     const FLASH_DURATION_S: f32 = 0.4;
 
     for (entity, ship, ship_pos, ship_rot, ship_vel, mut state, mut batt) in &mut ships {
