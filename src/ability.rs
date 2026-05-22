@@ -21,8 +21,9 @@ use bevy::prelude::*;
 use crate::input;
 use crate::ship::{
     spawn_attached_damage_zone, spawn_beam, spawn_damage_zone, spawn_sub_entity, spawn_tractor,
-    Barrel, Battery, Crew, DamageToBattery, Homing, Invisible, Limpet, PointDefenseActive,
-    Projectile, ShieldActive, Ship, SpecialCooldown, SubEntityAi, WeaponCooldown,
+    Barrel, Battery, Crew, DamageToBattery, Homing, Invisible, Limpet, ModeToggleRequest,
+    PointDefenseActive, Projectile, ShieldActive, Ship, SpecialCooldown, SubEntityAi,
+    WeaponCooldown,
 };
 
 /// Per-ship behaviour manifest. Present on entities that have been
@@ -129,6 +130,15 @@ pub enum AbilityKind {
     /// battery for a duration. Canonical Utwig fortitude
     /// (shputwju.cpp:96, `batt += normal` while special_recharge > 0).
     GrantDamageToBattery { duration_s: f32, conversion: f32 },
+
+    /// Cycle the firer's `ShipModes.current` to the next mode (wraps
+    /// around at the end). `tick_ship_modes` notices the change and
+    /// swaps the live ShipPhysicsDerived / Mass / ShipFrames /
+    /// ShipAbilities components. Canonical Mmrnmhrm T↔Y transform
+    /// and Androsynth normal↔Blazer.
+    ///
+    /// No-op if the firer has no `ShipModes` component.
+    ToggleMode,
 
     /// Spawn a sub-entity (Chenjesu DOGI, Orz marine, Syreen crew
     /// pod, Kzer-Za fighter). Has its own physics body + sprite + HP
@@ -437,6 +447,10 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
                 conversion: *conversion,
             });
             info!("P{} fortitude up", slot);
+        }
+        AbilityKind::ToggleMode => {
+            ctx.commands.entity(ctx.entity).insert(ModeToggleRequest);
+            info!("P{} mode toggle requested", slot);
         }
         AbilityKind::SpawnSubEntity {
             local_offset,

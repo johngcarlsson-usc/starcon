@@ -586,9 +586,15 @@ impl Plugin for ShipPlugin {
         app.init_resource::<MatchConfig>()
             .init_resource::<AngularControlOverride>()
             .add_systems(Update, (class_picker_input, cycle_angular_override));
+        // Bevy 0.18's `add_systems` macro caps a single tuple at 20
+        // entries. We've outgrown it; split into two FixedUpdate
+        // groups (the order across groups is unconstrained, but each
+        // system inside this plugin is independent so that's fine).
         app.add_systems(
             FixedUpdate,
             (
+                process_mode_toggle_requests,
+                tick_ship_modes,
                 apply_player_input,
                 cap_velocity,
                 tick_weapon_cooldown,
@@ -603,6 +609,11 @@ impl Plugin for ShipPlugin {
                 tick_attached_damage_zones,
                 tick_beams,
                 tick_tractors,
+            ),
+        );
+        app.add_systems(
+            FixedUpdate,
+            (
                 tick_invisible,
                 tick_damage_to_battery,
                 tick_sub_entities,
@@ -962,6 +973,12 @@ fn spawn_ship(
     if let Some(abilities) = abilities_for(class) {
         entity.insert(abilities);
     }
+    // Multi-form ships (Mmrxf, Andgu) carry a `ShipModes` component.
+    // `tick_ship_modes` swaps in the active mode's stats/sprite/
+    // abilities on the first frame (applied=None → needs apply).
+    if let Some(modes) = modes_for(class, stats, frames, &derived, phys.collider_radius, assets) {
+        entity.insert(modes);
+    }
     let entity_id = entity.id();
 
     // Per-class visual overlays. Canonical use: the Orz turret
@@ -1011,6 +1028,270 @@ struct OverlaySpriteBuilder {
     frames: Vec<Handle<Image>>,
     extra_angle: f32,
     z_offset: f32,
+}
+
+/// Per-class `ShipModes` builder. Returns `None` for ships that don't
+/// have alternate forms. Builds every mode's complete state up-front
+/// (sprite frames, abilities, physics-derived) so `tick_ship_modes`
+/// just swaps them in.
+fn modes_for(
+    class: ShipClass,
+    stats: &ShipStats,
+    base_frames: &[Handle<Image>],
+    base_derived: &ShipPhysicsDerived,
+    collider_radius: f32,
+    assets: &AssetServer,
+) -> Option<ShipModes> {
+    use crate::ability::{
+        AbilityKind, AbilitySpec, BeamSpec, ShipAbilities, VolleySpec,
+    };
+    let forward = Vec2::new(0.0, 1.0);
+
+    match class {
+        // Mmrnmhrm X-Form: two modes, both with `ToggleMode` as
+        // their special so pressing X cycles between them.
+        //
+        //   Mode 0 = T-Form  (default per shpmmrxf.cpp constructor)
+        //     stats from [Ship]:    speed 20, accel 5, turn 2, mass 11
+        //     primary = twin laser beams at angles ±asin(28/range)
+        //     sprite = ship_s##.png (the default hull rotation set)
+        //
+        //   Mode 1 = Y-Form
+        //     stats from [Special]: speed 50, accel 10, turn 15
+        //     primary = twin homing missiles toed out ±25°
+        //     sprite = shot_b##.png (the alternate hull rotation set)
+        ShipClass::Mmrxf => {
+            // T-form derived = base (already from [Ship] stats).
+            let tform_derived = base_derived.clone();
+
+            // Y-form: rebuild ShipPhysicsDerived from [Special] stat
+            // overrides. The .ini fields don't have a struct slot;
+            // override a copy of stats and re-derive.
+            let mut y_stats = stats.clone();
+            y_stats.speed_max = 50.0;
+            y_stats.accel_rate = 10.0;
+            y_stats.turn_rate = 15.0;
+            y_stats.recharge_amount = 1;
+            y_stats.recharge_rate = 6;
+            y_stats.weapon_rate = 20;
+            let yform_derived = ShipPhysicsDerived::from_stats(&y_stats, collider_radius);
+
+            // Y-form sprite frames — shot_b##.png is 1-indexed PNG.
+            let yform_frames: Vec<_> = (0..64)
+                .map(|i| assets.load(format!("ships/mmrxf/sprites/shot_b{:02}.png", i + 1)))
+                .collect();
+
+            // T-form abilities: twin laser beams from (±28, 2) toed
+            // by laserAngle = asin(28 / laserRange). laserRange is
+            // 8·40 = 320 u. asin(28/320) ≈ 5°. Approximated with a
+            // small bilateral offset; auto_aim off (forward only).
+            let tform_abilities = ShipAbilities {
+                primary: AbilitySpec {
+                    kind: AbilityKind::SpawnBeams {
+                        beams: vec![
+                            BeamSpec {
+                                local_origin: Vec2::new(-28.0, 2.0),
+                                local_dir: Vec2::new(0.087, 0.996), // +5° from +Y
+                                range: 8.0 * SC2_RANGE_SCALE,
+                                damage_per_tick: 1,
+                                color: Color::srgb(0.6, 0.6, 1.0),
+                                auto_aim: false,
+                                duration_s: 1.0 / 20.0,
+                                width: 1.5,
+                            },
+                            BeamSpec {
+                                local_origin: Vec2::new(28.0, 2.0),
+                                local_dir: Vec2::new(-0.087, 0.996), // -5° from +Y
+                                range: 8.0 * SC2_RANGE_SCALE,
+                                damage_per_tick: 1,
+                                color: Color::srgb(0.6, 0.6, 1.0),
+                                auto_aim: false,
+                                duration_s: 1.0 / 20.0,
+                                width: 1.5,
+                            },
+                        ],
+                    },
+                    cooldown_s: 1.0 / 20.0,
+                },
+                special: AbilitySpec {
+                    kind: AbilityKind::ToggleMode,
+                    cooldown_s: 1.0 / 20.0,
+                },
+            };
+
+            // Y-form abilities: the existing twin homing missiles
+            // (matches what `abilities_for` returns for Mmrxf today).
+            let yform_abilities = ShipAbilities {
+                primary: AbilitySpec {
+                    kind: AbilityKind::SpawnProjectiles {
+                        volleys: vec![VolleySpec {
+                            barrels: vec![
+                                Barrel {
+                                    local_pos: Vec2::new(-13.0, 2.0),
+                                    direction: Vec2::new(-0.42261826, 0.9063078),
+                                },
+                                Barrel {
+                                    local_pos: Vec2::new(13.0, 2.0),
+                                    direction: Vec2::new(0.42261826, 0.9063078),
+                                },
+                            ],
+                            random_spread_rad: 0.0,
+                            speed: 80.0 * SC2_VEL_SCALE,
+                            lifetime: (50.0 * SC2_RANGE_SCALE) / (80.0 * SC2_VEL_SCALE),
+                            color: Color::srgb(1.0, 1.0, 1.0),
+                            sprite_size: 10.0,
+                            sprite_path: Some("ships/mmrxf/sprites/shot_a01.png".into()),
+                            homing_turn_rate: sc2_turning(9.0),
+                            is_limpet: false,
+                            recoil_impulse: 0.0,
+                        }],
+                    },
+                    cooldown_s: 1.0 / 20.0,
+                },
+                special: AbilitySpec {
+                    kind: AbilityKind::ToggleMode,
+                    cooldown_s: 1.0 / 20.0,
+                },
+            };
+
+            Some(ShipModes {
+                modes: vec![
+                    Mode {
+                        name: "T-form",
+                        derived: tform_derived,
+                        mass: stats.mass,
+                        frames: base_frames.to_vec(),
+                        abilities: tform_abilities,
+                        batt_drain_per_tick: 0,
+                        revert_on_empty: false,
+                        thrust_locked: false,
+                        collide_damage: 0,
+                    },
+                    Mode {
+                        name: "Y-form",
+                        derived: yform_derived,
+                        mass: stats.mass,
+                        frames: yform_frames,
+                        abilities: yform_abilities,
+                        batt_drain_per_tick: 0,
+                        revert_on_empty: false,
+                        thrust_locked: false,
+                        collide_damage: 0,
+                    },
+                ],
+                current: 0,
+                applied: None,
+            })
+        }
+
+        // Androsynth Guardian: normal ↔ Blazer comet mode.
+        //
+        //   Mode 0 = Normal — bubble shot primary, special toggles
+        //     into Blazer. .ini [Ship] stats.
+        //   Mode 1 = Blazer  — no weapon (can't fire while in form),
+        //     stats from .ini [Special]: SpeedMax=60, Mass=5,
+        //     TurnRate=0.9, Damage=3. Auto-thrusts (thrust_locked),
+        //     drains 1 SC2-frame battery per tick (canonical
+        //     recharge_amount = -1), exits when battery is empty.
+        ShipClass::Andgu => {
+            let normal_derived = base_derived.clone();
+
+            let mut blazer_stats = stats.clone();
+            blazer_stats.speed_max = 60.0;
+            blazer_stats.accel_rate = 6.0; // bumped over normal (3) for the comet feel
+            blazer_stats.turn_rate = 0.0; // sub-integer in canon (0.9); 0 = fastest tier
+            let blazer_derived =
+                ShipPhysicsDerived::from_stats(&blazer_stats, collider_radius);
+
+            // Blazer sprite frames — shot_c##.png, 1-indexed.
+            let blazer_frames: Vec<_> = (0..64)
+                .map(|i| assets.load(format!("ships/andgu/sprites/shot_c{:02}.png", i + 1)))
+                .collect();
+
+            // Normal abilities (matches current abilities_for entry).
+            let normal_abilities = ShipAbilities {
+                primary: AbilitySpec {
+                    kind: AbilityKind::SpawnProjectiles {
+                        volleys: vec![VolleySpec {
+                            barrels: vec![Barrel {
+                                local_pos: forward * 24.0,
+                                direction: forward,
+                            }],
+                            random_spread_rad: 0.0,
+                            speed: 24.0 * SC2_VEL_SCALE,
+                            lifetime: (50.0 * SC2_RANGE_SCALE) / (24.0 * SC2_VEL_SCALE),
+                            color: Color::srgb(1.0, 1.0, 1.0),
+                            sprite_size: 14.0,
+                            sprite_path: Some("ships/andgu/sprites/shot_a01.png".into()),
+                            homing_turn_rate: 0.0,
+                            is_limpet: false,
+                            recoil_impulse: 0.0,
+                        }],
+                    },
+                    cooldown_s: 1.0 / 20.0,
+                },
+                special: AbilitySpec {
+                    kind: AbilityKind::ToggleMode,
+                    cooldown_s: 1.0 / 20.0,
+                },
+            };
+
+            // Blazer abilities: no primary (set as a Todo that
+            // logs+no-ops, since blazer disables weapons in canon).
+            // Special toggles back out — but the auto-revert will
+            // also kick in when batt hits 0.
+            let blazer_abilities = ShipAbilities {
+                primary: AbilitySpec {
+                    kind: AbilityKind::Todo {
+                        ident: "Andro Blazer disables primary (shpandgu.cpp activate_weapon)",
+                    },
+                    cooldown_s: 1.0 / 20.0,
+                },
+                special: AbilitySpec {
+                    kind: AbilityKind::ToggleMode,
+                    cooldown_s: 4.0 / 20.0,
+                },
+            };
+
+            Some(ShipModes {
+                modes: vec![
+                    Mode {
+                        name: "Normal",
+                        derived: normal_derived,
+                        mass: stats.mass,
+                        frames: base_frames.to_vec(),
+                        abilities: normal_abilities,
+                        batt_drain_per_tick: 0,
+                        revert_on_empty: false,
+                        thrust_locked: false,
+                        collide_damage: 0,
+                    },
+                    Mode {
+                        name: "Blazer",
+                        derived: blazer_derived,
+                        // .ini Special Mass=5 (vs normal 9) — lighter,
+                        // so the same thrust force accelerates faster.
+                        mass: 5.0,
+                        frames: blazer_frames,
+                        abilities: blazer_abilities,
+                        // canonical `recharge_amount = -1` (per-frame
+                        // drain). Matches our 1 SC2-frame-per-tick.
+                        batt_drain_per_tick: 1,
+                        revert_on_empty: true,
+                        thrust_locked: true,
+                        // .ini Special Damage=3 — landed in a follow-up
+                        // collision-damage system; the field is read
+                        // by tick_ship_modes but no handler exists yet.
+                        collide_damage: 3,
+                    },
+                ],
+                current: 0,
+                applied: None,
+            })
+        }
+
+        _ => None,
+    }
 }
 
 /// Per-class data manifest builder. The numbers come straight from
@@ -1613,7 +1894,10 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 1.0 / 20.0,
             },
             special: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "Androsynth Blazer mode (shpandgu.cpp:906)" },
+                // The real abilities live in `ShipModes` — see
+                // `modes_for(Andgu)`. This is just a fallback for the
+                // (impossible) case where ShipModes is missing.
+                kind: AbilityKind::ToggleMode,
                 cooldown_s: 1.0 / 20.0,
             },
         }),
@@ -1785,7 +2069,9 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 1.0 / 20.0,
             },
             special: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "Mmrnmhrm T/Y form toggle (shpmmrxf.cpp:435)" },
+                // Same shape as Andgu — actual mode tuning is in
+                // `modes_for(Mmrxf)`; this is the fallback.
+                kind: AbilityKind::ToggleMode,
                 cooldown_s: 1.0 / 20.0,
             },
         }),
@@ -1991,9 +2277,10 @@ fn apply_player_input(
         &mut ConstantLocalForce,
         &mut ConstantTorque,
         &mut AngularVelocity,
+        Option<&ShipModes>,
     )>,
 ) {
-    for (ship, class, derived, mut thrust, mut torque, mut ang_vel) in &mut q {
+    for (ship, class, derived, mut thrust, mut torque, mut ang_vel, modes) in &mut q {
         let input = input::read_local_input(&keys, ship.player_slot);
 
         let dir = if input.pressed(input::INPUT_LEFT) {
@@ -2024,7 +2311,12 @@ fn apply_player_input(
             }
         }
 
-        thrust.0 = if input.pressed(input::INPUT_THRUST) {
+        // Some modes lock thrust on (Andro Blazer auto-comets the
+        // ship forward). Otherwise thrust follows the input button.
+        let thrust_locked = modes
+            .map(|m| m.modes.get(m.current).map_or(false, |mm| mm.thrust_locked))
+            .unwrap_or(false);
+        thrust.0 = if thrust_locked || input.pressed(input::INPUT_THRUST) {
             // Force vector in the ship's local frame (Avian rotates it
             // into world space because we used ConstantLocalForce).
             Vec2::new(0.0, derived.thrust_force)
@@ -2361,6 +2653,136 @@ pub(crate) fn spawn_beam(
         Transform::from_translation(midpoint.extend(0.3))
             .with_rotation(Quat::from_rotation_z(angle)),
     ));
+}
+
+/// Multi-form ship state. Each mode is a *complete* swap of stats +
+/// sprites + abilities — no diff logic, no partial overrides. The
+/// dispatcher's `ToggleMode` cycles `current`; `tick_ship_modes`
+/// notices the change (via `applied`) and replaces the live
+/// components atomically.
+///
+/// Canonical uses today: Mmrnmhrm T-form ↔ Y-form,
+/// Androsynth normal ↔ Blazer.
+#[derive(Component, Debug, Clone)]
+pub struct ShipModes {
+    pub modes: Vec<Mode>,
+    /// Index of the mode that's *currently selected* (player-facing).
+    pub current: usize,
+    /// Last index `tick_ship_modes` applied. When it differs from
+    /// `current`, the system swaps in the new mode and updates this.
+    /// `None` on the very first tick so we apply mode 0 even if
+    /// `current == 0` (e.g. swapping in fresh `frames`/`abilities`
+    /// that weren't built at spawn).
+    pub applied: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Mode {
+    pub name: &'static str,
+    pub derived: ShipPhysicsDerived,
+    pub mass: f32,
+    pub frames: Vec<Handle<Image>>,
+    pub abilities: crate::ability::ShipAbilities,
+    /// SC2-frames-per-tick of battery drain. Positive = drain;
+    /// negative = bonus recharge; 0 = no effect.
+    pub batt_drain_per_tick: i32,
+    /// Auto-revert to mode 0 when battery hits 0. Canonical Andro
+    /// Blazer (exits when battery exhausted).
+    pub revert_on_empty: bool,
+    /// Thrust is forced ON every tick — the player can't coast.
+    /// Canonical Andro Blazer (auto-thrusts as a comet).
+    pub thrust_locked: bool,
+    /// On-collision crew damage to whatever this ship rams (Andro
+    /// Blazer specialDamage). Zero means no contact damage.
+    pub collide_damage: i32,
+}
+
+/// Marker requesting a mode toggle on this ship. The dispatcher inserts
+/// it when `AbilityKind::ToggleMode` fires; `process_mode_toggle_requests`
+/// drains it each tick, advances the ship's `ShipModes.current`, and
+/// removes the marker. Keeps the ability dispatcher pure (doesn't need
+/// `&mut ShipModes` access in its query).
+#[derive(Component, Debug)]
+pub struct ModeToggleRequest;
+
+fn process_mode_toggle_requests(
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut ShipModes), With<ModeToggleRequest>>,
+) {
+    for (entity, mut modes) in &mut q {
+        if modes.modes.is_empty() {
+            commands.entity(entity).remove::<ModeToggleRequest>();
+            continue;
+        }
+        modes.current = (modes.current + 1) % modes.modes.len();
+        info!("mode toggled → {}", modes.modes[modes.current].name);
+        commands.entity(entity).remove::<ModeToggleRequest>();
+    }
+}
+
+/// Apply mode swaps + per-tick mode effects.
+///   - On `current` change: replace ShipPhysicsDerived, Mass,
+///     ShipFrames, ShipAbilities with the new mode's values.
+///   - Every tick: drain battery if mode says so; auto-revert
+///     when battery hits 0 if mode says so.
+fn tick_ship_modes(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut q: Query<(
+        Entity,
+        &mut ShipModes,
+        &mut Battery,
+        &mut Mass,
+        &mut ShipFrames,
+        &mut ShipPhysicsDerived,
+    )>,
+) {
+    let dt_frames = time.delta_secs() / 0.050;
+    for (entity, mut modes, mut batt, mut mass, mut frames, mut derived) in &mut q {
+        // Pre-extract the values we'll need so we don't borrow modes
+        // mutably twice.
+        let idx = modes.current.min(modes.modes.len().saturating_sub(1));
+        modes.current = idx;
+        let needs_apply = modes.applied != Some(idx);
+        let (
+            new_derived,
+            new_mass,
+            new_frames,
+            new_abilities,
+            batt_drain,
+            revert_on_empty,
+        ) = {
+            let m = &modes.modes[idx];
+            (
+                m.derived.clone(),
+                m.mass,
+                m.frames.clone(),
+                m.abilities.clone(),
+                m.batt_drain_per_tick,
+                m.revert_on_empty,
+            )
+        };
+
+        if needs_apply {
+            *derived = new_derived;
+            *mass = Mass(new_mass);
+            frames.frames = new_frames;
+            commands.entity(entity).insert(new_abilities);
+            modes.applied = Some(idx);
+        }
+
+        // Per-tick battery drain.
+        if batt_drain != 0 {
+            let drain = (batt_drain as f32 * dt_frames).round() as i32;
+            batt.current = (batt.current - drain).clamp(0, batt.max);
+        }
+
+        // Auto-revert when battery is exhausted (Andro Blazer).
+        if revert_on_empty && idx != 0 && batt.current <= 0 {
+            info!("mode reverts: {} → {} (battery empty)", modes.modes[idx].name, modes.modes[0].name);
+            modes.current = 0;
+        }
+    }
 }
 
 /// VUX-style limpet projectile. On hit the target's current velocity
