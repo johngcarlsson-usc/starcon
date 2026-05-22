@@ -367,9 +367,10 @@ fn dispatch_special(
         &mut Battery,
         &mut Crew,
         Option<&crate::ultimate::MmrxfActive>,
+        Option<&crate::ultimate::PkunkClone>,
     )>,
 ) {
-    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active) in &mut q {
+    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active, pkunk_clone) in &mut q {
         // Mmrnmhrm ultimate replaces the special with the split
         // missile launcher — skip the form-toggle here.
         if mmrxf_active.is_some() {
@@ -384,7 +385,15 @@ fn dispatch_special(
         // a 100ms hold flips Mmrnmhrm form 2–3 times in the cooldown
         // window and lands back where it started.
         let edge_only = matches!(abilities.special.kind, AbilityKind::ToggleMode);
-        let triggered = if edge_only {
+        // Pkunk clones force-press their special while in their
+        // retreating sub-state (charging batteries away from the
+        // enemy). Edge-only abilities still respect the edge —
+        // RefillBattery is level-triggered, so this just means the
+        // clone hammers special on cooldown until it's full.
+        let force = pkunk_clone.map_or(false, |c| c.retreating) && !edge_only;
+        let triggered = if force {
+            true
+        } else if edge_only {
             input::read_local_just_pressed_with_virtual(&keys, Some(&virt), ship.player_slot)
                 .pressed(input::INPUT_SPECIAL)
         } else {

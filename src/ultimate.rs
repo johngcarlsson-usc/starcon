@@ -212,12 +212,27 @@ pub struct PkunkClone {
     pub total_s: f32,
     pub reveal_at_pan_t: f32,
     pub warp_in_t: f32,
-    /// Position offset of this clone relative to the leader's
-    /// local frame at spawn. The formation-correction system uses
-    /// `leader_pos + rotate(offset, leader_rotation)` as the
-    /// desired world position; deviations cause the clone to
-    /// thrust/turn itself back into formation.
+    /// Position offset relative to the leader's local frame at
+    /// spawn. The aggressive-AI tick uses the SIGN of `.x` to bias
+    /// which way the clone whirls (left clone spins left, right
+    /// clone spins right) — the magnitude is otherwise unused now
+    /// that clones no longer hold formation.
     pub formation_offset_local: Vec2,
+    /// Aggro/Retreat state machine. `false` = charge in and fire;
+    /// `true` = turn 180° away from the target and hold special to
+    /// refill battery. Set by `tick_pkunk_aggressive_clones` based
+    /// on Battery level with hysteresis.
+    pub retreating: bool,
+}
+
+/// Soft halo entity glued to a Pkunk clone for the duration of
+/// the cinematic. Makes it obvious which Pkunk on screen is the
+/// "real" one (no aura) vs the ephemeral clones (auras). One
+/// aura per clone — despawned in `exit_cinematic` alongside the
+/// clones themselves.
+#[derive(Component, Debug)]
+pub struct PkunkAura {
+    pub clone: Entity,
 }
 
 /// Marker on an asteroid that's been thrown by the Slylandro
@@ -544,6 +559,7 @@ impl Plugin for UltimatePlugin {
                 tick_shofixti_nova,
                 tick_pkunk_clones,
                 tick_pkunk_clone_visual,
+                tick_pkunk_auras,
                 tick_slylandro_storm,
                 tick_slylandro_glow,
                 tick_asteroid_ghosts,
@@ -675,8 +691,6 @@ const SLYP_HIT_FLASH_S: f32 = 0.18;
 // -- Mmrnmhrm transform --
 const MMRXF_TRANSFORM_S: f32 = 0.6;
 const MMRXF_UNLEASH_S: f32 = 5.0;
-/// Ship visually scales by this factor during the ultimate.
-const MMRXF_SHIP_SCALE: f32 = 3.0;
 /// Tangled laser primary: range = 2× the canonical Mmrxf T-form
 /// laser (8 SC2 units → 320 wu), damage per SC2-frame, and the
 /// number of curve segments to render per tick.
@@ -919,6 +933,7 @@ fn hyper_trigger(
                             reveal_at_pan_t: reveal_at,
                             warp_in_t: 0.0,
                             formation_offset_local: offset,
+                            retreating: false,
                         });
                         // Half-HP clones — they're aggressive but
                         // fragile. crew_max from catalog; if the
@@ -933,6 +948,22 @@ fn hyper_trigger(
                             current: half,
                             max: half,
                         });
+                        // Ghostly aura: soft glow disc behind the
+                        // clone so the player can immediately tell
+                        // clones from the real Pkunk. Position-
+                        // tracked in `tick_pkunk_clone_visual`.
+                        let aura_mat = glow_materials.add(GlowMaterial {
+                            params: Vec4::new(1.0, 0.0, 0.0, 0.0),
+                        });
+                        commands.spawn((
+                            PkunkAura { clone: clone_entity },
+                            Mesh2d(quad_mesh.clone()),
+                            MeshMaterial2d(aura_mat),
+                            // Soft halo ~2× ship footprint. The
+                            // ship is 80–100 px depending on class.
+                            Transform::from_scale(Vec3::new(180.0, 180.0, 1.0))
+                                .with_translation(clone_pos.extend(0.10)),
+                        ));
                         state.pkunk_clones.push(clone_entity);
                     }
                 }
@@ -951,8 +982,10 @@ fn hyper_trigger(
             // which read as ghostly and unclear. The PNG at
             // ultimate/mmrxf_unleashed.png is loaded once and has
             // its white background stripped to alpha by
-            // `strip_white_background_once` so we render only the
-            // ship art over the underlying ship sprite.
+            // `strip_white_background_once`. Sized to ~2× a
+            // normal ship sprite (mmrxf ship_p00 = 100 px tall),
+            // so the unleashed form reads as a clear power-up
+            // rather than the previous 10× scale wipeout.
             if let Ok((_, _, _, ship_xf)) = ships.get(entity) {
                 let overlay = commands
                     .spawn((
@@ -960,7 +993,7 @@ fn hyper_trigger(
                         Sprite {
                             image: assets.load("ultimate/mmrxf_unleashed.png"),
                             color: Color::srgba(1.0, 1.0, 1.0, 1.0),
-                            custom_size: Some(Vec2::splat(120.0 * MMRXF_SHIP_SCALE)),
+                            custom_size: Some(Vec2::splat(200.0)),
                             ..default()
                         },
                         Transform::from_translation(
@@ -2633,6 +2666,50 @@ fn tick_pkunk_clones(
 /// image swap doesn't overwrite our color. swap_rotation_frame
 /// touches `image` only, not `color`, so they coexist fine — this
 /// is just a write to a different field.
+/// Position-track and fade each `PkunkAura` to its clone each
+/// frame. Despawns the aura if its clone has been destroyed
+/// (crew damage → `destroy_zero_crew_ships`).
+fn tick_pkunk_auras(
+    time: Res<Time<Real>>,
+    state: Res<UltimateState>,
+    mut commands: Commands,
+    clone_pose: Query<(&Position, &PkunkClone), With<crate::ship::Ship>>,
+    mut auras: Query<(Entity, &PkunkAura, &mut Transform, &MeshMaterial2d<GlowMaterial>)>,
+    mut glow_mats: ResMut<Assets<GlowMaterial>>,
+) {
+    let t = time.elapsed_secs();
+    let cinematic_active = matches!(
+        state.phase,
+        UltimatePhase::PkunkSummoning
+            | UltimatePhase::PkunkPan
+            | UltimatePhase::PkunkFormation
+    );
+    for (aura_e, aura, mut xf, mat_handle) in &mut auras {
+        // Clone gone → aura gone.
+        let Ok((pos, clone)) = clone_pose.get(aura.clone) else {
+            if let Ok(mut ec) = commands.get_entity(aura_e) {
+                ec.try_despawn();
+            }
+            continue;
+        };
+        xf.translation.x = pos.0.x;
+        xf.translation.y = pos.0.y;
+        // Pulse the glow intensity. Slightly higher while
+        // retreating so the "recharging" state reads visually.
+        let base = if clone.retreating { 1.4 } else { 1.0 };
+        let pulse = 0.7 + 0.3 * (t * 5.0).sin();
+        let life = (clone.remaining_s / clone.total_s).clamp(0.0, 1.0);
+        let visible = if cinematic_active {
+            clone.warp_in_t * life
+        } else {
+            0.0
+        };
+        if let Some(mat) = glow_mats.get_mut(mat_handle.id()) {
+            mat.params.x = base * pulse * visible;
+        }
+    }
+}
+
 fn tick_pkunk_clone_visual(
     time: Res<Time<Real>>,
     state: Res<UltimateState>,
@@ -3116,19 +3193,25 @@ pub fn build_ultimate_meshes(
     ultimate_meshes.blade = meshes.add(tri);
 }
 
-/// Aggressive Pkunk clone AI. Each FixedUpdate during the
-/// `PkunkFormation` phase, every clone:
-///   - Picks the nearest enemy ship (different player_slot).
-///   - Steers toward that enemy and thrusts at full power. Always
-///     thrusts — fragile clones trade survivability for pressure.
-///   - Overlays a constant whirl (death-spiral) so the clone reads
-///     as an aggressive spinning threat. Sign alternates per clone.
-///   - FIRE is force-pressed by `dispatch_primary`'s PkunkClone
-///     branch — this system only owns motion.
+/// Aggressive Pkunk clone AI with charge/retreat hysteresis.
 ///
-/// Runs `.after(apply_player_input)` so its overrides take effect
-/// (clones share the player's input slot, so `apply_player_input`
-/// would otherwise be writing the leader's controls to them).
+/// State machine:
+///   - CHARGING (default): steer toward the nearest enemy, thrust
+///     in, whirl through the kill. `dispatch_primary` force-fires
+///     the lightning each tick, so the clone shoots non-stop.
+///   - RETREATING: triggered when battery drops below
+///     `RETREAT_BATT_LOW`. Turn 180° from the enemy, thrust away,
+///     and `dispatch_special` force-presses the Pkunk's
+///     RefillBattery special. Held until battery climbs back to
+///     `RESUME_BATT_HIGH`, then back to CHARGING.
+///
+/// Hysteresis prevents thrash near the threshold. The two
+/// thresholds also give the clone enough battery in reserve to
+/// actually USE the special (special_drain costs 2 — if we let
+/// battery hit zero we'd lock ourselves out of recharging).
+///
+/// Runs `.after(apply_player_input)` so its overrides win over
+/// the leader's input on the shared slot.
 pub fn tick_pkunk_aggressive_clones(
     state: Res<crate::ultimate::UltimateState>,
     enemies: Query<(Entity, &crate::ship::Ship, &Position), With<crate::ship::Ship>>,
@@ -3136,9 +3219,10 @@ pub fn tick_pkunk_aggressive_clones(
         (
             Entity,
             &crate::ship::Ship,
-            &PkunkClone,
+            &mut PkunkClone,
             &Position,
             &Rotation,
+            &crate::ship::Battery,
             &crate::ship::ShipPhysicsDerived,
             &mut ConstantLocalForce,
             &mut AngularVelocity,
@@ -3154,11 +3238,27 @@ pub fn tick_pkunk_aggressive_clones(
 
     use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-    /// Constant whirl overlay (rad/s) so clones spin as they
-    /// charge. Sign alternates per clone via formation_offset_local.x.
+    /// Whirl overlay (rad/s) blended in once the clone is roughly
+    /// on-bearing — the death-spiral signature.
     const PKUNK_AGGRO_SPIN: f32 = 6.0;
+    /// Switch CHARGING → RETREATING when battery falls at/below
+    /// this. Leaves enough headroom (≥ special_drain=2) to
+    /// actually trigger the refill special.
+    const RETREAT_BATT_LOW: i32 = 4;
+    /// Switch RETREATING → CHARGING when battery climbs back at
+    /// or above this. Wider band = less thrash.
+    const RESUME_BATT_HIGH: i32 = 10;
 
-    for (clone_e, clone_ship, clone, pos, rot, derived, mut thrust, mut ang_vel) in &mut clones {
+    for (clone_e, clone_ship, mut clone, pos, rot, batt, derived, mut thrust, mut ang_vel) in &mut clones {
+        // Update state with hysteresis.
+        if clone.retreating {
+            if batt.current >= RESUME_BATT_HIGH {
+                clone.retreating = false;
+            }
+        } else if batt.current <= RETREAT_BATT_LOW {
+            clone.retreating = true;
+        }
+
         // Pick nearest non-friendly ship.
         let mut best: Option<(Vec2, f32)> = None;
         for (e, s, p) in &enemies {
@@ -3174,7 +3274,15 @@ pub fn tick_pkunk_aggressive_clones(
 
         let cur_heading = rot.sin.atan2(rot.cos);
         let to_target = target_pos - pos.0;
-        let bearing = to_target.y.atan2(to_target.x) - FRAC_PI_2;
+        // Bearing toward the target if charging, 180° away if
+        // retreating. The clone always thrusts forward (+Y in
+        // local frame), so flipping the bearing flips the run.
+        let desired_world = if clone.retreating {
+            -to_target
+        } else {
+            to_target
+        };
+        let bearing = desired_world.y.atan2(desired_world.x) - FRAC_PI_2;
         let mut steer_err = bearing - cur_heading;
         while steer_err > PI {
             steer_err -= TAU;
@@ -3183,23 +3291,27 @@ pub fn tick_pkunk_aggressive_clones(
             steer_err += TAU;
         }
 
-        // Spin sign biased by spawn-side so one clone whirls left
-        // and the other whirls right.
-        let spin_sign = if clone.formation_offset_local.x < 0.0 {
-            -1.0
+        if clone.retreating {
+            // Just turn-and-burn away. No whirl — the spin is the
+            // aggro signature, not the recharge one.
+            ang_vel.0 = steer_err.signum() * derived.target_omega;
         } else {
-            1.0
-        };
-        // Blend: when far off-bearing, steer hard; once nearly
-        // on-course, hand over to the constant whirl. Result is
-        // a clone that points at the enemy long enough to commit,
-        // then spins through the kill.
-        let steer_omega = steer_err.signum() * derived.target_omega;
-        let blend = (steer_err.abs() / FRAC_PI_2).clamp(0.0, 1.0);
-        ang_vel.0 = steer_omega * blend + spin_sign * PKUNK_AGGRO_SPIN * (1.0 - blend);
+            // Charge: steering term dominates when off-bearing,
+            // constant whirl takes over once nearly on-course so
+            // the clone whirls through the kill. Whirl sign biased
+            // by spawn-side so the two clones spin opposite ways.
+            let spin_sign = if clone.formation_offset_local.x < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            let steer_omega = steer_err.signum() * derived.target_omega;
+            let blend = (steer_err.abs() / FRAC_PI_2).clamp(0.0, 1.0);
+            ang_vel.0 = steer_omega * blend + spin_sign * PKUNK_AGGRO_SPIN * (1.0 - blend);
+        }
 
-        // Always thrust. Beelines into the kill regardless of
-        // alignment — matches "aggressive beeline" feel.
+        // Always thrust forward — clones close in on or run from
+        // the enemy with the same physical action.
         thrust.0 = Vec2::new(0.0, derived.thrust_force);
     }
 }
@@ -3209,15 +3321,19 @@ pub fn tick_pkunk_aggressive_clones(
 // ----------------------------------------------------------------
 
 /// During MmrxfTransform + MmrxfUnleashing:
-///   - Lerp the ship's Transform.scale toward MMRXF_SHIP_SCALE.
+///   - Hide the underlying ship sprite so we don't see two ships
+///     stacked. The ship entity itself stays alive (collider,
+///     weapons, AI) — only the renderer is suppressed.
 ///   - Glue the unified overlay sprite to the ship's world
 ///     position and rotate it to match the ship's heading.
 ///
-/// The orig scale is restored on exit by `tick_mmrxf_needs_restore`.
+/// The ship's Visibility is restored on exit by
+/// `tick_mmrxf_needs_restore`, which now also flips Visibility
+/// back to Inherited alongside the (now no-op) scale restore.
 pub fn tick_mmrxf_transform(
     state: Res<UltimateState>,
     leader: Query<(&Position, &Rotation), With<crate::ship::Ship>>,
-    mut ship_xf: Query<&mut Transform, (With<crate::ship::Ship>, Without<MmrxfOverlaySprite>)>,
+    mut ship_vis: Query<&mut Visibility, (With<crate::ship::Ship>, Without<MmrxfOverlaySprite>)>,
     mut overlay_q: Query<
         &mut Transform,
         (With<MmrxfOverlaySprite>, Without<crate::ship::Ship>),
@@ -3234,37 +3350,29 @@ pub fn tick_mmrxf_transform(
         return;
     }
     let Some(p1) = state.player_entity else { return };
-    let Some(orig) = state.mmrxf_orig_scale else { return };
     let Ok((pos, rot)) = leader.get(p1) else { return };
 
-    // Scale ramp: 1× → MMRXF_SHIP_SCALE during Transform; hold at
-    // MMRXF_SHIP_SCALE during Unleashing.
-    let target_factor = match state.phase {
-        UltimatePhase::MmrxfTransform => {
-            let p = (state.phase_timer_s / MMRXF_TRANSFORM_S).clamp(0.0, 1.0);
-            1.0 + (MMRXF_SHIP_SCALE - 1.0) * p
+    // Hide the underlying ship sprite. The overlay (the unified
+    // "unleashed" sprite) is what the player sees instead.
+    if let Ok(mut vis) = ship_vis.get_mut(p1) {
+        if *vis != Visibility::Hidden {
+            *vis = Visibility::Hidden;
         }
-        UltimatePhase::MmrxfUnleashing => MMRXF_SHIP_SCALE,
-        _ => 1.0,
-    };
-
-    if let Ok(mut xf) = ship_xf.get_mut(p1) {
-        xf.scale = orig * target_factor;
     }
 
     // Update the overlay: glued to ship position and rotated to
     // match the ship's heading. The sprite is a single unified
     // image (not pre-rotated frames), so a direct Quat from the
     // ship's angle does the right thing. The ship sprite art is
-    // drawn facing +Y (up) — the same convention as the original
-    // ship_p00 frames — so no axis offset is needed.
+    // drawn facing +Y (up) — same convention as ship_p00 frames —
+    // so the angle math just subtracts π/2 to align the sprite.
     if let Some(overlay) = state.mmrxf_overlay_entity {
         if let Ok(mut overlay_xf) = overlay_q.get_mut(overlay) {
             overlay_xf.translation.x = pos.0.x;
             overlay_xf.translation.y = pos.0.y;
             let angle = rot.sin.atan2(rot.cos) - std::f32::consts::FRAC_PI_2;
             overlay_xf.rotation = Quat::from_rotation_z(angle);
-            overlay_xf.scale = Vec3::splat(target_factor);
+            overlay_xf.scale = Vec3::ONE;
         }
     }
 }
@@ -3354,14 +3462,17 @@ pub struct MmrxfNeedsRestore {
     pub orig: Vec3,
 }
 
-/// Consume `MmrxfNeedsRestore`: write the ship's Transform.scale
-/// back to the saved value and drop the component.
+/// Consume `MmrxfNeedsRestore`: restore the ship's Transform.scale
+/// (kept as a safety net for older code paths that may still have
+/// scaled the ship) and flip Visibility back to Inherited so the
+/// ship sprite re-appears now that the overlay is gone.
 pub fn tick_mmrxf_needs_restore(
     mut commands: Commands,
-    mut q: Query<(Entity, &MmrxfNeedsRestore, &mut Transform)>,
+    mut q: Query<(Entity, &MmrxfNeedsRestore, &mut Transform, &mut Visibility)>,
 ) {
-    for (e, restore, mut xf) in &mut q {
+    for (e, restore, mut xf, mut vis) in &mut q {
         xf.scale = restore.orig;
+        *vis = Visibility::Inherited;
         if let Ok(mut ec) = commands.get_entity(e) {
             ec.remove::<MmrxfNeedsRestore>();
         }
