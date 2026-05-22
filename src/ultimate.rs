@@ -111,6 +111,13 @@ pub struct UltimateState {
     pub orig_cam_scale: f32,
     pub portrait_entity: Option<Entity>,
     pub portrait_material: Option<Handle<PortraitMaterial>>,
+    /// Animated 0..1 zip-in fraction for the portrait sprite. 1.0
+    /// = fully in (anchored to the screen-left, aligned with the
+    /// player's status panel). 0.0 = fully off-screen left.
+    /// Eased toward 1.0 during DramaticZoomIn and toward 0.0
+    /// during every other phase, so the portrait "zips" in when
+    /// time freezes and "zips" back out when time resumes.
+    pub portrait_in_t: f32,
     pub was_paused: bool,
     /// Blade world-angle on the previous Update tick. We interpolate
     /// between this and the current angle when emitting trails, so
@@ -787,6 +794,9 @@ fn hyper_trigger(
     state.orig_ship_scale = Some(ship_xf.scale);
     state.phase = UltimatePhase::DramaticZoomIn;
     state.phase_timer_s = 0.0;
+    // Portrait starts fully off-screen on the left; the camera-
+    // drive system eases it in during DramaticZoomIn.
+    state.portrait_in_t = 0.0;
 
     // Mesh handles come from the `UltimateMeshes` resource —
     // built once at Startup. Cloning a strong handle keeps the
@@ -1287,6 +1297,7 @@ fn exit_cinematic(
     state.beam_materials.clear();
     state.portrait_material = None;
     state.portrait_aspect = 0.0;
+    state.portrait_in_t = 0.0;
     zoom_state.target_scale = state.orig_cam_scale;
     state.phase = UltimatePhase::Idle;
     state.phase_timer_s = 0.0;
@@ -1319,8 +1330,11 @@ fn abort_cinematic_if_ship_gone(
 // ----------------------------------------------------------------
 
 fn drive_camera_during_ultimate(
-    state: Res<UltimateState>,
+    time: Res<Time<Real>>,
+    mut state: ResMut<UltimateState>,
     ships: Query<&Position, With<Ship>>,
+    ship_lookup: Query<&Ship>,
+    windows: Query<&Window>,
     mut cameras: Query<
         (&mut Transform, &mut Projection),
         (
@@ -1551,33 +1565,92 @@ fn drive_camera_during_ultimate(
         }
         let scale = final_scale;
 
+        // Portrait zip animation: ease portrait_in_t toward 1.0
+        // during DramaticZoomIn (time is frozen — portrait is on
+        // screen), toward 0.0 in every other phase (time has
+        // resumed — portrait zips back out). 0.12s in / 0.18s out
+        // is fast enough to read as a snap but slow enough that
+        // the eye sees the motion.
+        const ZIP_IN_S: f32 = 0.12;
+        const ZIP_OUT_S: f32 = 0.18;
+        let target = if matches!(state.phase, UltimatePhase::DramaticZoomIn) {
+            1.0
+        } else {
+            0.0
+        };
+        let rate = if target > state.portrait_in_t {
+            1.0 / ZIP_IN_S
+        } else {
+            1.0 / ZIP_OUT_S
+        };
+        let dt = time.delta_secs();
+        let step = (target - state.portrait_in_t).signum() * rate * dt;
+        // Don't overshoot the target.
+        if (target - state.portrait_in_t).abs() <= step.abs() {
+            state.portrait_in_t = target;
+        } else {
+            state.portrait_in_t += step;
+        }
+        let in_t = state.portrait_in_t.clamp(0.0, 1.0);
+        // Cubic ease-out so the slide-in lands gently.
+        let eased = 1.0 - (1.0 - in_t).powi(3);
+
         if let Ok(mut portrait_xf) = portraits.single_mut() {
-            // Anchor portrait to lower-right of camera in world
-            // coords; offsets scale with `scale` so the portrait
-            // stays in the same place on screen regardless of zoom.
-            let off_x = 150.0 * scale;
-            let off_y = -60.0 * scale;
-            let z = portrait_xf.translation.z;
-            portrait_xf.translation = cam_xf.translation + Vec3::new(off_x, off_y, 0.0);
-            portrait_xf.translation.z = z;
-            // Preserve the source image's aspect ratio, and cap
-            // the longer screen dimension so a landscape portrait
-            // (Chenjesu) doesn't fill the screen. MAX_SCREEN_DIM
-            // keeps the portrait around 1/5 of the canonical
-            // 1280-px window in area regardless of orientation.
-            const MAX_SCREEN_DIM: f32 = 450.0;
+            // Portrait sized for the side-panel layout — smaller
+            // than the old centre-stage placement so it fits
+            // vertically alongside one of the two status panels.
+            const MAX_SCREEN_DIM_PX: f32 = 320.0;
             let aspect = if state.portrait_aspect > 0.0 {
                 state.portrait_aspect
             } else {
                 620.0 / 930.0
             };
             let (w_px, h_px) = if aspect >= 1.0 {
-                (MAX_SCREEN_DIM, MAX_SCREEN_DIM / aspect)
+                (MAX_SCREEN_DIM_PX, MAX_SCREEN_DIM_PX / aspect)
             } else {
-                (MAX_SCREEN_DIM * aspect, MAX_SCREEN_DIM)
+                (MAX_SCREEN_DIM_PX * aspect, MAX_SCREEN_DIM_PX)
             };
-            portrait_xf.scale =
-                Vec3::new(w_px * scale, h_px * scale, 1.0);
+
+            // Window size for screen-edge anchoring. Fall back to
+            // the canonical 1280×720 if we can't read the window.
+            let (win_w, win_h) = match windows.single() {
+                Ok(w) => (w.width().max(1.0), w.height().max(1.0)),
+                Err(_) => (1280.0, 720.0),
+            };
+            let half_w_px = win_w * 0.5;
+            let half_h_px = win_h * 0.5;
+            /// Pixel inset from the window's left edge to the
+            /// portrait's left edge when fully zipped in. Roughly
+            /// matches the 12 px panel padding on the right-side
+            /// HUD column.
+            const LEFT_MARGIN_PX: f32 = 12.0;
+            // World-space conversion: 1 screen px = `scale` world units.
+            let rest_x_world = (-half_w_px + LEFT_MARGIN_PX + w_px * 0.5) * scale;
+            let off_x_world = (-half_w_px - w_px * 0.5 - LEFT_MARGIN_PX) * scale;
+            let x_world = off_x_world + (rest_x_world - off_x_world) * eased;
+
+            // Vertical: align the portrait's centre with the
+            // centre of the player's status panel. Right-edge HUD
+            // splits the column SpaceBetween; for a 720 px window
+            // each panel is centred around y = ±half_h * 0.49.
+            // Slot 0 (P1) → top → +y in world. Slot 1 (P2) → bottom.
+            let slot = state
+                .player_entity
+                .and_then(|e| ship_lookup.get(e).ok())
+                .map(|s| s.player_slot)
+                .unwrap_or(0);
+            let y_anchor_frac: f32 = 0.49;
+            let y_world = if slot == 0 {
+                half_h_px * y_anchor_frac * scale
+            } else {
+                -half_h_px * y_anchor_frac * scale
+            };
+
+            let z = portrait_xf.translation.z;
+            portrait_xf.translation = cam_xf.translation
+                + Vec3::new(x_world, y_world, 0.0);
+            portrait_xf.translation.z = z;
+            portrait_xf.scale = Vec3::new(w_px * scale, h_px * scale, 1.0);
         }
     }
 }
