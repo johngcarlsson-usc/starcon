@@ -278,7 +278,7 @@ const EARTH_CHARGE_S: f32 = 0.55;
 const EARTH_STRETCH_S: f32 = 0.30;
 const EARTH_BLAST_S: f32 = 3.0;
 /// How much faster than `speed_max` the ship goes during the blast.
-const EARTH_BLAST_SPEED_MULT: f32 = 8.0;
+const EARTH_BLAST_SPEED_MULT: f32 = 12.0;
 /// Crew damage applied per second to anything overlapping the
 /// blasting ship. Enormous on purpose — the move should one-shot
 /// almost anything in its path.
