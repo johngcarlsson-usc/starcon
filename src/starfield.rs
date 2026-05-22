@@ -82,6 +82,15 @@ pub struct ZoomState {
     /// Manual + sets this to (now + REVERT_DELAY_S). Press `C`
     /// to flip permanently (sets this to f32::INFINITY).
     pub manual_revert_at: f32,
+    /// Set true by `reset_for_new_match` (OnEnter(InMatch)).
+    /// The next Update tick of `follow_ships_with_camera` reads
+    /// it, snaps the camera + scale to the tight bounding box,
+    /// and clears the flag. This is the only reliable way to
+    /// fit the bbox on the FIRST rendered frame of a match —
+    /// OnEnter's commands aren't flushed by the time other
+    /// OnEnter systems run, so reading ship positions in
+    /// OnEnter sometimes finds zero ships.
+    pub pending_initial_snap: bool,
 }
 
 /// Captured at the moment of a scroll event: `offset_px` is the
@@ -103,6 +112,7 @@ impl Default for ZoomState {
             pivot: None,
             last_ship_count: 0,
             manual_revert_at: 0.0,
+            pending_initial_snap: false,
         }
     }
 }
@@ -563,12 +573,30 @@ fn follow_ships_with_camera(
         cur
     };
 
-    // First-frame detection: if we just transitioned from 0 ships
-    // to ≥1 (match start / rematch), snap the camera + scale to
-    // the bounding box instead of slowly easing in from wherever
-    // the camera was sitting before.
-    let snap = zoom_state.last_ship_count == 0 && count > 0;
+    // Snap conditions: either a 0→N transition was missed
+    // somehow, or `pending_initial_snap` was set by
+    // `reset_for_new_match` on the most recent OnEnter(InMatch).
+    // Both fire the same tighten-on-this-frame path.
+    let snap_transition = zoom_state.last_ship_count == 0 && count > 0;
+    let snap_pending = zoom_state.pending_initial_snap;
+    let snap = snap_transition || snap_pending;
     zoom_state.last_ship_count = count;
+    if snap_pending {
+        zoom_state.pending_initial_snap = false;
+    }
+
+    // On snap, use a *tight* framing (small PAD_WU equivalent)
+    // because the player explicitly wants "the smallest bounding
+    // box because the game is starting". We recompute against a
+    // smaller padding so the camera snap doesn't inherit the
+    // generous mid-game padding.
+    let snap_scale = {
+        const SNAP_PAD_WU: f32 = 200.0;
+        let needed_tight = span + Vec2::splat(SNAP_PAD_WU * 2.0);
+        let sx = needed_tight.x / win.x;
+        let sy = needed_tight.y / win.y;
+        sx.max(sy).clamp(SCALE_MIN, SCALE_MAX)
+    };
 
     let dt = time.delta_secs();
     let blend = if snap { 1.0 } else { (4.0 * dt).min(1.0) };
@@ -580,22 +608,25 @@ fn follow_ships_with_camera(
             // Match the actual orthographic scale as well so the
             // first rendered frame already fits the bbox.
             if let Projection::Orthographic(ref mut ortho) = *projection {
-                ortho.scale = raw_scale * 1.05;
+                ortho.scale = snap_scale;
             }
         }
     }
+    let final_target = if snap { snap_scale } else { target_scale };
     let cur = zoom_state.target_scale;
-    zoom_state.target_scale = cur + (target_scale - cur) * blend;
+    zoom_state.target_scale = cur + (final_target - cur) * blend;
 }
 
-/// Reset the snap-detection counter whenever a new match begins so
-/// the first follow tick reliably triggers a 0→N transition + snap.
-/// Without this, the `last_ship_count` carried over from the previous
-/// match would stay equal to the new ship count and the snap branch
-/// in `follow_ships_with_camera` would never fire.
+/// Set the `pending_initial_snap` flag so the very next Update
+/// tick of `follow_ships_with_camera` writes camera position and
+/// orthographic scale directly to fit the bounding box, regardless
+/// of the current ZoomState. Doing the actual write here is
+/// fragile — OnEnter(InMatch)'s commands haven't been flushed when
+/// this runs, so a ships-query may return zero. Deferring to the
+/// next Update guarantees commands have been applied and ships
+/// are visible.
 pub fn reset_for_new_match(mut zoom_state: ResMut<ZoomState>) {
     zoom_state.last_ship_count = 0;
-    // Force the next follow tick to take the snap branch even if
-    // the camera was at the right place before the rematch.
     zoom_state.manual_revert_at = 0.0;
+    zoom_state.pending_initial_snap = true;
 }

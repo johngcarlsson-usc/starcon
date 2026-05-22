@@ -390,16 +390,39 @@ pub struct BeamTrail {
     pub width_growth: f32,
 }
 
+/// Strong-handle holders for the ultimate cinematic's meshes. Bevy
+/// considers `uuid_handle!` constants to be `Handle::Uuid` — which
+/// per the docs "does not necessarily reference a live asset, nor
+/// will it keep assets alive". With our asset preload pushing
+/// pressure on the GC, those weak handles dropped and the blade /
+/// portrait stopped rendering. The fix is to keep strong handles
+/// in a resource: insert the mesh assets at Startup, store the
+/// strong handles here, hand out clones from inside the
+/// cinematic code. Strong clones keep the asset alive.
+#[derive(Resource, Default)]
+pub struct UltimateMeshes {
+    pub quad: Handle<Mesh>,
+    pub blade: Handle<Mesh>,
+}
+
 #[derive(Component)]
 pub struct UltimatePortraitTag;
 
 /// Marker on the audio entity playing the Arilou ultimate voice
-/// line. When this entity gets despawned (PlaybackSettings::DESPAWN
-/// fires when the clip ends), `watch_arilou_voice_end` picks up
-/// the removal via `RemovedComponents` and immediately spawns the
-/// stinger SFX so it lands right on the heel of the voice.
+/// line. (Stinger SFX is no longer triggered on its despawn —
+/// see `tick_arilou_stinger` for the new timing.)
 #[derive(Component)]
 pub struct ArilouVoicePlayer;
+
+/// Stinger SFX entity spawned at the start of `ArilouUnleashing`.
+/// `tick_arilou_stinger` fades its volume from 1.0 → 0.0 over the
+/// attack window so the SFX matches the duration of the
+/// blade-swing, then despawns at end.
+#[derive(Component)]
+pub struct ArilouStinger {
+    pub total_s: f32,
+    pub remaining_s: f32,
+}
 
 // ----------------------------------------------------------------
 // Plugin.
@@ -415,6 +438,8 @@ impl Plugin for UltimatePlugin {
             Material2dPlugin::<SoftBladeMaterial>::default(),
         ))
         .init_resource::<UltimateState>()
+        .init_resource::<UltimateMeshes>()
+        .add_systems(Startup, build_ultimate_meshes)
         // Bevy's tuple Bundle impl tops out at ~16 systems per
         // chain. Split the cinematic pipeline into two phases —
         // the second strictly follows the first (chain across the
@@ -450,7 +475,8 @@ impl Plugin for UltimatePlugin {
                 tick_slylandro_glow,
                 tick_asteroid_ghosts,
                 handle_slylandro_asteroid_hits,
-                watch_arilou_voice_end,
+                spawn_arilou_stinger_on_unleash,
+                tick_arilou_stinger,
             )
                 .chain(),
         );
@@ -616,8 +642,8 @@ fn hyper_trigger(
     ship_pose: Query<(&Position, &Rotation), With<Ship>>,
     catalog: Res<crate::ship::ShipCatalog>,
     ship_colliders: Res<crate::collider::ShipColliders>,
+    ultimate_meshes: Res<UltimateMeshes>,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PortraitMaterial>>,
     mut glow_materials: ResMut<Assets<GlowMaterial>>,
     mut color_mats: ResMut<Assets<SoftBladeMaterial>>,
@@ -650,42 +676,11 @@ fn hyper_trigger(
     state.phase = UltimatePhase::DramaticZoomIn;
     state.phase_timer_s = 0.0;
 
-    if meshes.get(&QUAD_MESH_HANDLE).is_none() {
-        let _ = meshes.insert(&QUAD_MESH_HANDLE, Rectangle::new(1.0, 1.0).into());
-    }
-    if meshes.get(&BLADE_MESH_HANDLE).is_none() {
-        // Apex at local (0, 0) → at the ship. Base at (±0.5, 1) →
-        // expands outward to the tip. `Transform.scale = (width,
-        // length, 1)` shapes it into the desired cone. We build
-        // the mesh by hand instead of using Triangle2d::into() so
-        // we can write barycentric weights into UV_0 — the
-        // soft_blade.wgsl shader reads them to feather the edges.
-        use bevy::asset::RenderAssetUsages;
-        use bevy::mesh::{Indices, PrimitiveTopology};
-        let mut tri = Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD,
-        );
-        tri.insert_attribute(
-            Mesh::ATTRIBUTE_POSITION,
-            vec![[0.0, 0.0, 0.0], [-0.5, 1.0, 0.0], [0.5, 1.0, 0.0]],
-        );
-        // Barycentric weights as UVs. Each vertex sets one
-        // coordinate to 1, the rest to 0; inside the triangle,
-        // interpolated (u, v, 1-u-v) gives the barycentric coords
-        // — the shader uses `min` of those three as the edge
-        // distance for the soft-fade.
-        tri.insert_attribute(
-            Mesh::ATTRIBUTE_UV_0,
-            vec![[1.0_f32, 0.0_f32], [0.0_f32, 0.0_f32], [0.0_f32, 1.0_f32]],
-        );
-        tri.insert_attribute(
-            Mesh::ATTRIBUTE_NORMAL,
-            vec![[0.0_f32, 0.0, 1.0]; 3],
-        );
-        tri.insert_indices(Indices::U32(vec![0, 1, 2]));
-        let _ = meshes.insert(&BLADE_MESH_HANDLE, tri);
-    }
+    // Mesh handles come from the `UltimateMeshes` resource —
+    // built once at Startup. Cloning a strong handle keeps the
+    // asset alive while any entity holds it.
+    let quad_mesh = ultimate_meshes.quad.clone();
+    let blade_mesh = ultimate_meshes.blade.clone();
 
     // Portrait: Mesh2d + custom material with radial alpha fade.
     // Path is per-variant so each captain gets their own art.
@@ -696,7 +691,7 @@ fn hyper_trigger(
     let portrait = commands
         .spawn((
             UltimatePortraitTag,
-            Mesh2d(QUAD_MESH_HANDLE.clone()),
+            Mesh2d(quad_mesh.clone()),
             MeshMaterial2d(material.clone()),
             Transform::from_scale(Vec3::new(620.0, 930.0, 1.0))
                 .with_translation(Vec3::new(0.0, 0.0, 60.0)),
@@ -723,7 +718,7 @@ fn hyper_trigger(
                 let id = commands
                     .spawn((
                         UltimateBeam { layer },
-                        Mesh2d(BLADE_MESH_HANDLE.clone()),
+                        Mesh2d(blade_mesh.clone()),
                         MeshMaterial2d(mat_handle.clone()),
                         Transform::from_translation(Vec3::new(0.0, 0.0, z)),
                         Visibility::Hidden,
@@ -744,7 +739,7 @@ fn hyper_trigger(
             let id = commands
                 .spawn((
                     LightspeedGlow,
-                    Mesh2d(QUAD_MESH_HANDLE.clone()),
+                    Mesh2d(quad_mesh.clone()),
                     MeshMaterial2d(glow_mat.clone()),
                     // Roughly 3× ship's pre-rotated sprite footprint
                     // — big enough that the halo extends well past
@@ -1406,6 +1401,7 @@ fn tick_ultimate_beams(
     mut crews: Query<&mut Crew>,
     mut beams: Query<(&UltimateBeam, &mut Transform, &Visibility), Without<BeamTrail>>,
     mut color_mats: ResMut<Assets<SoftBladeMaterial>>,
+    ultimate_meshes: Res<UltimateMeshes>,
     mut commands: Commands,
 ) {
     if state.phase == UltimatePhase::Idle {
@@ -1593,7 +1589,7 @@ fn tick_ultimate_beams(
                     drift_vel,
                     width_growth,
                 },
-                Mesh2d(BLADE_MESH_HANDLE.clone()),
+                Mesh2d(ultimate_meshes.blade.clone()),
                 MeshMaterial2d(mat_handle),
                 Transform {
                     translation: owner_pos.extend(z - 0.05 - layer as f32 * 0.01),
@@ -1786,6 +1782,7 @@ fn tick_earthling_blast(
     mut lin_vels: Query<&mut LinearVelocity, With<Ship>>,
     mut crews: Query<&mut Crew>,
     mut color_mats: ResMut<Assets<SoftBladeMaterial>>,
+    ultimate_meshes: Res<UltimateMeshes>,
     mut commands: Commands,
 ) {
     if state.variant != UltimateVariant::Earthling
@@ -2701,27 +2698,100 @@ fn handle_slylandro_asteroid_hits(
     }
 }
 
-/// Watch the Arilou voice playback entity for despawn — when it
-/// happens, fire the stinger SFX so it lands the instant the voice
-/// ends. `RemovedComponents` yields the entities whose
-/// `ArilouVoicePlayer` was removed this frame, which (because the
-/// component is only on the voice entity and that entity has
-/// `PlaybackSettings::DESPAWN`) coincides exactly with the voice
-/// finishing playback.
-fn watch_arilou_voice_end(
-    mut removed: RemovedComponents<ArilouVoicePlayer>,
+/// Spawn the Arilou stinger SFX the instant the cinematic enters
+/// `ArilouUnleashing` (i.e. exactly when the blade swings start)
+/// and tag it with `ArilouStinger` carrying the attack duration.
+/// `tick_arilou_stinger` then fades the AudioSink volume linearly
+/// over that window so the SFX matches the attack's lifetime.
+fn spawn_arilou_stinger_on_unleash(
+    state: Res<UltimateState>,
     mut commands: Commands,
     assets: Res<AssetServer>,
+    mut local_started: Local<bool>,
 ) {
-    let mut fired = false;
-    for _ in removed.read() {
-        if fired {
+    let active = state.variant == UltimateVariant::Arilou
+        && state.phase == UltimatePhase::ArilouUnleashing;
+    if !active {
+        // Reset for next cinematic.
+        *local_started = false;
+        return;
+    }
+    if *local_started {
+        return;
+    }
+    *local_started = true;
+    commands.spawn((
+        AudioPlayer::<AudioSource>(assets.load("ultimate/arisk_stinger.mp3")),
+        PlaybackSettings::DESPAWN,
+        ArilouStinger {
+            total_s: PHASE_UNLEASH_S,
+            remaining_s: PHASE_UNLEASH_S,
+        },
+    ));
+}
+
+/// Fade the Arilou stinger SFX volume linearly from 1.0 → 0.0 over
+/// its attack window; despawn the entity at zero so the cinematic
+/// finishes clean. AudioSink is added by bevy_audio once playback
+/// actually starts, so we look it up via the Option<&AudioSink>
+/// query and only call .set_volume() once it's present.
+fn tick_arilou_stinger(
+    time: Res<Time<Real>>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut ArilouStinger, Option<&mut AudioSink>)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut stinger, sink) in &mut q {
+        stinger.remaining_s -= dt;
+        if stinger.remaining_s <= 0.0 {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
             continue;
         }
-        fired = true;
-        commands.spawn((
-            AudioPlayer::<AudioSource>(assets.load("ultimate/arisk_stinger.mp3")),
-            PlaybackSettings::DESPAWN,
-        ));
+        if let Some(mut sink) = sink {
+            let frac = (stinger.remaining_s / stinger.total_s).clamp(0.0, 1.0);
+            sink.set_volume(bevy::audio::Volume::Linear(frac));
+        }
     }
+}
+
+/// Builds the quad and triangle meshes at Startup, inserts them
+/// into the Mesh asset registry, and stashes STRONG handles in
+/// `UltimateMeshes` so they survive asset GC. The cinematic code
+/// then hands out clones of those strong handles instead of
+/// relying on the (now-deprecated) `uuid_handle!` consts, which
+/// were `Handle::Uuid` and didn't keep their referent alive.
+pub fn build_ultimate_meshes(
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut ultimate_meshes: ResMut<UltimateMeshes>,
+) {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+
+    // 1×1 quad for the portrait + glow halo. Width/height come
+    // from `Transform.scale`.
+    ultimate_meshes.quad = meshes.add(Rectangle::new(1.0, 1.0));
+
+    // Isosceles triangle with apex at local (0, 0), base at
+    // (±0.5, 1). Custom UVs encode the per-vertex barycentric
+    // weights for the soft-edge shader to read.
+    let mut tri = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    tri.insert_attribute(
+        Mesh::ATTRIBUTE_POSITION,
+        vec![[0.0, 0.0, 0.0], [-0.5, 1.0, 0.0], [0.5, 1.0, 0.0]],
+    );
+    tri.insert_attribute(
+        Mesh::ATTRIBUTE_UV_0,
+        vec![[1.0_f32, 0.0_f32], [0.0_f32, 0.0_f32], [0.0_f32, 1.0_f32]],
+    );
+    tri.insert_attribute(
+        Mesh::ATTRIBUTE_NORMAL,
+        vec![[0.0_f32, 0.0, 1.0]; 3],
+    );
+    tri.insert_indices(Indices::U32(vec![0, 1, 2]));
+    ultimate_meshes.blade = meshes.add(tri);
 }
