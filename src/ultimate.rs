@@ -146,10 +146,18 @@ pub struct UltimateState {
 /// were the original ship — the player effectively controls a
 /// formation of three identical ships at once for `remaining_s`
 /// seconds before the clone fades out and despawns.
+///
+/// `reveal_at_pan_t` is the PkunkPan timer fraction (0..1) at
+/// which this clone should start warping into view. We hide the
+/// clone (alpha = 0) until the camera reaches its position; once
+/// the threshold is crossed, `warp_in_t` ramps from 0 → 1 over
+/// ~0.15 s for a snap-in pop.
 #[derive(Component, Debug)]
 pub struct PkunkClone {
     pub remaining_s: f32,
     pub total_s: f32,
+    pub reveal_at_pan_t: f32,
+    pub warp_in_t: f32,
 }
 
 /// Yehat ultimate sub-entity — a fighter orbiting the parent
@@ -660,14 +668,18 @@ fn hyper_trigger(
                 let side = PKUNK_FORMATION_SIDE;
                 // Local-frame offsets for the two trailing
                 // vertices (the player's ship is the lead vertex).
+                // The order matters: index 0 is revealed by the
+                // first pan beat, index 1 by the second. Match
+                // the sub-phase thresholds in
+                // `drive_camera_during_ultimate`.
                 let local_offsets = [
-                    Vec2::new(-side * 0.5, -side * 0.5 * 1.732_050_8),
-                    Vec2::new( side * 0.5, -side * 0.5 * 1.732_050_8),
+                    (Vec2::new(-side * 0.5, -side * 0.5 * 1.732_050_8), 0.20_f32),
+                    (Vec2::new( side * 0.5, -side * 0.5 * 1.732_050_8), 0.45_f32),
                 ];
                 let rot_angle = rot.sin.atan2(rot.cos);
                 let cos = rot.cos;
                 let sin = rot.sin;
-                for offset in local_offsets {
+                for (offset, reveal_at) in local_offsets {
                     let world_offset = Vec2::new(
                         offset.x * cos - offset.y * sin,
                         offset.x * sin + offset.y * cos,
@@ -686,6 +698,8 @@ fn hyper_trigger(
                         commands.entity(clone_entity).insert(PkunkClone {
                             remaining_s: PKUNK_FORMATION_S,
                             total_s: PKUNK_FORMATION_S,
+                            reveal_at_pan_t: reveal_at,
+                            warp_in_t: 0.0,
                         });
                         state.pkunk_clones.push(clone_entity);
                     }
@@ -829,17 +843,27 @@ fn tick_ultimate_phases(
         }
     }
 
-    if let Ok(mut av) = ships.get_mut(p1) {
-        av.0 = match state.variant {
-            UltimateVariant::Arilou => spin,
-            // Earthling locks orientation so the blast goes straight.
-            _ => 0.0,
-        };
+    // The Pkunk ultimate is unusual: the player should keep
+    // *normal* input control of the original ship during
+    // PkunkFormation so they can fly all three in formation. So we
+    // skip the HyperActive lock + the forced ang_vel write for
+    // Pkunk entirely. (During the paused Pkunk phases nothing
+    // integrates anyway, so leaving these alone doesn't break
+    // anything.)
+    if state.variant != UltimateVariant::Pkunk {
+        if let Ok(mut av) = ships.get_mut(p1) {
+            av.0 = match state.variant {
+                UltimateVariant::Arilou => spin,
+                // Earthling locks orientation so the blast goes
+                // straight.
+                _ => 0.0,
+            };
+        }
+        commands.entity(p1).insert(HyperActive {
+            forced_ang_vel: spin,
+            beam_width_mult: if beam_visible { 1.0 } else { 0.0 },
+        });
     }
-    commands.entity(p1).insert(HyperActive {
-        forced_ang_vel: spin,
-        beam_width_mult: if beam_visible { 1.0 } else { 0.0 },
-    });
 
     if state.phase_timer_s >= phase_total {
         state.phase_timer_s = 0.0;
@@ -2075,27 +2099,18 @@ fn tick_shofixti_nova(
     // The nova damage zone — covers a huge radius, ticks for a
     // brief moment. damage_per_sec is enormous so anything caught
     // in the radius dies within the half-second lifetime.
-    commands.spawn((
-        crate::ship::DamageZone {
-            radius: SHOSC_NOVA_RADIUS,
-            damage_per_sec: 2000.0,
-            lifetime: SHOSC_NOVA_S,
-            source: None, // friendly fire ON — canon Glory kills self
-        },
-        Sprite {
-            color: Color::srgba(1.0, 0.95, 0.6, 0.55),
-            custom_size: Some(Vec2::splat(SHOSC_NOVA_RADIUS * 2.0)),
-            ..default()
-        },
-        Transform::from_translation(world.extend(0.4)),
-        RigidBody::Static,
-        Collider::circle(SHOSC_NOVA_RADIUS),
-        Sensor,
-        Position(world),
-        Rotation::IDENTITY,
-        CollidingEntities::default(),
-        CollisionEventsEnabled,
-    ));
+    // Reuse the existing spawn_damage_zone helper so the bundle
+    // shape matches what tick_damage_zones expects (manual spawns
+    // ran into Bevy `#[require]` conflicts with Avian).
+    crate::ship::spawn_damage_zone(
+        &mut commands,
+        None, // friendly-fire ON — canon Glory kills self
+        world,
+        SHOSC_NOVA_RADIUS,
+        2000.0,
+        SHOSC_NOVA_S,
+        Color::srgba(1.0, 0.95, 0.6, 0.55),
+    );
 
     // The Scout sacrifices itself in canon — set crew to 0 so the
     // post-match flow picks up the loss.
@@ -2147,20 +2162,43 @@ fn tick_pkunk_clones(
 /// is just a write to a different field.
 fn tick_pkunk_clone_visual(
     time: Res<Time<Real>>,
-    mut clones: Query<(&PkunkClone, &mut Sprite)>,
+    state: Res<UltimateState>,
+    mut clones: Query<(&mut PkunkClone, &mut Sprite)>,
 ) {
     let t = time.elapsed_secs();
-    for (clone, mut sprite) in &mut clones {
-        // Pulse along magenta ↔ cyan over ~1 s for a clear
-        // "ephemeral / chaotic" feel that Pkunk's identity invites.
+    // PkunkPan timer fraction (0..1) — clones use this against
+    // their own `reveal_at_pan_t` to decide if they should be
+    // warping into view yet. Before PkunkPan: stay hidden.
+    // After PkunkPan ends: all clones are revealed.
+    let pan_t = match state.phase {
+        UltimatePhase::PkunkSummoning => 0.0,
+        UltimatePhase::PkunkPan => {
+            (state.phase_timer_s / PKUNK_PAN_S).clamp(0.0, 1.0)
+        }
+        UltimatePhase::PkunkFormation => 1.0,
+        _ => 0.0,
+    };
+    let dt = time.delta_secs();
+    for (mut clone, mut sprite) in &mut clones {
+        // Ramp warp_in_t toward the target (1 once the camera has
+        // arrived at this clone's spot, 0 before). 0.15 s to fully
+        // pop in — fast enough to feel like a snap-warp, slow
+        // enough that the eye registers it.
+        let target = if pan_t >= clone.reveal_at_pan_t { 1.0 } else { 0.0 };
+        let direction = (target - clone.warp_in_t).signum();
+        clone.warp_in_t =
+            (clone.warp_in_t + direction * (1.0 / 0.15) * dt).clamp(0.0, 1.0);
+
+        // Pulsing magenta ↔ cyan tint for the ephemeral feel.
         let phase = (t * 4.0).sin() * 0.5 + 0.5;
         let r = 1.0;
         let g = 0.45 + 0.4 * phase;
         let b = 0.85 + 0.15 * (1.0 - phase);
-        // Linear alpha fade over the lifetime so the clone visibly
-        // "wears thin" as it expires.
+        // Alpha fades with both warp-in (snap-pop) and remaining
+        // lifetime (visibly wears thin as the timer runs out).
         let life = (clone.remaining_s / clone.total_s).clamp(0.0, 1.0);
-        let alpha = 0.45 + 0.45 * life;
+        let life_alpha = 0.45 + 0.45 * life;
+        let alpha = life_alpha * clone.warp_in_t;
         sprite.color = Color::srgba(r, g, b, alpha);
     }
 }
