@@ -719,7 +719,10 @@ impl Plugin for ShipPlugin {
                 handle_mode_contact_damage,
             ),
         )
-        .add_systems(Update, (swap_rotation_frame, update_overlay_sprites));
+        .add_systems(
+            Update,
+            (swap_rotation_frame, update_overlay_sprites, tick_invisible_visual),
+        );
     }
 }
 
@@ -2391,6 +2394,7 @@ fn apply_player_input(
         &mut LastTurnInput,
         Option<&InertialessDrive>,
         Option<&crate::ultimate::HyperActive>,
+        Option<&crate::ultimate::PostUltimateCoasting>,
     )>,
 ) {
     for (
@@ -2406,6 +2410,7 @@ fn apply_player_input(
         mut last_turn,
         inertialess,
         hyper,
+        coasting,
     ) in &mut q
     {
         // Ultimate cinematic: force-locked spin; skip player ang_vel
@@ -2413,6 +2418,55 @@ fn apply_player_input(
         if hyper.is_some() {
             torque.0 = 0.0;
             thrust.0 = Vec2::ZERO;
+            continue;
+        }
+
+        // Post-ultimate coasting: ship is over-speed. Player still
+        // steers (normal angular control), but THRUST is reinterpreted
+        // as a brake — applies a force opposite to current velocity
+        // so the player can shed the over-speed deliberately. Without
+        // input the ship just coasts (cap_velocity is suppressed for
+        // this ship until speed drops back under speed_max).
+        if coasting.is_some() {
+            let input = input::read_local_input_with_virtual(
+                &keys,
+                Some(&virt),
+                ship.player_slot,
+            );
+            // Steering: keep normal Classic snap behaviour so the
+            // player can re-orient mid-coast.
+            let dir = if input.pressed(input::INPUT_LEFT) {
+                1.0
+            } else if input.pressed(input::INPUT_RIGHT) {
+                -1.0
+            } else {
+                0.0
+            };
+            ang_vel.0 = dir * derived.target_omega;
+            torque.0 = 0.0;
+            last_turn.had_input = dir != 0.0;
+
+            if input.pressed(input::INPUT_THRUST) {
+                // Brake: force opposite to current velocity. Use the
+                // ship's normal thrust_force magnitude so braking
+                // feels symmetric with acceleration. ConstantLocalForce
+                // is in the ship's local frame, so rotate the
+                // world-space brake vector into local space.
+                let v = lin_vel.0;
+                let speed = v.length();
+                if speed > 1.0 {
+                    let world_brake = -v / speed;
+                    let local_brake = Vec2::new(
+                        world_brake.x * rot.cos + world_brake.y * rot.sin,
+                        -world_brake.x * rot.sin + world_brake.y * rot.cos,
+                    );
+                    thrust.0 = local_brake * derived.thrust_force;
+                } else {
+                    thrust.0 = Vec2::ZERO;
+                }
+            } else {
+                thrust.0 = Vec2::ZERO;
+            }
             continue;
         }
         let rot_cos = rot.cos;
@@ -2596,19 +2650,34 @@ fn swap_rotation_frame(mut q: Query<(&Rotation, &ShipFrames, &mut Sprite, &mut T
 /// current velocity, curving the trajectory without ever exceeding
 /// the magnitude cap.
 fn cap_velocity(
+    mut commands: Commands,
     mut q: Query<(
+        Entity,
         &ShipPhysicsDerived,
         &mut LinearVelocity,
         Option<&crate::ultimate::HyperActive>,
+        Option<&crate::ultimate::PostUltimateCoasting>,
     )>,
 ) {
-    for (derived, mut vel, hyper) in &mut q {
+    for (entity, derived, mut vel, hyper, coasting) in &mut q {
         // Skip ships mid-ultimate — the lightspeed jump deliberately
         // exceeds speed_max for the duration of the cinematic.
         if hyper.is_some() {
             continue;
         }
         let speed = vel.0.length();
+        if coasting.is_some() {
+            // Post-ultimate: don't clamp. Once the ship has shed
+            // its over-speed (via braking + damping) and is back
+            // under speed_max, remove the marker so cap_velocity
+            // resumes normal duty.
+            if speed <= derived.speed_max * 1.02 && derived.speed_max > 0.0 {
+                commands
+                    .entity(entity)
+                    .remove::<crate::ultimate::PostUltimateCoasting>();
+            }
+            continue;
+        }
         if speed > derived.speed_max && derived.speed_max > 0.0 {
             vel.0 = vel.0 / speed * derived.speed_max;
         }
@@ -2819,6 +2888,12 @@ pub struct Beam {
     pub remaining: f32,
     /// Visual half-thickness of the beam in world units.
     pub width: f32,
+    /// Damage accumulator (in SC2-frame units). FixedUpdate may
+    /// tick faster than the canonical 20 fps, so we accumulate
+    /// `dt * 20` here each tick and only apply `damage_per_tick`
+    /// once it crosses 1.0 — matches canon damage-per-frame
+    /// regardless of how often we tick.
+    pub damage_accum: f32,
 }
 
 /// Spawn a beam entity owned by `owner`. The beam follows the owner
@@ -2864,6 +2939,7 @@ pub(crate) fn spawn_beam(
             auto_aim,
             remaining: duration_s,
             width,
+            damage_accum: 0.0,
         },
         Sprite::from_color(color, Vec2::new(0.0, 0.0)),
         Transform::from_translation(world_origin.extend(0.3)),
@@ -3826,6 +3902,7 @@ fn handle_projectile_hits(
     mut crews: Query<&mut Crew>,
     mut batteries: Query<&mut Battery>,
     mut velocities: Query<&mut LinearVelocity>,
+    mut deriveds: Query<&mut ShipPhysicsDerived>,
 ) {
     for event in reader.read() {
         let (proj_entity, other_entity) = if projectiles.get(event.collider1).is_ok() {
@@ -3858,17 +3935,38 @@ fn handle_projectile_hits(
 
         // Limpets are NOT damage projectiles in canon — they slow
         // the target instead. shpvuxin.cpp:VuxLimpet::inflict_damage
-        // calls `handle_speed_loss(slowdown_factor)` and bypasses
-        // the normal damage path entirely. We do the same: multiply
-        // the target's current LinearVelocity by `slowdown_factor`,
-        // skip crew/battery damage.
+        // calls `target->handle_speed_loss(slowdown_factor)`, which
+        // permanently reduces speed_max/accel_rate/turn_rate. A
+        // one-frame velocity ×0.5 was useless because thrust pushes
+        // the ship back up to speed_max next tick.
+        //
+        // Per shpvuxin.cpp + mship.cpp:handle_speed_loss, each hit
+        // multiplies speed_max by `1 - sl * speed_max/(speed_max+96)`
+        // where `sl = 30/(mass+30) * slowdown_factor`. We don't have
+        // the target's mass handy, so we use a fixed sl=0.4 (good
+        // approximation for mid-mass ships) — empirically gives the
+        // canonical 4-limpets-≈-half-speed result. Cumulative across
+        // hits, so a target accumulating limpets gets progressively
+        // crippled.
         if let Ok(limpet) = limpets.get(proj_entity) {
-            if let Ok(mut vel) = velocities.get_mut(other_entity) {
-                vel.0 *= limpet.slowdown_factor;
+            if let Ok(mut derived) = deriveds.get_mut(other_entity) {
+                let sl = 0.4 * limpet.slowdown_factor;
+                let s = derived.speed_max;
+                if s > 0.0 {
+                    derived.speed_max = s * (1.0 - sl * s / (s + 96.0));
+                }
+                derived.thrust_force *= 0.85;
+                derived.target_omega *= 0.92;
+                if let Ok(mut vel) = velocities.get_mut(other_entity) {
+                    // Immediate clamp so the hit feels punchy.
+                    let speed = vel.0.length();
+                    if speed > derived.speed_max && derived.speed_max > 0.0 {
+                        vel.0 = vel.0 / speed * derived.speed_max;
+                    }
+                }
                 info!(
-                    "limpet hit: target velocity ×{:.2} (now |v|={:.0})",
-                    limpet.slowdown_factor,
-                    vel.0.length()
+                    "limpet hit: speed_max → {:.0}",
+                    derived.speed_max
                 );
             }
             commands.entity(proj_entity).despawn();
@@ -4218,24 +4316,30 @@ fn tick_beams(
             None => (beam.range, None),
         };
 
-        // Apply per-tick damage to the hit entity if it's a ship and
-        // not a friendly. (Projectile / sub-entity hits are no-ops:
-        // beams aren't meant to shoot down bullets — that's the
-        // Earthling PD's job. Could be extended if a future ship
-        // wants laser-PD behaviour.)
+        // Apply damage to the hit entity if it's a ship and not a
+        // friendly. Damage is rate-limited to the canonical SC2
+        // frame rate (20 fps): even if FixedUpdate runs at 60 Hz,
+        // we accumulate `dt * 20` per tick and only fire damage
+        // when the accumulator crosses 1.0. Without this an Arilou
+        // beam at 60 fps deals 3× the canonical damage rate.
+        beam.damage_accum += dt * 20.0;
+        let damage_ticks = beam.damage_accum.floor() as i32;
+        beam.damage_accum -= damage_ticks as f32;
         if let Some(target) = hit_target {
             if let Ok(target_ship) = ship_class_of.get(target) {
                 let invisible_or_friendly = target_ship.player_slot == owner_ship.player_slot
-                    || ship_pos.get(target).is_err(); // Without<Invisible> filter
-                if !invisible_or_friendly {
+                    || ship_pos.get(target).is_err();
+                if !invisible_or_friendly && damage_ticks > 0 {
                     if let Ok(mut crew) = crews.get_mut(target) {
                         let factor = shields
                             .get(target)
                             .map(|s| s.damage_factor)
                             .unwrap_or(1.0);
-                        let dmg = ((beam.damage_per_tick as f32 * factor).round() as i32).max(0);
-                        if dmg > 0 {
-                            crew.current = (crew.current - dmg).max(0);
+                        let per_tick =
+                            ((beam.damage_per_tick as f32 * factor).round() as i32).max(0);
+                        let total = per_tick * damage_ticks;
+                        if total > 0 {
+                            crew.current = (crew.current - total).max(0);
                         }
                     }
                 }
@@ -4562,6 +4666,29 @@ fn tick_special_cooldown(time: Res<Time<Physics>>, mut q: Query<&mut SpecialCool
     for mut cd in &mut q {
         if cd.0 > 0.0 {
             cd.0 = (cd.0 - dt).max(0.0);
+        }
+    }
+}
+
+/// Visual cloak: while `Invisible` is on a ship, tint its sprite jet
+/// black so the silhouette reads as "cloaked" — canonical Ilwrath
+/// look. On the next frame after `Invisible` is removed, restore the
+/// sprite back to white. We don't touch `image` (that's the rotation
+/// frame, managed by `swap_rotation_frame`), only `color`.
+fn tick_invisible_visual(
+    mut ships: Query<(&mut Sprite, Option<&Invisible>), With<Ship>>,
+) {
+    for (mut sprite, invisible) in &mut ships {
+        let target = if invisible.is_some() {
+            // Keep alpha 1 so the silhouette stays solid; RGB → 0
+            // makes the sprite render as a pure black ship outline,
+            // exactly the canonical SC2 cloak look.
+            Color::srgba(0.0, 0.0, 0.0, 1.0)
+        } else {
+            Color::WHITE
+        };
+        if sprite.color != target {
+            sprite.color = target;
         }
     }
 }

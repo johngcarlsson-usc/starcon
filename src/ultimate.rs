@@ -171,6 +171,18 @@ pub struct HyperActive {
 #[derive(Component)]
 pub struct LightspeedGlow;
 
+/// Sticks on the Earthling ship for a few seconds AFTER the blast
+/// ends, while it still has the over-cap velocity from the jump.
+/// While present:
+///   - `cap_velocity` doesn't clamp the ship to speed_max, so it
+///     keeps coasting at whatever speed the blast left it at.
+///   - `apply_player_input` interprets THRUST as a *brake* — applies
+///     a force opposite the current velocity instead of forward —
+///     so the player can shed the over-speed at will.
+/// Auto-removes when the ship's speed drops at or below speed_max.
+#[derive(Component, Debug)]
+pub struct PostUltimateCoasting;
+
 /// Spawned each frame during `EarthlingBlasting` behind the ship —
 /// a stretched triangular streak with a chaotic alpha gradient.
 /// Fades and despawns over `total_s`.
@@ -233,6 +245,7 @@ impl Plugin for UltimatePlugin {
         .add_systems(
             Update,
             (
+                abort_cinematic_if_ship_gone,
                 hyper_trigger,
                 tick_ultimate_phases,
                 drive_camera_during_ultimate,
@@ -593,16 +606,32 @@ fn exit_cinematic(
         state.was_paused = false;
     }
     if let Some(p1) = state.player_entity.take() {
-        commands.entity(p1).remove::<HyperActive>();
+        // get_entity returns Err if the entity was despawned out
+        // from under us (rematch reset / class switch mid-cinematic).
+        if let Ok(mut e) = commands.get_entity(p1) {
+            e.remove::<HyperActive>();
+            // Earthling keeps its blast velocity after the
+            // cinematic; PostUltimateCoasting lets cap_velocity
+            // and apply_player_input know not to snap it back.
+            if state.variant == UltimateVariant::Earthling {
+                e.insert(PostUltimateCoasting);
+            }
+        }
     }
     if let Some(p) = state.portrait_entity.take() {
-        commands.entity(p).despawn();
+        if let Ok(mut e) = commands.get_entity(p) {
+            e.try_despawn();
+        }
     }
     for e in state.beam_entities.drain(..) {
-        commands.entity(e).despawn();
+        if let Ok(mut ec) = commands.get_entity(e) {
+            ec.try_despawn();
+        }
     }
     if let Some(g) = state.glow_entity.take() {
-        commands.entity(g).despawn();
+        if let Ok(mut e) = commands.get_entity(g) {
+            e.try_despawn();
+        }
     }
     state.glow_material = None;
     state.orig_ship_scale = None;
@@ -613,6 +642,28 @@ fn exit_cinematic(
     zoom_state.target_scale = state.orig_cam_scale;
     state.phase = UltimatePhase::Idle;
     state.phase_timer_s = 0.0;
+}
+
+/// If the player's ship gets despawned mid-cinematic (rematch reset,
+/// Tab to switch class), tear down the cinematic gracefully on the
+/// next frame so we don't try to access a dead entity. Without this
+/// the next phase tick hits `commands.entity(p1)` on a despawned id
+/// and panics.
+fn abort_cinematic_if_ship_gone(
+    mut state: ResMut<UltimateState>,
+    mut commands: Commands,
+    mut virt: ResMut<Time<Virtual>>,
+    mut zoom_state: ResMut<ZoomState>,
+    ships: Query<(), With<Ship>>,
+) {
+    if state.phase == UltimatePhase::Idle {
+        return;
+    }
+    if let Some(p1) = state.player_entity {
+        if ships.get(p1).is_err() {
+            exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
+        }
+    }
 }
 
 // ----------------------------------------------------------------
@@ -1059,7 +1110,13 @@ fn tick_lightspeed_glow(
         if let Ok(mut xf) = transforms.get_mut(glow_entity) {
             xf.translation.x = pos.0.x;
             xf.translation.y = pos.0.y;
-            xf.scale = Vec3::new(halo_scale, halo_scale, 1.0);
+            // Rotate the halo to match ship facing and elongate
+            // 40% along the forward axis so the glow visibly
+            // points where the jump will go — fixes the "I don't
+            // understand the orientation of the ellipse" confusion.
+            let angle = rot.sin.atan2(rot.cos);
+            xf.rotation = Quat::from_rotation_z(angle);
+            xf.scale = Vec3::new(halo_scale * 0.7, halo_scale, 1.0);
         }
     }
 
