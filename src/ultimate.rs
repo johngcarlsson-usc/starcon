@@ -294,13 +294,11 @@ fn portrait_path(variant: UltimateVariant) -> &'static str {
     }
 }
 
-fn voice_path(_variant: UltimateVariant) -> &'static str {
-    // Single sample used for all variants until per-class voice
-    // clips are dropped into `assets/ultimate/`. Bevy fails the
-    // load silently when a path doesn't exist, so falling back to
-    // the one we know is on disk is the simplest way to guarantee
-    // *some* sound on every trigger.
-    "ultimate/arisk_voi.wav"
+fn voice_path(variant: UltimateVariant) -> &'static str {
+    match variant {
+        UltimateVariant::Earthling => "ultimate/earcr_voi.wav",
+        _ => "ultimate/arisk_voi.wav",
+    }
 }
 
 fn variant_for_class(class: ShipClass) -> UltimateVariant {

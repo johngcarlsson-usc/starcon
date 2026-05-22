@@ -40,6 +40,32 @@
     <small>first load is ~50 MB, subsequent loads are instant</small>
   </div>
   <script type="module">
+    // Browsers create AudioContext in `suspended` state until a user
+    // gesture. Bevy/rodio doesn't auto-resume on WASM, so the first
+    // few seconds of audio play to a paused context = silence. Patch
+    // the AudioContext constructor so we can collect every context
+    // and call `resume()` on the first input event.
+    const _AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (_AudioContext) {
+      const ctxs = [];
+      const Wrapped = function (...args) {
+        const ctx = new _AudioContext(...args);
+        ctxs.push(ctx);
+        return ctx;
+      };
+      Wrapped.prototype = _AudioContext.prototype;
+      window.AudioContext = Wrapped;
+      window.webkitAudioContext = Wrapped;
+      const resume = () => {
+        for (const c of ctxs) {
+          if (c.state === 'suspended') c.resume().catch(() => {});
+        }
+      };
+      ['click', 'touchstart', 'keydown', 'pointerdown'].forEach((ev) => {
+        window.addEventListener(ev, resume, { capture: true });
+      });
+    }
+
     // ?v=__BUILD_SHA__ is replaced by the CI workflow with this
     // commit's short SHA so the import URL changes on every deploy.
     // Without it, GH Pages' default cache headers can serve stale
