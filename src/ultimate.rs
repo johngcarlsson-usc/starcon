@@ -73,6 +73,10 @@ pub struct UltimateState {
     pub portrait_entity: Option<Entity>,
     pub portrait_material: Option<Handle<PortraitMaterial>>,
     pub was_paused: bool,
+    /// Blade world-angle on the previous Update tick. We interpolate
+    /// between this and the current angle when emitting trails, so
+    /// the smear is continuous instead of stepped at 60 fps.
+    pub last_blade_angle: Option<f32>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -104,12 +108,16 @@ pub struct UltimateBeam {
 
 /// Fading copy of an `UltimateBeam` quad — spawned each Update during
 /// `Unleashing` so the blade trails a glowing smoke smear.
+/// The trail grows wider over its lifetime (smoke billows out) while
+/// alpha falls — quadratic, not cubic, so it stays bright longer.
 #[derive(Component, Debug)]
 pub struct BeamTrail {
     pub remaining_s: f32,
     pub total_s: f32,
     pub peak_alpha: f32,
     pub base_color: Color,
+    pub start_width: f32,
+    pub start_length: f32,
 }
 
 #[derive(Component)]
@@ -473,7 +481,7 @@ fn drive_ship_rotation_during_ultimate(
 
 fn tick_ultimate_beams(
     time: Res<Time<Real>>,
-    state: Res<UltimateState>,
+    mut state: ResMut<UltimateState>,
     spatial: SpatialQuery,
     ships: Query<(&Position, &Rotation), With<Ship>>,
     ship_lookup: Query<&Ship>,
@@ -508,9 +516,9 @@ fn tick_ultimate_beams(
         return;
     }
 
-    // Raycast to find the nearest collider (for damage). Visually
-    // the blade always extends HYPER_BEAM_LEN — like a lightsaber
-    // poking through whatever it touches.
+    // Raycast for damage. Visually the blade always extends
+    // HYPER_BEAM_LEN — like a lightsaber poking through whatever
+    // it touches.
     let filter = SpatialQueryFilter::default().with_excluded_entities([p1]);
     let dir = Dir2::new(world_dir).unwrap_or(Dir2::X);
     let hit = spatial.cast_ray(owner_pos, dir, HYPER_BEAM_LEN, true, &filter);
@@ -534,31 +542,87 @@ fn tick_ultimate_beams(
     let midpoint = owner_pos + world_dir * (blade_len * 0.5);
     let angle = world_dir.y.atan2(world_dir.x) - std::f32::consts::FRAC_PI_2;
 
-    for (beam, mut xf, mut sprite, vis) in &mut beams {
+    for (beam, mut xf, mut sprite, _vis) in &mut beams {
         let (w, color, z) = beam_layer_pose(beam.layer, phase_alpha);
         xf.translation = midpoint.extend(z);
         xf.rotation = Quat::from_rotation_z(angle);
         sprite.color = color;
         sprite.custom_size = Some(Vec2::new(w, blade_len));
+    }
 
-        // Trail emission — only while fully visible and in the
-        // Unleashing phase so the smear is dense and clearly
-        // distinct from the ramp.
-        if *vis == Visibility::Visible && state.phase == UltimatePhase::Unleashing && beam.layer >= 1 {
-            let peak = 0.6 * phase_alpha;
+    // Trail emission — interpolate between last frame's blade angle
+    // and this frame's so the smear is continuous at any frame rate.
+    // Spawn TRAIL_SAMPLES_PER_FRAME * 3 layers of ghost copies (one
+    // set per layer), each at a sub-frame interpolated angle. Result:
+    // at 60 fps + 36 rad/s the blade moves ~10° per frame; we emit
+    // 6 copies across that arc, so the trail looks smoothly swept.
+    if state.phase != UltimatePhase::Unleashing && state.phase != UltimatePhase::ZoomingOut {
+        // Always record the latest angle even on phases that don't
+        // emit, so the next-Unleashing frame doesn't see a stale gap.
+        state.last_blade_angle = Some(angle);
+        return;
+    }
+
+    const TRAIL_SAMPLES_PER_FRAME: usize = 6;
+    const TRAIL_LIFETIME_S: f32 = 0.85;
+    const TRAIL_PEAK_ALPHA: f32 = 0.95;
+
+    let last_angle = state.last_blade_angle.unwrap_or(angle);
+    // Take the shorter signed sweep between angles so we interpolate
+    // along the actual blade motion rather than the long way around.
+    let mut sweep = angle - last_angle;
+    while sweep > std::f32::consts::PI {
+        sweep -= std::f32::consts::TAU;
+    }
+    while sweep < -std::f32::consts::PI {
+        sweep += std::f32::consts::TAU;
+    }
+    state.last_blade_angle = Some(angle);
+
+    for i in 0..TRAIL_SAMPLES_PER_FRAME {
+        // t goes 0..1 (exclusive) — 0 = last frame's pose, 1 would be
+        // this frame's pose. We never emit at t=1 because that's the
+        // live blade.
+        let t = (i as f32 + 0.5) / TRAIL_SAMPLES_PER_FRAME as f32;
+        let sample_angle = last_angle + sweep * t;
+        // Recompute world dir from the sample angle. `angle` was
+        // computed as `dir.y.atan2(dir.x) - FRAC_PI_2`, so add it back
+        // to get the dir's polar angle.
+        let dir_polar = sample_angle + std::f32::consts::FRAC_PI_2;
+        let sample_dir = Vec2::new(dir_polar.cos(), dir_polar.sin());
+        let sample_mid = owner_pos + sample_dir * (blade_len * 0.5);
+
+        // Spawn all three layers as trails. Earlier interpolated
+        // samples (smaller `t`) start with slightly lower alpha so
+        // the freshest part of the smear is brightest.
+        let freshness = t; // 0..1, larger = closer to the live blade
+        for layer in 0u8..3 {
+            let (w, color, z) = beam_layer_pose(layer, phase_alpha);
+            // Inner core trails are short-lived and tighter (sharper
+            // luminescent line); halo trails are bigger and live
+            // slightly longer (the smoke billow).
+            let (life_mult, alpha_mult) = match layer {
+                0 => (0.55, 0.65),
+                1 => (0.95, 1.00),
+                _ => (1.15, 0.85),
+            };
+            let lifetime = TRAIL_LIFETIME_S * life_mult;
+            let peak = TRAIL_PEAK_ALPHA * phase_alpha * alpha_mult * (0.55 + 0.45 * freshness);
             let lin = color.to_linear();
             let trail_color = Color::srgba(lin.red, lin.green, lin.blue, peak);
             commands.spawn((
                 BeamTrail {
-                    remaining_s: 0.5,
-                    total_s: 0.5,
+                    remaining_s: lifetime,
+                    total_s: lifetime,
                     peak_alpha: peak,
                     base_color: trail_color,
+                    start_width: w,
+                    start_length: blade_len,
                 },
-                Sprite::from_color(trail_color, Vec2::new(w * 1.15, blade_len)),
+                Sprite::from_color(trail_color, Vec2::new(w, blade_len)),
                 Transform {
-                    translation: midpoint.extend(z - 0.05),
-                    rotation: Quat::from_rotation_z(angle),
+                    translation: sample_mid.extend(z - 0.05 - layer as f32 * 0.01),
+                    rotation: Quat::from_rotation_z(sample_angle),
                     scale: Vec3::ONE,
                 },
             ));
@@ -590,11 +654,24 @@ fn tick_beam_trails(
             commands.entity(e).despawn();
             continue;
         }
+        // frac: 1.0 at spawn, 0.0 at end.
         let frac = (trail.remaining_s / trail.total_s).clamp(0.0, 1.0);
-        // Cubic fade-out so the smear is bright at first then drops
-        // off fast — feels more like a luminescent smoke wisp than
-        // a linear fade.
-        let alpha = trail.peak_alpha * frac * frac * frac;
+        let age = 1.0 - frac;
+
+        // Alpha: gentle ease-out (sqrt-ish) so the trail stays bright
+        // through the first half of its life then fades. Way more
+        // visible than the previous cubic curve.
+        let alpha = trail.peak_alpha * frac.powf(0.6);
+
+        // Width: billow outward as the smoke disperses. Triples
+        // over the lifetime — a real motion-blur smear thickens as
+        // it ages and softens.
+        let width = trail.start_width * (1.0 + 2.2 * age);
+        // Length contracts slightly as the smear becomes a "puff"
+        // rather than a line.
+        let length = trail.start_length * (1.0 - 0.25 * age);
+
+        sprite.custom_size = Some(Vec2::new(width, length));
         let lin = trail.base_color.to_linear();
         sprite.color = Color::srgba(lin.red, lin.green, lin.blue, alpha);
     }
