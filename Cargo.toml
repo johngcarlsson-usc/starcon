@@ -23,6 +23,8 @@ bevy = { version = "0.18", default-features = false, features = [
     "bevy_state",
     "bevy_log",
     "bevy_asset",
+    "bevy_audio",
+    "wav",
     "png",
     "x11",
     "webgl2",
