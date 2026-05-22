@@ -132,6 +132,19 @@ pub struct UltimateState {
     /// Forward world direction captured at the start of the blast —
     /// the ship can't steer mid-jump, so we lock the direction.
     pub blast_dir: Option<Vec2>,
+    // -- Yehat --
+    pub yehat_fighters: Vec<Entity>,
+    // -- Chenjesu --
+    pub chebr_ring_timer_s: f32,
+}
+
+/// Yehat ultimate sub-entity — a fighter orbiting the parent
+/// Terminator. Fires periodically at the nearest enemy ship.
+#[derive(Component, Debug)]
+pub struct YehatFighter {
+    pub owner: Entity,
+    pub angle_offset: f32,
+    pub fire_cooldown_s: f32,
 }
 
 /// Which captain's ultimate is currently playing. Drives portrait /
@@ -147,6 +160,20 @@ pub enum UltimateVariant {
     /// blasts forward at 4× top speed for 3 s, dealing massive
     /// contact damage.
     Earthling,
+    /// Yehat: summon a battle fleet — three fighter sub-entities
+    /// orbit the Terminator and auto-fire missiles at the nearest
+    /// enemy for the duration.
+    Yehat,
+    /// Spathi: missile storm — fires a barrage of BUTT-style
+    /// homing missiles in every direction at once.
+    Spathi,
+    /// Chenjesu: crystal tempest — emits ring after ring of
+    /// crystal shards radiating outward.
+    Chenjesu,
+    /// Shofixti: nova sacrifice — supercharged Glory Device that
+    /// detonates with a vast lethal radius and destroys the
+    /// firer.
+    Shofixti,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +200,32 @@ pub enum UltimatePhase {
     /// blasts forward at 4× top speed for 3 s. Anything in its
     /// path takes massive contact damage. Leaves a jagged trail.
     EarthlingBlasting,
+    // ---- Yehat battle fleet ----
+    /// Paused. Three fighter silhouettes materialise around the
+    /// Terminator.
+    YehatSummoning,
+    /// Unpaused. Fighters orbit and auto-fire at the nearest enemy.
+    YehatBattle,
+    // ---- Spathi missile storm ----
+    /// Paused. The Eluder visibly winds up — small reticles
+    /// flicker around it as it locks every direction.
+    SpathiLockOn,
+    /// Unpaused single moment: 30 homing missiles launch outward,
+    /// then the cinematic exits.
+    SpathiBarrage,
+    // ---- Chenjesu crystal tempest ----
+    /// Paused. Broodhome glows crystal-blue, charging.
+    ChenjesuCharging,
+    /// Unpaused. Concentric rings of crystal shards emit from the
+    /// ship every few hundred ms.
+    ChenjesuTempest,
+    // ---- Shofixti nova ----
+    /// Paused. Scout glows hot-white pulsing — final pre-detonation
+    /// beat.
+    ShofixtiCharging,
+    /// Unpaused single moment: massive damage zone detonates and
+    /// the firer's crew goes to zero.
+    ShofixtiNova,
 }
 
 /// Marker on the ship while the cinematic is active.
@@ -276,6 +329,10 @@ impl Plugin for UltimatePlugin {
                 tick_lightspeed_glow,
                 tick_earthling_blast,
                 tick_blast_trails,
+                tick_yehat_battle_fleet,
+                tick_spathi_barrage,
+                tick_chenjesu_tempest,
+                tick_shofixti_nova,
             )
                 .chain(),
         );
@@ -321,16 +378,51 @@ const EARTH_BLAST_DMG_PER_SEC: f32 = 1200.0;
 /// its forward axis at the moment of spring-release.
 const EARTH_STRETCH_PEAK: f32 = 2.4;
 
+// -- Yehat battle fleet --
+const YEHAT_SUMMON_S: f32 = 0.6;
+const YEHAT_BATTLE_S: f32 = 4.0;
+const YEHAT_FIGHTER_RADIUS: f32 = 140.0;
+const YEHAT_FIGHTER_ORBIT_RPS: f32 = 0.6;
+const YEHAT_FIGHTER_FIRE_INTERVAL_S: f32 = 0.5;
+
+// -- Spathi missile storm --
+const SPATHI_LOCKON_S: f32 = 0.5;
+const SPATHI_BARRAGE_S: f32 = 0.6;
+const SPATHI_MISSILE_COUNT: usize = 30;
+
+// -- Chenjesu crystal tempest --
+const CHEBR_CHARGE_S: f32 = 0.6;
+const CHEBR_TEMPEST_S: f32 = 2.5;
+const CHEBR_RING_INTERVAL_S: f32 = 0.22;
+const CHEBR_RING_SIZE: usize = 16;
+
+// -- Shofixti nova --
+const SHOSC_CHARGE_S: f32 = 0.8;
+const SHOSC_NOVA_S: f32 = 0.5;
+const SHOSC_NOVA_RADIUS: f32 = 1500.0;
+
 fn portrait_path(variant: UltimateVariant) -> &'static str {
     match variant {
         UltimateVariant::Earthling => "ultimate/portrait_earcr.png",
+        UltimateVariant::Yehat => "ultimate/portrait_yehte.png",
+        UltimateVariant::Spathi => "ultimate/portrait_spael.png",
+        UltimateVariant::Chenjesu => "ultimate/portrait_chebr.png",
+        UltimateVariant::Shofixti => "ultimate/portrait_shosc.png",
         _ => "ultimate/portrait_arisk.png",
     }
 }
 
 fn voice_path(variant: UltimateVariant) -> &'static str {
+    // Per-class voice paths; falls back to Arilou's sample if a
+    // class-specific file isn't present (Bevy silently fails to
+    // load missing assets, the audio just plays nothing for that
+    // ult). Drop wavs in assets/ultimate/ to wire each up.
     match variant {
         UltimateVariant::Earthling => "ultimate/earcr_voi.wav",
+        UltimateVariant::Yehat => "ultimate/yehte_voi.wav",
+        UltimateVariant::Spathi => "ultimate/spael_voi.wav",
+        UltimateVariant::Chenjesu => "ultimate/chebr_voi.wav",
+        UltimateVariant::Shofixti => "ultimate/shosc_voi.wav",
         _ => "ultimate/arisk_voi.wav",
     }
 }
@@ -338,6 +430,10 @@ fn voice_path(variant: UltimateVariant) -> &'static str {
 fn variant_for_class(class: ShipClass) -> UltimateVariant {
     match class {
         ShipClass::Earcr => UltimateVariant::Earthling,
+        ShipClass::Yehte => UltimateVariant::Yehat,
+        ShipClass::Spael => UltimateVariant::Spathi,
+        ShipClass::Chebr => UltimateVariant::Chenjesu,
+        ShipClass::Shosc => UltimateVariant::Shofixti,
         _ => UltimateVariant::Arilou,
     }
 }
@@ -501,7 +597,13 @@ fn hyper_trigger(
             state.glow_entity = Some(id);
             state.glow_material = Some(glow_mat);
         }
-        UltimateVariant::None => {}
+        // The remaining variants do their spawning later, in
+        // their first active phase. Nothing pre-spawned here.
+        UltimateVariant::Yehat
+        | UltimateVariant::Spathi
+        | UltimateVariant::Chenjesu
+        | UltimateVariant::Shofixti
+        | UltimateVariant::None => {}
     }
 
     // Pause everything else.
@@ -575,6 +677,30 @@ fn tick_ultimate_phases(
                 let portrait_p = (p / 0.35).clamp(0.0, 1.0);
                 (EARTH_BLAST_S, 1.0 - portrait_p, false, 0.0, false)
             }
+            UltimatePhase::YehatSummoning => {
+                (YEHAT_SUMMON_S, 1.0, false, 0.0, true)
+            }
+            UltimatePhase::YehatBattle => {
+                let p = (state.phase_timer_s / YEHAT_BATTLE_S).clamp(0.0, 1.0);
+                let portrait_p = (p / 0.4).clamp(0.0, 1.0);
+                (YEHAT_BATTLE_S, 1.0 - portrait_p, false, 0.0, false)
+            }
+            UltimatePhase::SpathiLockOn => (SPATHI_LOCKON_S, 1.0, false, 0.0, true),
+            UltimatePhase::SpathiBarrage => {
+                let p = (state.phase_timer_s / SPATHI_BARRAGE_S).clamp(0.0, 1.0);
+                (SPATHI_BARRAGE_S, 1.0 - p, false, 0.0, false)
+            }
+            UltimatePhase::ChenjesuCharging => (CHEBR_CHARGE_S, 1.0, false, 0.0, true),
+            UltimatePhase::ChenjesuTempest => {
+                let p = (state.phase_timer_s / CHEBR_TEMPEST_S).clamp(0.0, 1.0);
+                let portrait_p = (p / 0.5).clamp(0.0, 1.0);
+                (CHEBR_TEMPEST_S, 1.0 - portrait_p, false, 0.0, false)
+            }
+            UltimatePhase::ShofixtiCharging => (SHOSC_CHARGE_S, 1.0, false, 0.0, true),
+            UltimatePhase::ShofixtiNova => {
+                let p = (state.phase_timer_s / SHOSC_NOVA_S).clamp(0.0, 1.0);
+                (SHOSC_NOVA_S, 1.0 - p, false, 0.0, false)
+            }
             UltimatePhase::Idle => unreachable!(),
         };
 
@@ -623,10 +749,31 @@ fn tick_ultimate_phases(
             (UltimatePhase::DramaticZoomIn, UltimateVariant::Earthling) => {
                 UltimatePhase::EarthlingCharging
             }
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Yehat) => {
+                UltimatePhase::YehatSummoning
+            }
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Spathi) => {
+                UltimatePhase::SpathiLockOn
+            }
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Chenjesu) => {
+                UltimatePhase::ChenjesuCharging
+            }
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Shofixti) => {
+                UltimatePhase::ShofixtiCharging
+            }
             (UltimatePhase::EarthlingCharging, _) => UltimatePhase::EarthlingStretching,
             (UltimatePhase::EarthlingStretching, _) => UltimatePhase::EarthlingBlasting,
+            (UltimatePhase::YehatSummoning, _) => UltimatePhase::YehatBattle,
+            (UltimatePhase::SpathiLockOn, _) => UltimatePhase::SpathiBarrage,
+            (UltimatePhase::ChenjesuCharging, _) => UltimatePhase::ChenjesuTempest,
+            (UltimatePhase::ShofixtiCharging, _) => UltimatePhase::ShofixtiNova,
+            // Final phases: exit.
             (UltimatePhase::ArilouUnleashing, _)
-            | (UltimatePhase::EarthlingBlasting, _) => {
+            | (UltimatePhase::EarthlingBlasting, _)
+            | (UltimatePhase::YehatBattle, _)
+            | (UltimatePhase::SpathiBarrage, _)
+            | (UltimatePhase::ChenjesuTempest, _)
+            | (UltimatePhase::ShofixtiNova, _) => {
                 exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
                 return;
             }
@@ -676,9 +823,15 @@ fn exit_cinematic(
             e.try_despawn();
         }
     }
+    for f in state.yehat_fighters.drain(..) {
+        if let Ok(mut ec) = commands.get_entity(f) {
+            ec.try_despawn();
+        }
+    }
     state.glow_material = None;
     state.orig_ship_scale = None;
     state.blast_dir = None;
+    state.chebr_ring_timer_s = 0.0;
     state.variant = UltimateVariant::None;
     state.beam_materials.clear();
     state.portrait_material = None;
@@ -775,6 +928,42 @@ fn drive_camera_during_ultimate(
             (
                 1.0 - eased,
                 HYPER_CAM_SCALE * (1.0 - eased) + state.orig_cam_scale * eased,
+            )
+        }
+        // Yehat: stay zoomed on the firer through the brief
+        // summoning beat, then pull back so the player can see
+        // the fighters orbit + fight.
+        UltimatePhase::YehatSummoning => (1.0, HYPER_CAM_SCALE),
+        UltimatePhase::YehatBattle => {
+            let p = (state.phase_timer_s / 0.6).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - p).powi(3);
+            (
+                1.0 - eased,
+                HYPER_CAM_SCALE * (1.0 - eased) + state.orig_cam_scale * eased,
+            )
+        }
+        // Spathi / Chenjesu / Shofixti: tight on the firer during
+        // wind-up, fast pull-back during the action so the player
+        // sees the full barrage / ring expansion / nova blast.
+        UltimatePhase::SpathiLockOn
+        | UltimatePhase::ChenjesuCharging
+        | UltimatePhase::ShofixtiCharging => (1.0, HYPER_CAM_SCALE),
+        UltimatePhase::SpathiBarrage
+        | UltimatePhase::ChenjesuTempest
+        | UltimatePhase::ShofixtiNova => {
+            let phase_dur = match state.phase {
+                UltimatePhase::SpathiBarrage => SPATHI_BARRAGE_S,
+                UltimatePhase::ChenjesuTempest => CHEBR_TEMPEST_S,
+                _ => SHOSC_NOVA_S,
+            };
+            let p = (state.phase_timer_s / (phase_dur * 0.6)).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - p).powi(3);
+            // Pull back farther than the original scale so the
+            // big-radius effects (nova, tempest) fit on screen.
+            let zoom_far = state.orig_cam_scale.max(1.4);
+            (
+                1.0 - eased,
+                HYPER_CAM_SCALE * (1.0 - eased) + zoom_far * eased,
             )
         }
         UltimatePhase::Idle => return,
@@ -1369,4 +1558,348 @@ fn tick_blast_trails(
             mat.color = LinearRgba::new(lin.red, lin.green, lin.blue, alpha.max(0.0));
         }
     }
+}
+
+// ----------------------------------------------------------------
+// Yehat — battle fleet ultimate
+// ----------------------------------------------------------------
+
+/// Three fighter sprites spawn around the Terminator at the start
+/// of `YehatSummoning`, orbit the parent at YEHAT_FIGHTER_RADIUS
+/// during the `YehatBattle` phase, and auto-fire missiles at the
+/// nearest enemy every YEHAT_FIGHTER_FIRE_INTERVAL_S seconds.
+fn tick_yehat_battle_fleet(
+    time: Res<Time<Real>>,
+    mut state: ResMut<UltimateState>,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    ships: Query<(&Position, &Rotation), With<Ship>>,
+    other_ships: Query<(Entity, &Ship, &Position), (With<Ship>, Without<crate::ship::Invisible>)>,
+    mut fighters: Query<
+        (Entity, &mut YehatFighter, &mut Transform),
+        Without<Ship>,
+    >,
+    owner_ship: Query<&Ship>,
+) {
+    if state.variant != UltimateVariant::Yehat {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok((ship_pos, _)) = ships.get(p1) else { return };
+
+    // Spawn the three fighters once, on entry to Summoning.
+    if state.phase == UltimatePhase::YehatSummoning && state.yehat_fighters.is_empty() {
+        use std::f32::consts::TAU;
+        for i in 0..3 {
+            let angle_offset = (i as f32) * TAU / 3.0;
+            let pos = ship_pos.0
+                + Vec2::new(angle_offset.cos(), angle_offset.sin())
+                    * YEHAT_FIGHTER_RADIUS;
+            let id = commands
+                .spawn((
+                    YehatFighter {
+                        owner: p1,
+                        angle_offset,
+                        fire_cooldown_s: 0.5 + i as f32 * 0.15,
+                    },
+                    Sprite {
+                        image: assets.load("ships/yehte/sprites/ship_p00.png"),
+                        color: Color::srgba(1.0, 0.9, 0.55, 1.0),
+                        custom_size: Some(Vec2::splat(36.0)),
+                        ..default()
+                    },
+                    Transform::from_translation(pos.extend(0.45)),
+                ))
+                .id();
+            state.yehat_fighters.push(id);
+        }
+    }
+
+    let active =
+        matches!(state.phase, UltimatePhase::YehatSummoning | UltimatePhase::YehatBattle);
+    if !active {
+        return;
+    }
+    let in_battle = matches!(state.phase, UltimatePhase::YehatBattle);
+    let dt = time.delta_secs();
+    let owner_slot = owner_ship.get(p1).map(|s| s.player_slot).unwrap_or(0);
+
+    for (_e, mut fighter, mut xf) in &mut fighters {
+        // Orbit. Angle advances in real time so the fighters keep
+        // moving even while time<Virtual> is paused (during the
+        // summon phase).
+        fighter.angle_offset += YEHAT_FIGHTER_ORBIT_RPS * std::f32::consts::TAU * dt;
+        let off = Vec2::new(fighter.angle_offset.cos(), fighter.angle_offset.sin())
+            * YEHAT_FIGHTER_RADIUS;
+        let world = ship_pos.0 + off;
+        xf.translation.x = world.x;
+        xf.translation.y = world.y;
+        // Face the orbit-tangent so the sprite "leans" into the path.
+        let tangent_angle = fighter.angle_offset + std::f32::consts::FRAC_PI_2;
+        xf.rotation = Quat::from_rotation_z(tangent_angle - std::f32::consts::FRAC_PI_2);
+
+        if !in_battle {
+            continue;
+        }
+
+        // Fire cooldown.
+        fighter.fire_cooldown_s -= dt;
+        if fighter.fire_cooldown_s > 0.0 {
+            continue;
+        }
+        fighter.fire_cooldown_s = YEHAT_FIGHTER_FIRE_INTERVAL_S;
+
+        // Pick nearest enemy ship in range.
+        let mut best: Option<(Vec2, f32)> = None;
+        for (e, s, p) in &other_ships {
+            if e == p1 || s.player_slot == owner_slot {
+                continue;
+            }
+            let d2 = (p.0 - world).length_squared();
+            if best.map_or(true, |(_, b)| d2 < b) {
+                best = Some((p.0, d2));
+            }
+        }
+        let Some((target, _)) = best else { continue };
+        let delta = target - world;
+        let d = delta.length();
+        if d < 0.5 {
+            continue;
+        }
+        let dir = delta / d;
+        let speed = 80.0 * crate::ship::SC2_VEL_SCALE;
+        let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
+
+        // Standard Projectile via Avian: handle_projectile_hits
+        // picks it up for damage on contact, projectile_lifetime
+        // despawns it after `lifetime` seconds.
+        commands.spawn((
+            crate::ship::Projectile {
+                owner: p1,
+                damage: 4,
+                lifetime: 2.5,
+            },
+            Sprite {
+                image: assets.load("ships/yehte/sprites/shot_a01.png"),
+                color: Color::srgb(1.0, 0.85, 0.4),
+                custom_size: Some(Vec2::splat(10.0)),
+                ..default()
+            },
+            Transform::from_translation(world.extend(0.5)),
+            RigidBody::Dynamic,
+            Collider::circle(5.0),
+            Sensor,
+            Mass(0.5),
+            Position(world),
+            Rotation::radians(init_angle),
+            LinearVelocity(dir * speed),
+            AngularVelocity::ZERO,
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ));
+    }
+}
+
+// ----------------------------------------------------------------
+// Spathi — missile storm ultimate
+// ----------------------------------------------------------------
+
+/// Spawn `SPATHI_MISSILE_COUNT` homing missiles in every direction
+/// once, at the start of the Barrage phase. They use the existing
+/// projectile + Homing pipeline.
+fn tick_spathi_barrage(
+    mut state: ResMut<UltimateState>,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    ships: Query<&Position, With<Ship>>,
+) {
+    if state.variant != UltimateVariant::Spathi
+        || state.phase != UltimatePhase::SpathiBarrage
+    {
+        return;
+    }
+    // Fire-once gate: use phase_timer to detect the entry frame.
+    // The phase enters with phase_timer_s == 0; we tick it once
+    // and then it grows positive. Fire on the first tick only.
+    if state.phase_timer_s > 0.02 {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok(ship_pos) = ships.get(p1) else { return };
+    let world = ship_pos.0;
+    let speed = 110.0 * crate::ship::SC2_VEL_SCALE;
+
+    for i in 0..SPATHI_MISSILE_COUNT {
+        let theta = (i as f32) * std::f32::consts::TAU / SPATHI_MISSILE_COUNT as f32;
+        // Random sub-arc jitter so the swarm doesn't read as a
+        // perfect geometric ring.
+        let jitter = (fastrand::f32() - 0.5) * 0.2;
+        let dir = Vec2::new((theta + jitter).cos(), (theta + jitter).sin());
+        let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
+        commands.spawn((
+            crate::ship::Projectile {
+                owner: p1,
+                damage: 5,
+                lifetime: 3.5,
+            },
+            crate::ship::Homing {
+                target: None,
+                turn_rate: crate::ship::sc2_turning(2.5),
+            },
+            Sprite {
+                image: assets.load("ships/spael/sprites/shot_a01.png"),
+                color: Color::srgb(1.0, 0.7, 0.85),
+                custom_size: Some(Vec2::splat(10.0)),
+                ..default()
+            },
+            Transform::from_translation(world.extend(0.5)),
+            RigidBody::Dynamic,
+            Collider::circle(6.0),
+            Sensor,
+            Mass(0.5),
+            Position(world + dir * 30.0),
+            Rotation::radians(init_angle),
+            LinearVelocity(dir * speed),
+            AngularVelocity::ZERO,
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ));
+    }
+    // Bump phase_timer past the gate so we don't fire again next tick.
+    state.phase_timer_s = 0.05;
+}
+
+// ----------------------------------------------------------------
+// Chenjesu — crystal tempest ultimate
+// ----------------------------------------------------------------
+
+/// Each tick during ChenjesuTempest, accumulate time; when the
+/// accumulator crosses CHEBR_RING_INTERVAL_S, emit a ring of
+/// CHEBR_RING_SIZE crystal shards radiating outward.
+fn tick_chenjesu_tempest(
+    time: Res<Time<Real>>,
+    mut state: ResMut<UltimateState>,
+    mut commands: Commands,
+    ships: Query<&Position, With<Ship>>,
+) {
+    if state.variant != UltimateVariant::Chenjesu
+        || state.phase != UltimatePhase::ChenjesuTempest
+    {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok(ship_pos) = ships.get(p1) else { return };
+    let dt = time.delta_secs();
+    state.chebr_ring_timer_s += dt;
+    if state.chebr_ring_timer_s < CHEBR_RING_INTERVAL_S {
+        return;
+    }
+    state.chebr_ring_timer_s -= CHEBR_RING_INTERVAL_S;
+
+    let world = ship_pos.0;
+    let speed = 80.0 * crate::ship::SC2_VEL_SCALE;
+    let theta_offset = fastrand::f32() * std::f32::consts::TAU;
+    for i in 0..CHEBR_RING_SIZE {
+        let theta = theta_offset
+            + (i as f32) * std::f32::consts::TAU / CHEBR_RING_SIZE as f32;
+        let dir = Vec2::new(theta.cos(), theta.sin());
+        let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
+        let speed_mult = 0.7 + fastrand::f32() * 0.6;
+        let mut verts = [Vec2::ZERO; 3];
+        for (j, v) in verts.iter_mut().enumerate() {
+            let base_a = j as f32 * std::f32::consts::TAU / 3.0;
+            let a = base_a + (fastrand::f32() - 0.5) * 0.6;
+            let r = 4.0 + fastrand::f32() * 5.0;
+            *v = Vec2::new(a.cos() * r, a.sin() * r);
+        }
+        commands.spawn((
+            crate::ship::Projectile {
+                owner: p1,
+                damage: 2,
+                lifetime: 2.4,
+            },
+            Sprite {
+                color: Color::srgb(
+                    0.7 + fastrand::f32() * 0.3,
+                    0.8 + fastrand::f32() * 0.2,
+                    1.0,
+                ),
+                custom_size: Some(Vec2::splat(10.0)),
+                ..default()
+            },
+            Transform::from_translation((world + dir * 24.0).extend(0.5)),
+            RigidBody::Dynamic,
+            Collider::triangle(verts[0], verts[1], verts[2]),
+            Sensor,
+            Mass(0.6),
+            Position(world + dir * 24.0),
+            Rotation::radians(init_angle),
+            LinearVelocity(dir * speed * speed_mult),
+            AngularVelocity((fastrand::f32() - 0.5) * 12.0),
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ));
+    }
+}
+
+// ----------------------------------------------------------------
+// Shofixti — nova sacrifice ultimate
+// ----------------------------------------------------------------
+
+/// At entry to ShofixtiNova: spawn a DamageZone with a huge radius
+/// that wipes everything within blast distance, including the
+/// firer (set its crew to 0). Standard tick_damage_zones handles
+/// per-tick damage application + lifetime decay.
+fn tick_shofixti_nova(
+    mut state: ResMut<UltimateState>,
+    mut commands: Commands,
+    mut crews: Query<&mut crate::ship::Crew>,
+    ships: Query<&Position, With<Ship>>,
+) {
+    if state.variant != UltimateVariant::Shofixti
+        || state.phase != UltimatePhase::ShofixtiNova
+    {
+        return;
+    }
+    if state.phase_timer_s > 0.02 {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok(ship_pos) = ships.get(p1) else { return };
+    let world = ship_pos.0;
+
+    // The nova damage zone — covers a huge radius, ticks for a
+    // brief moment. damage_per_sec is enormous so anything caught
+    // in the radius dies within the half-second lifetime.
+    commands.spawn((
+        crate::ship::DamageZone {
+            radius: SHOSC_NOVA_RADIUS,
+            damage_per_sec: 2000.0,
+            lifetime: SHOSC_NOVA_S,
+            source: None, // friendly fire ON — canon Glory kills self
+        },
+        Sprite {
+            color: Color::srgba(1.0, 0.95, 0.6, 0.55),
+            custom_size: Some(Vec2::splat(SHOSC_NOVA_RADIUS * 2.0)),
+            ..default()
+        },
+        Transform::from_translation(world.extend(0.4)),
+        RigidBody::Static,
+        Collider::circle(SHOSC_NOVA_RADIUS),
+        Sensor,
+        Position(world),
+        Rotation::IDENTITY,
+        CollidingEntities::default(),
+        CollisionEventsEnabled,
+    ));
+
+    // The Scout sacrifices itself in canon — set crew to 0 so the
+    // post-match flow picks up the loss.
+    if let Ok(mut crew) = crews.get_mut(p1) {
+        crew.current = 0;
+    }
+    state.phase_timer_s = 0.05;
 }

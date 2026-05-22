@@ -3313,9 +3313,9 @@ pub(crate) fn spawn_sub_entity(
 //
 // Per-projectile lifetime falls out of canonical `range / velocity`
 // (the original Missile constructor takes a range and dies at d >= range).
-const SC2_VEL_SCALE: f32 = 9.6;
+pub const SC2_VEL_SCALE: f32 = 9.6;
 const SC2_RANGE_SCALE: f32 = 40.0;
-fn sc2_turning(t: f32) -> f32 {
+pub fn sc2_turning(t: f32) -> f32 {
     (std::f32::consts::TAU / 16.0) / (t + 1.0) / 0.050
 }
 
