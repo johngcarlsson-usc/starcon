@@ -56,6 +56,22 @@ pub struct ZoomState {
     /// than two fingers are down — re-baselined each time a pinch
     /// gesture starts so quick re-pinches don't snap the scale.
     pub last_pinch_dist: Option<f32>,
+    /// Mouse-pivot for scroll-wheel zoom. When set, `smooth_zoom_scale`
+    /// adjusts the camera each frame so that the world point captured
+    /// at scroll time stays under the same screen-pixel position
+    /// throughout the tween — i.e. the zoom centres on the cursor,
+    /// not on screen-centre. Cleared once the scale tween settles.
+    pub pivot: Option<ZoomPivot>,
+}
+
+/// Captured at the moment of a scroll event: `offset_px` is the
+/// mouse position relative to window centre in pixels (Y already
+/// flipped to world convention), `world` is the world point that
+/// was under the cursor at scroll-time.
+#[derive(Clone, Copy, Debug)]
+pub struct ZoomPivot {
+    pub offset_px: Vec2,
+    pub world: Vec2,
 }
 
 impl Default for ZoomState {
@@ -64,6 +80,7 @@ impl Default for ZoomState {
             target_scale: 1.0,
             last_scroll_dir: 0.0,
             last_pinch_dist: None,
+            pivot: None,
         }
     }
 }
@@ -131,6 +148,8 @@ fn handle_zoom_input(
     mut commands: Commands,
     mut scroll: MessageReader<MouseWheel>,
     mut zoom_state: ResMut<ZoomState>,
+    windows: Query<&Window>,
+    cameras: Query<(&Transform, &Projection), With<Camera2d>>,
 ) {
     let mut delta_total = 0.0_f32;
     for ev in scroll.read() {
@@ -146,6 +165,27 @@ fn handle_zoom_input(
 
     let zoom_dir = delta_total.signum();
     zoom_state.last_scroll_dir = zoom_dir;
+
+    // Capture the mouse-pivot *before* changing the target scale.
+    // `smooth_zoom_scale` uses it each frame to keep the world point
+    // under the cursor pinned during the tween.
+    if let (Ok(window), Ok((cam_xf, projection))) = (windows.single(), cameras.single())
+    {
+        if let Some(cursor) = window.cursor_position() {
+            let scale = match projection {
+                Projection::Orthographic(o) => o.scale,
+                _ => 1.0,
+            };
+            // Pixel offset from window centre. Bevy window Y points
+            // down; flip so +Y matches world up.
+            let offset_px = Vec2::new(
+                cursor.x - window.width() * 0.5,
+                -(cursor.y - window.height() * 0.5),
+            );
+            let world = cam_xf.translation.truncate() + offset_px * scale;
+            zoom_state.pivot = Some(ZoomPivot { offset_px, world });
+        }
+    }
 
     // Adjust the target scale only. Small step per scroll notch
     // (5%) keeps each "tick" feeling like one smooth nudge rather
@@ -193,23 +233,45 @@ fn handle_zoom_input(
 /// Each frame, ease the camera's actual orthographic scale toward
 /// the `ZoomState.target_scale`. Exponential decay with rate
 /// `SMOOTHING_RATE` — the higher the rate the snappier the tween.
+///
+/// If a mouse `pivot` is set, also slide the camera each frame so
+/// that the captured world-anchor stays under the cursor pixel-
+/// offset for the entire tween — i.e. scroll-wheel zoom centres on
+/// the cursor, not on screen-centre. Pivot clears when the scale
+/// settles.
 fn smooth_zoom_scale(
     time: Res<Time>,
-    zoom_state: Res<ZoomState>,
-    mut camera_q: Query<&mut Projection, With<Camera2d>>,
+    mut zoom_state: ResMut<ZoomState>,
+    mut camera_q: Query<(&mut Projection, &mut Transform), With<Camera2d>>,
 ) {
     let dt = time.delta_secs();
     let blend = (SMOOTHING_RATE * dt).min(1.0);
-    for mut projection in &mut camera_q {
+    let mut settled = true;
+    let pivot = zoom_state.pivot;
+    for (mut projection, mut transform) in &mut camera_q {
         if let Projection::Orthographic(ref mut ortho) = *projection {
             let current = ortho.scale;
             let target = zoom_state.target_scale;
-            if (current - target).abs() < 1e-4 {
-                ortho.scale = target;
+            let new_scale = if (current - target).abs() < 1e-4 {
+                target
             } else {
-                ortho.scale = current + (target - current) * blend;
+                settled = false;
+                current + (target - current) * blend
+            };
+            ortho.scale = new_scale;
+
+            if let Some(p) = pivot {
+                // Keep the world point captured at scroll-time at
+                // the same pixel offset from the camera. Solves to
+                // `cam = world_anchor - offset_px * scale`.
+                let new_xy = p.world - p.offset_px * new_scale;
+                transform.translation.x = new_xy.x;
+                transform.translation.y = new_xy.y;
             }
         }
+    }
+    if settled && zoom_state.pivot.is_some() {
+        zoom_state.pivot = None;
     }
 }
 
