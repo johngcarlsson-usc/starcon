@@ -1895,7 +1895,7 @@ fn tick_earthling_blast(
                 base_color: color,
                 material: mat_handle.clone(),
             },
-            Mesh2d(BLADE_MESH_HANDLE.clone()),
+            Mesh2d(ultimate_meshes.blade.clone()),
             MeshMaterial2d(mat_handle),
             Transform {
                 translation: origin.extend(0.28),
