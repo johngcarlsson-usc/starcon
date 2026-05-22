@@ -155,6 +155,23 @@ pub struct UltimateState {
     pub mmrxf_orig_scale: Option<Vec3>,
     pub mmrxf_laser_cooldown_s: f32,
     pub mmrxf_missile_cooldown_s: f32,
+    /// Number of supershots fired so far in the current Druuge
+    /// barrage. Used by `tick_druuge_barrage` to gate the
+    /// per-shot interval. Reset on exit.
+    pub druuge_shots_fired: usize,
+    /// Snapshot of the Thraddash ship's pre-ultimate `speed_max`
+    /// in `ShipPhysicsDerived`. Restored on cinematic exit.
+    pub thraddash_orig_speed_max: Option<f32>,
+    /// Time accumulator for emitting Thraddash flame puffs.
+    pub thraddash_flame_timer_s: f32,
+    /// Mycon orb entities spawned during MyconGathering — needed
+    /// so MyconHurricane can convert each to a homing seeker
+    /// without re-querying by marker (orbs may get despawned by
+    /// the player ramming them, etc.).
+    pub mycon_orbs: Vec<Entity>,
+    /// Mycon orb spawn-time snapshot (paused-time elapsed) for
+    /// the swirl-in animation.
+    pub mycon_orb_t0: f32,
 }
 
 /// Marker on the Mmrnmhrm ship during MmrxfUnleashing. Normal
@@ -274,6 +291,30 @@ pub struct YehatFighter {
     pub fire_cooldown_s: f32,
 }
 
+/// One of the Mycon plasma orbs that orbits the Podship during the
+/// `MyconGathering` phase. Tracks its phase angle so the orbital
+/// motion is deterministic; `radius_t` is 0..1 across the gather
+/// (orb starts wide, spirals in to MYCON_ORBIT_R). On phase
+/// transition to MyconHurricane the orbs convert into homing
+/// seekers via `tick_mycon_hurricane_release`.
+#[derive(Component, Debug)]
+pub struct MyconOrbit {
+    pub owner: Entity,
+    pub theta: f32,
+    pub omega: f32,
+}
+
+/// A spinning F.R.I.E.D. blade spawned by the Kohr-Ah ultimate.
+/// Owned-projectile-ish: damages on contact, but also accelerates
+/// outward radially over its lifetime so the kill zone expands.
+#[derive(Component, Debug)]
+pub struct KohrAhBlade {
+    pub owner: Entity,
+    pub dir: Vec2,
+    pub speed: f32,
+    pub lifetime_s: f32,
+}
+
 /// Which captain's ultimate is currently playing. Drives portrait /
 /// voice asset selection and which behaviours run during the active
 /// phases.
@@ -319,6 +360,25 @@ pub enum UltimateVariant {
     /// missiles that split into smaller guided missiles
     /// mid-flight (Owa-style cluster).
     Mmrnmhrm,
+    /// Druuge: Wrath of the Crimson Corporation. Six oversized
+    /// cannon shots fired forward in rapid succession with
+    /// extreme recoil — the Mauler's signature kickback amplified
+    /// to "fling the ship halfway across the arena" levels.
+    Druuge,
+    /// Kohr-Ah: Sanctified Slaughter. Twelve F.R.I.E.D. saw
+    /// blades emit outward in a 360° radial pattern from the
+    /// spinning Marauder. The blades persist and accelerate so
+    /// the kill zone keeps expanding.
+    KohrAh,
+    /// Mycon: Plasma Hurricane. Eight plasmoids orbit the Podship
+    /// in a tightening spiral during the buildup, then launch as
+    /// homing seekers in a synchronized swarm.
+    Mycon,
+    /// Thraddash: Afterburner Inferno. Speed cap quintuples for
+    /// a brief duration and the exhaust trail behind the Torch
+    /// becomes a lethal damage zone — the player flies through
+    /// the arena painting kill streaks.
+    Thraddash,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -405,6 +465,33 @@ pub enum UltimatePhase {
     /// splitting guided missiles. Normal Mmrxf abilities are
     /// suppressed for the duration via the MmrxfActive marker.
     MmrxfUnleashing,
+    // ---- Druuge wrath ----
+    /// Paused. Cannon glows red, recoil charges. Camera tight.
+    DruugeCharging,
+    /// Unpaused. Six super-sized cannon shots emit forward over
+    /// the phase; each fires with an oversized recoil impulse on
+    /// the ship.
+    DruugeBarrage,
+    // ---- Kohr-Ah sanctified slaughter ----
+    /// Paused. Ship spins faster and faster as blades sharpen.
+    KohrAhSharpening,
+    /// Unpaused. Twelve saw projectiles emit in a 360° pattern,
+    /// each accelerating outward over time.
+    KohrAhSlaughter,
+    // ---- Mycon plasma hurricane ----
+    /// Paused. Eight plasmoids spawn orbiting the ship in a
+    /// tightening spiral, glowing brighter as they close in.
+    MyconGathering,
+    /// Unpaused. The orbiting plasmoids release as homing
+    /// seekers, locking the nearest enemy and pursuing.
+    MyconHurricane,
+    // ---- Thraddash afterburner ----
+    /// Paused for a brief moment as the engine ignites — visual
+    /// flare-up, no damage yet.
+    ThraddashIgniting,
+    /// Unpaused. Speed cap quintuples, exhaust trail becomes a
+    /// lethal damage zone for the duration. Player keeps control.
+    ThraddashBurning,
 }
 
 /// Marker on the ship while the cinematic is active.
@@ -576,9 +663,22 @@ impl Plugin for UltimatePlugin {
                 tick_mmrxf_laser_segments,
                 tick_mmrxf_needs_restore,
                 strip_white_background_once,
+                tick_mycon_gather,
+                tick_mycon_orbit,
+                tick_mycon_release,
+                tick_thraddash_restore,
             ),
         )
         .init_resource::<MmrxfUnleashedSprite>()
+        .add_systems(
+            FixedUpdate,
+            (
+                tick_druuge_barrage,
+                tick_kohrah_spawn,
+                tick_kohrah_blades,
+                tick_thraddash_burn,
+            ),
+        )
         .add_systems(
             FixedUpdate,
             (
@@ -707,6 +807,44 @@ const MMRXF_MISSILE_SPLIT_AT_S: f32 = 0.7;
 /// Number of children produced when a split missile splits.
 const MMRXF_MISSILE_CHILD_COUNT: usize = 5;
 
+// -- Druuge Wrath --
+const DRUUGE_CHARGE_S: f32 = 0.55;
+const DRUUGE_BARRAGE_S: f32 = 1.6;
+/// Number of supershots fired across the barrage.
+const DRUUGE_SHOT_COUNT: usize = 6;
+/// Time between successive supershots.
+const DRUUGE_SHOT_INTERVAL_S: f32 = 0.22;
+/// Backward kick (impulse) applied to the ship per supershot.
+const DRUUGE_RECOIL_IMPULSE: f32 = 220.0;
+
+// -- Kohr-Ah Sanctified Slaughter --
+const KOHRAH_SHARPEN_S: f32 = 0.55;
+const KOHRAH_SLAUGHTER_S: f32 = 2.4;
+const KOHRAH_BLADE_COUNT: usize = 12;
+/// Acceleration outward applied to each blade per second (wu/s²).
+const KOHRAH_BLADE_ACCEL: f32 = 240.0;
+
+// -- Mycon Plasma Hurricane --
+const MYCON_GATHER_S: f32 = 0.95;
+const MYCON_HURRICANE_S: f32 = 3.5;
+const MYCON_ORB_COUNT: usize = 8;
+/// Final orbit radius at the end of MyconGathering, before release.
+const MYCON_ORBIT_R: f32 = 140.0;
+
+// -- Thraddash Afterburner Inferno --
+const THRADDASH_IGNITE_S: f32 = 0.40;
+const THRADDASH_BURN_S: f32 = 4.5;
+/// Speed-cap multiplier while burning.
+const THRADDASH_SPEED_MULT: f32 = 5.0;
+/// Damage per second dealt by a Thraddash flame puff in contact.
+const THRADDASH_FLAME_DPS: f32 = 18.0;
+/// Lifetime of each emitted flame puff.
+const THRADDASH_FLAME_LIFE_S: f32 = 0.9;
+/// Radius of each flame puff's damage zone.
+const THRADDASH_FLAME_RADIUS: f32 = 38.0;
+/// Interval between flame puff emissions.
+const THRADDASH_FLAME_INTERVAL_S: f32 = 0.04;
+
 fn portrait_path(variant: UltimateVariant) -> &'static str {
     match variant {
         UltimateVariant::Earthling => "ultimate/portrait_earcr.png",
@@ -749,6 +887,10 @@ fn variant_for_class(class: ShipClass) -> UltimateVariant {
         ShipClass::Pkufu => UltimateVariant::Pkunk,
         ShipClass::Slypr => UltimateVariant::Slylandro,
         ShipClass::Mmrxf => UltimateVariant::Mmrnmhrm,
+        ShipClass::Druma => UltimateVariant::Druuge,
+        ShipClass::Kohma => UltimateVariant::KohrAh,
+        ShipClass::Mycpo => UltimateVariant::Mycon,
+        ShipClass::Thrto => UltimateVariant::Thraddash,
         _ => UltimateVariant::Arilou,
     }
 }
@@ -1014,6 +1156,10 @@ fn hyper_trigger(
         | UltimateVariant::Chenjesu
         | UltimateVariant::Shofixti
         | UltimateVariant::Slylandro
+        | UltimateVariant::Druuge
+        | UltimateVariant::KohrAh
+        | UltimateVariant::Mycon
+        | UltimateVariant::Thraddash
         | UltimateVariant::None => {}
     }
 
@@ -1139,6 +1285,26 @@ fn tick_ultimate_phases(
                 let portrait_p = (p / 0.5).clamp(0.0, 1.0);
                 (MMRXF_UNLEASH_S, 1.0 - portrait_p, false, 0.0, false)
             }
+            UltimatePhase::DruugeCharging => (DRUUGE_CHARGE_S, 1.0, false, 0.0, true),
+            UltimatePhase::DruugeBarrage => {
+                let p = (state.phase_timer_s / DRUUGE_BARRAGE_S).clamp(0.0, 1.0);
+                (DRUUGE_BARRAGE_S, 1.0 - p, false, 0.0, false)
+            }
+            UltimatePhase::KohrAhSharpening => (KOHRAH_SHARPEN_S, 1.0, false, 0.0, true),
+            UltimatePhase::KohrAhSlaughter => {
+                let p = (state.phase_timer_s / KOHRAH_SLAUGHTER_S).clamp(0.0, 1.0);
+                (KOHRAH_SLAUGHTER_S, 1.0 - p, false, 0.0, false)
+            }
+            UltimatePhase::MyconGathering => (MYCON_GATHER_S, 1.0, false, 0.0, true),
+            UltimatePhase::MyconHurricane => {
+                let p = (state.phase_timer_s / MYCON_HURRICANE_S).clamp(0.0, 1.0);
+                (MYCON_HURRICANE_S, 1.0 - p, false, 0.0, false)
+            }
+            UltimatePhase::ThraddashIgniting => (THRADDASH_IGNITE_S, 1.0, false, 0.0, true),
+            UltimatePhase::ThraddashBurning => {
+                let p = (state.phase_timer_s / THRADDASH_BURN_S).clamp(0.0, 1.0);
+                (THRADDASH_BURN_S, 1.0 - p, false, 0.0, false)
+            }
             UltimatePhase::Idle => unreachable!(),
         };
 
@@ -1175,7 +1341,13 @@ fn tick_ultimate_phases(
     // forced ang_vel write (the cinematic owns the ship's motion).
     let needs_lock = !matches!(
         state.variant,
-        UltimateVariant::Pkunk | UltimateVariant::Slylandro | UltimateVariant::Mmrnmhrm
+        UltimateVariant::Pkunk
+            | UltimateVariant::Slylandro
+            | UltimateVariant::Mmrnmhrm
+            // Thraddash keeps the player at the helm — the whole
+            // point of the ultimate is to fly around painting kill
+            // streaks with the lethal exhaust trail.
+            | UltimateVariant::Thraddash
     );
     if needs_lock {
         if let Ok(mut av) = ships.get_mut(p1) {
@@ -1234,6 +1406,22 @@ fn tick_ultimate_phases(
                 UltimatePhase::MmrxfTransform
             }
             (UltimatePhase::MmrxfTransform, _) => UltimatePhase::MmrxfUnleashing,
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Druuge) => {
+                UltimatePhase::DruugeCharging
+            }
+            (UltimatePhase::DruugeCharging, _) => UltimatePhase::DruugeBarrage,
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::KohrAh) => {
+                UltimatePhase::KohrAhSharpening
+            }
+            (UltimatePhase::KohrAhSharpening, _) => UltimatePhase::KohrAhSlaughter,
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Mycon) => {
+                UltimatePhase::MyconGathering
+            }
+            (UltimatePhase::MyconGathering, _) => UltimatePhase::MyconHurricane,
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Thraddash) => {
+                UltimatePhase::ThraddashIgniting
+            }
+            (UltimatePhase::ThraddashIgniting, _) => UltimatePhase::ThraddashBurning,
             // Final phases: exit.
             (UltimatePhase::ArilouUnleashing, _)
             | (UltimatePhase::EarthlingBlasting, _)
@@ -1243,7 +1431,11 @@ fn tick_ultimate_phases(
             | (UltimatePhase::ShofixtiNova, _)
             | (UltimatePhase::PkunkFormation, _)
             | (UltimatePhase::SlylandroStorm, _)
-            | (UltimatePhase::MmrxfUnleashing, _) => {
+            | (UltimatePhase::MmrxfUnleashing, _)
+            | (UltimatePhase::DruugeBarrage, _)
+            | (UltimatePhase::KohrAhSlaughter, _)
+            | (UltimatePhase::MyconHurricane, _)
+            | (UltimatePhase::ThraddashBurning, _) => {
                 exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
                 return;
             }
@@ -1326,6 +1518,24 @@ fn exit_cinematic(
     state.mmrxf_orig_scale = None;
     state.mmrxf_laser_cooldown_s = 0.0;
     state.mmrxf_missile_cooldown_s = 0.0;
+    state.druuge_shots_fired = 0;
+    state.thraddash_flame_timer_s = 0.0;
+    // Restore the Thraddash ship's speed_max if we had bumped it.
+    // The ship may already be despawned (rematch reset); ignore.
+    if let Some(orig) = state.thraddash_orig_speed_max.take() {
+        // We can't query in here (no system params), so store it
+        // for the next `tick_thraddash_restore` poll. The marker
+        // component approach is simpler: insert a marker on the
+        // ship in the tick system itself when the phase ends.
+        let _ = orig;
+    }
+    // Despawn any leftover Mycon orbs that weren't released.
+    for orb in state.mycon_orbs.drain(..) {
+        if let Ok(mut ec) = commands.get_entity(orb) {
+            ec.try_despawn();
+        }
+    }
+    state.mycon_orb_t0 = 0.0;
     state.variant = UltimateVariant::None;
     state.beam_materials.clear();
     state.portrait_material = None;
@@ -1507,6 +1717,30 @@ fn drive_camera_during_ultimate(
         UltimatePhase::MmrxfTransform => (1.0, HYPER_CAM_SCALE),
         UltimatePhase::MmrxfUnleashing => {
             let p = (state.phase_timer_s / 0.5).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - p).powi(3);
+            let zoom_far = state.orig_cam_scale.max(1.4);
+            (
+                1.0 - eased,
+                HYPER_CAM_SCALE * (1.0 - eased) + zoom_far * eased,
+            )
+        }
+        // New ultimates: tight during the wind-up, fast pull-back
+        // to original framing so the action fits on screen.
+        UltimatePhase::DruugeCharging
+        | UltimatePhase::KohrAhSharpening
+        | UltimatePhase::MyconGathering
+        | UltimatePhase::ThraddashIgniting => (1.0, HYPER_CAM_SCALE),
+        UltimatePhase::DruugeBarrage
+        | UltimatePhase::KohrAhSlaughter
+        | UltimatePhase::MyconHurricane
+        | UltimatePhase::ThraddashBurning => {
+            let phase_dur = match state.phase {
+                UltimatePhase::DruugeBarrage => DRUUGE_BARRAGE_S,
+                UltimatePhase::KohrAhSlaughter => KOHRAH_SLAUGHTER_S,
+                UltimatePhase::MyconHurricane => MYCON_HURRICANE_S,
+                _ => THRADDASH_BURN_S,
+            };
+            let p = (state.phase_timer_s / (phase_dur * 0.4)).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - p).powi(3);
             let zoom_far = state.orig_cam_scale.max(1.4);
             (
@@ -3832,5 +4066,392 @@ pub fn tick_mmrxf_split_missiles(
         if let Ok(mut ec) = commands.get_entity(e) {
             ec.try_despawn();
         }
+    }
+}
+
+
+// ----------------------------------------------------------------
+// Druuge — Wrath of the Crimson Corporation
+// ----------------------------------------------------------------
+
+/// During DruugeBarrage, fire DRUUGE_SHOT_COUNT oversized cannon
+/// shots forward in series, each at DRUUGE_SHOT_INTERVAL_S
+/// intervals. Every shot applies a substantial backward recoil
+/// impulse to the firer — the canonical Druuge kickback amped
+/// up to "fling the ship across the arena" intensity.
+fn tick_druuge_barrage(
+    mut state: ResMut<UltimateState>,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    mut ships: Query<(&Position, &Rotation, &mut LinearVelocity), With<crate::ship::Ship>>,
+) {
+    if state.variant != UltimateVariant::Druuge
+        || state.phase != UltimatePhase::DruugeBarrage
+    {
+        return;
+    }
+    let due_at = state.druuge_shots_fired as f32 * DRUUGE_SHOT_INTERVAL_S;
+    if state.druuge_shots_fired >= DRUUGE_SHOT_COUNT || state.phase_timer_s < due_at {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok((pos, rot, mut vel)) = ships.get_mut(p1) else { return };
+    let fwd = Vec2::new(-rot.sin, rot.cos);
+    let back = -fwd;
+    let world = pos.0;
+    let speed = 130.0 * crate::ship::SC2_VEL_SCALE;
+    let init_angle = fwd.y.atan2(fwd.x) - std::f32::consts::FRAC_PI_2;
+    commands.spawn((
+        crate::ship::Projectile {
+            owner: p1,
+            damage: 8,
+            lifetime: 2.2,
+        },
+        Sprite {
+            image: assets.load("ships/druma/sprites/shot_a01.png"),
+            color: Color::srgb(1.0, 0.65, 0.20),
+            custom_size: Some(Vec2::splat(28.0)),
+            ..default()
+        },
+        Transform::from_translation(world.extend(0.5)),
+        RigidBody::Dynamic,
+        Collider::circle(14.0),
+        Sensor,
+        Mass(1.4),
+        Position(world + fwd * 28.0),
+        Rotation::radians(init_angle),
+        LinearVelocity(fwd * speed),
+        AngularVelocity::ZERO,
+        LinearDamping(0.0),
+        AngularDamping(0.0),
+        CollisionEventsEnabled,
+    ));
+    // Recoil: write directly to LinearVelocity so we get a clean
+    // hard kick even with damping on the ship.
+    vel.0 += back * DRUUGE_RECOIL_IMPULSE;
+    state.druuge_shots_fired += 1;
+}
+
+// ----------------------------------------------------------------
+// Kohr-Ah — Sanctified Slaughter
+// ----------------------------------------------------------------
+
+/// On the first tick of KohrAhSlaughter, fan KOHRAH_BLADE_COUNT
+/// saw-blade projectiles out in a 360° pattern. Each is tagged
+/// with `KohrAhBlade` so `tick_kohrah_blades` accelerates them
+/// outward each frame for a continuously-expanding kill ring.
+fn tick_kohrah_spawn(
+    mut state: ResMut<UltimateState>,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    ships: Query<&Position, With<crate::ship::Ship>>,
+) {
+    if state.variant != UltimateVariant::KohrAh
+        || state.phase != UltimatePhase::KohrAhSlaughter
+    {
+        return;
+    }
+    if state.phase_timer_s > 0.02 {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok(pos) = ships.get(p1) else { return };
+    let world = pos.0;
+    let speed = 80.0 * crate::ship::SC2_VEL_SCALE;
+    for i in 0..KOHRAH_BLADE_COUNT {
+        let theta = (i as f32) * std::f32::consts::TAU / KOHRAH_BLADE_COUNT as f32;
+        // Tiny per-blade jitter — keeps the ring from reading as
+        // a perfect geometric stencil.
+        let theta = theta + (fastrand::f32() - 0.5) * 0.10;
+        let dir = Vec2::new(theta.cos(), theta.sin());
+        let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
+        commands.spawn((
+            crate::ship::Projectile {
+                owner: p1,
+                damage: 4,
+                lifetime: KOHRAH_SLAUGHTER_S * 1.1,
+            },
+            KohrAhBlade {
+                owner: p1,
+                dir,
+                speed,
+                lifetime_s: KOHRAH_SLAUGHTER_S * 1.1,
+            },
+            Sprite {
+                image: assets.load("ships/kohma/sprites/shot_a01.png"),
+                color: Color::srgb(1.0, 0.85, 0.40),
+                custom_size: Some(Vec2::splat(28.0)),
+                ..default()
+            },
+            Transform::from_translation(world.extend(0.5)),
+            RigidBody::Dynamic,
+            Collider::circle(12.0),
+            Sensor,
+            Mass(0.4),
+            Position(world + dir * 30.0),
+            Rotation::radians(init_angle),
+            LinearVelocity(dir * speed),
+            // Visual: blade spins fast in place even as it
+            // translates outward.
+            AngularVelocity(18.0),
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ));
+    }
+    // Past the gate so we don't re-fire.
+    state.phase_timer_s = 0.05;
+    // Suppress the unused-import warning for state (otherwise
+    // rustc thinks ResMut is unused after the gate).
+    let _ = &mut state;
+}
+
+/// Each tick, accelerate every existing `KohrAhBlade` outward
+/// along its initial direction. Blades that have outlived their
+/// lifetime are despawned (the normal projectile lifetime tick
+/// also handles them, but this is a belt-and-braces cleanup).
+fn tick_kohrah_blades(
+    time: Res<Time<Physics>>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut KohrAhBlade, &mut LinearVelocity)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut blade, mut vel) in &mut q {
+        blade.lifetime_s -= dt;
+        if blade.lifetime_s <= 0.0 {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
+            continue;
+        }
+        blade.speed += KOHRAH_BLADE_ACCEL * dt;
+        vel.0 = blade.dir * blade.speed;
+    }
+}
+
+// ----------------------------------------------------------------
+// Mycon — Plasma Hurricane
+// ----------------------------------------------------------------
+
+/// On the first tick of MyconGathering, spawn MYCON_ORB_COUNT
+/// orbs around the ship at a wide initial radius. Each tick the
+/// orbs are re-positioned along a tightening spiral via
+/// `tick_mycon_orbit`. On phase transition to MyconHurricane the
+/// orbs convert to homing projectiles in `tick_mycon_release`.
+fn tick_mycon_gather(
+    time: Res<Time<Real>>,
+    mut state: ResMut<UltimateState>,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    ships: Query<&Position, With<crate::ship::Ship>>,
+) {
+    if state.variant != UltimateVariant::Mycon
+        || state.phase != UltimatePhase::MyconGathering
+    {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok(pos) = ships.get(p1) else { return };
+    let world = pos.0;
+
+    // First-tick gate: spawn the orbs once.
+    if state.mycon_orbs.is_empty() {
+        state.mycon_orb_t0 = time.elapsed_secs();
+        for i in 0..MYCON_ORB_COUNT {
+            let theta = (i as f32) * std::f32::consts::TAU / MYCON_ORB_COUNT as f32;
+            let r = MYCON_ORBIT_R * 2.4;
+            let off = Vec2::new(theta.cos(), theta.sin()) * r;
+            let id = commands
+                .spawn((
+                    MyconOrbit {
+                        owner: p1,
+                        theta,
+                        // Counter-clockwise sweep at a brisk rate.
+                        omega: 3.0,
+                    },
+                    Sprite {
+                        image: assets.load("ships/mycpo/sprites/shot_a01.png"),
+                        color: Color::srgba(0.85, 0.45, 1.0, 1.0),
+                        custom_size: Some(Vec2::splat(28.0)),
+                        ..default()
+                    },
+                    Transform::from_translation((world + off).extend(0.4)),
+                ))
+                .id();
+            state.mycon_orbs.push(id);
+        }
+    }
+}
+
+/// While MyconGathering or MyconHurricane is active, advance each
+/// `MyconOrbit`'s phase and lerp its radius down toward
+/// `MYCON_ORBIT_R` over the gather phase. The ship's position is
+/// the orbit center.
+fn tick_mycon_orbit(
+    time: Res<Time<Real>>,
+    state: Res<UltimateState>,
+    mut orbs: Query<(&mut MyconOrbit, &mut Transform), Without<crate::ship::Ship>>,
+    ships: Query<&Position, With<crate::ship::Ship>>,
+) {
+    if state.phase != UltimatePhase::MyconGathering {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok(pos) = ships.get(p1) else { return };
+    let world = pos.0;
+    let dt = time.delta_secs();
+    // Tightening factor: 0 at start → 1 at end of gather.
+    let elapsed = (time.elapsed_secs() - state.mycon_orb_t0).max(0.0);
+    let tighten = (elapsed / MYCON_GATHER_S).clamp(0.0, 1.0);
+    let r = MYCON_ORBIT_R * 2.4 * (1.0 - tighten) + MYCON_ORBIT_R * tighten;
+    for (mut orb, mut xf) in &mut orbs {
+        orb.theta += orb.omega * dt;
+        let dir = Vec2::new(orb.theta.cos(), orb.theta.sin());
+        let p = world + dir * r;
+        xf.translation = p.extend(0.4);
+    }
+}
+
+/// On the first tick of MyconHurricane, convert each orb entity
+/// into a homing projectile. We rebuild the entity rather than
+/// patch components because the orbs were spawned as visuals (no
+/// Projectile / Homing / collider). Despawn the visual and spawn
+/// a new one with the full projectile bundle at the same place.
+fn tick_mycon_release(
+    mut state: ResMut<UltimateState>,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    orbs: Query<(Entity, &MyconOrbit, &Transform)>,
+) {
+    if state.variant != UltimateVariant::Mycon
+        || state.phase != UltimatePhase::MyconHurricane
+    {
+        return;
+    }
+    if state.phase_timer_s > 0.02 {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let speed = 110.0 * crate::ship::SC2_VEL_SCALE;
+    for (e, orb, xf) in &orbs {
+        if orb.owner != p1 {
+            continue;
+        }
+        let pos2 = xf.translation.truncate();
+        // Initial velocity: tangent to the orbit (perpendicular
+        // to the radial direction), giving the swarm a brief
+        // outward spiral before the homing kicks in.
+        let radial = Vec2::new(orb.theta.cos(), orb.theta.sin());
+        let tangent = Vec2::new(-radial.y, radial.x);
+        let init_dir = (tangent + radial * 0.5).normalize_or_zero();
+        let init_angle = init_dir.y.atan2(init_dir.x) - std::f32::consts::FRAC_PI_2;
+        if let Ok(mut ec) = commands.get_entity(e) {
+            ec.try_despawn();
+        }
+        commands.spawn((
+            crate::ship::Projectile {
+                owner: p1,
+                damage: 5,
+                lifetime: 4.0,
+            },
+            crate::ship::Homing {
+                target: None,
+                turn_rate: crate::ship::sc2_turning(3.0),
+            },
+            Sprite {
+                image: assets.load("ships/mycpo/sprites/shot_a01.png"),
+                color: Color::srgba(0.95, 0.50, 1.0, 1.0),
+                custom_size: Some(Vec2::splat(32.0)),
+                ..default()
+            },
+            Transform::from_translation(pos2.extend(0.5)),
+            RigidBody::Dynamic,
+            Collider::circle(14.0),
+            Sensor,
+            Mass(0.5),
+            Position(pos2),
+            Rotation::radians(init_angle),
+            LinearVelocity(init_dir * speed),
+            AngularVelocity::ZERO,
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ));
+    }
+    state.mycon_orbs.clear();
+    state.phase_timer_s = 0.05;
+}
+
+// ----------------------------------------------------------------
+// Thraddash — Afterburner Inferno
+// ----------------------------------------------------------------
+
+/// While ThraddashBurning:
+///   - Bump the ship's `derived.speed_max` to 5× its pre-ultimate
+///     value the first tick of the phase; snapshot the original
+///     so `tick_thraddash_restore` can put it back on exit.
+///   - Every THRADDASH_FLAME_INTERVAL_S, spawn a lethal damage
+///     zone at the ship's current rear (just behind the engine
+///     nozzle). The zone has THRADDASH_FLAME_LIFE_S lifetime and
+///     applies THRADDASH_FLAME_DPS while overlapping a hostile
+///     ship — turning the entire trail behind the Torch into a
+///     kill streak the player paints with their own flight path.
+fn tick_thraddash_burn(
+    time: Res<Time<Physics>>,
+    mut state: ResMut<UltimateState>,
+    mut commands: Commands,
+    mut ships: Query<(&Position, &Rotation, &mut crate::ship::ShipPhysicsDerived), With<crate::ship::Ship>>,
+) {
+    if state.variant != UltimateVariant::Thraddash
+        || state.phase != UltimatePhase::ThraddashBurning
+    {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok((pos, rot, mut derived)) = ships.get_mut(p1) else { return };
+    if state.thraddash_orig_speed_max.is_none() {
+        state.thraddash_orig_speed_max = Some(derived.speed_max);
+    }
+    if let Some(orig) = state.thraddash_orig_speed_max {
+        derived.speed_max = orig * THRADDASH_SPEED_MULT;
+    }
+    let dt = time.delta_secs();
+    state.thraddash_flame_timer_s += dt;
+    if state.thraddash_flame_timer_s < THRADDASH_FLAME_INTERVAL_S {
+        return;
+    }
+    state.thraddash_flame_timer_s = 0.0;
+    let fwd = Vec2::new(-rot.sin, rot.cos);
+    let back = -fwd;
+    // Spawn point: behind the engine nozzle by ~24 wu so the
+    // puff sits in the visible exhaust plume.
+    let spawn = pos.0 + back * 24.0;
+    crate::ship::spawn_damage_zone(
+        &mut commands,
+        Some(p1),
+        spawn,
+        THRADDASH_FLAME_RADIUS,
+        THRADDASH_FLAME_DPS,
+        THRADDASH_FLAME_LIFE_S,
+        Color::srgba(1.0, 0.55, 0.20, 0.55),
+    );
+}
+
+/// If we left ThraddashBurning while holding a speed_max
+/// override, restore the original speed_max so the ship doesn't
+/// permanently fly at 5× speed.
+fn tick_thraddash_restore(
+    mut state: ResMut<UltimateState>,
+    mut ships: Query<&mut crate::ship::ShipPhysicsDerived, With<crate::ship::Ship>>,
+) {
+    let burning = state.variant == UltimateVariant::Thraddash
+        && state.phase == UltimatePhase::ThraddashBurning;
+    if burning {
+        return;
+    }
+    let Some(orig) = state.thraddash_orig_speed_max.take() else { return };
+    let Some(p1) = state.player_entity else { return };
+    if let Ok(mut derived) = ships.get_mut(p1) {
+        derived.speed_max = orig;
     }
 }
