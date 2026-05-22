@@ -278,7 +278,7 @@ const EARTH_CHARGE_S: f32 = 0.55;
 const EARTH_STRETCH_S: f32 = 0.30;
 const EARTH_BLAST_S: f32 = 3.0;
 /// How much faster than `speed_max` the ship goes during the blast.
-const EARTH_BLAST_SPEED_MULT: f32 = 4.0;
+const EARTH_BLAST_SPEED_MULT: f32 = 8.0;
 /// Crew damage applied per second to anything overlapping the
 /// blasting ship. Enormous on purpose — the move should one-shot
 /// almost anything in its path.
@@ -294,11 +294,13 @@ fn portrait_path(variant: UltimateVariant) -> &'static str {
     }
 }
 
-fn voice_path(variant: UltimateVariant) -> &'static str {
-    match variant {
-        UltimateVariant::Earthling => "ultimate/earcr_voi.wav",
-        _ => "ultimate/arisk_voi.wav",
-    }
+fn voice_path(_variant: UltimateVariant) -> &'static str {
+    // Single sample used for all variants until per-class voice
+    // clips are dropped into `assets/ultimate/`. Bevy fails the
+    // load silently when a path doesn't exist, so falling back to
+    // the one we know is on disk is the simplest way to guarantee
+    // *some* sound on every trigger.
+    "ultimate/arisk_voi.wav"
 }
 
 fn variant_for_class(class: ShipClass) -> UltimateVariant {
@@ -1149,7 +1151,9 @@ fn tick_earthling_blast(
     // the swept area for this frame, so a tiny enemy doesn't
     // tunnel through between physics steps.
     let frame_travel = target_vel.length() * time.delta_secs();
-    let probe_radius = 60.0_f32.max(frame_travel * 0.6);
+    // Probe radius scales with per-frame travel so a 2x-faster
+    // blast still catches small enemies between physics steps.
+    let probe_radius = 80.0_f32.max(frame_travel * 0.8);
     let probe_center = pos.0 + dir * frame_travel * 0.5;
     let filter = SpatialQueryFilter::default().with_excluded_entities([p1]);
     let hits = spatial.shape_intersections(
