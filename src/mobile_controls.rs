@@ -100,10 +100,7 @@ impl Plugin for MobileControlsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TouchButtonsVisible>()
             .add_systems(Startup, spawn_touch_controls)
-            .add_systems(
-                Update,
-                (drive_virtual_input, drive_visibility_toggle, apply_visibility),
-            );
+            .add_systems(Update, (drive_virtual_input, apply_visibility));
     }
 }
 
@@ -240,11 +237,18 @@ fn spawn_btn_sized(
         });
 }
 
-/// Each frame, walk the touch buttons; OR pressed-ness into
-/// `VirtualInput.held` and emit just-pressed / just-released edges
-/// based on the per-button `LastInteraction` cache.
+/// Each frame, walk the touch buttons: OR pressed-ness into
+/// `VirtualInput.held`, emit just-pressed / just-released edges
+/// based on the per-button `LastInteraction` cache, AND flip
+/// `TouchButtonsVisible` on a ToggleButtons press-edge.
+///
+/// The toggle handling lives in this same system because we're
+/// the single writer of `LastInteraction`; running a separate
+/// system after this one would never see a press edge (last.0
+/// is already updated to the current frame's value).
 fn drive_virtual_input(
     mut virt: ResMut<VirtualInput>,
+    mut visible: ResMut<TouchButtonsVisible>,
     mut buttons: Query<(&Interaction, &TouchAction, &mut LastInteraction)>,
 ) {
     let mut held = PlayerInput::default();
@@ -273,6 +277,10 @@ fn drive_virtual_input(
             TouchAction::Ultimate if edge_press => ultimate_edge = true,
             TouchAction::CycleNext if edge_press => cycle_next_edge = true,
             TouchAction::CyclePrev if edge_press => cycle_prev_edge = true,
+            TouchAction::ToggleButtons if edge_press => {
+                visible.0 = !visible.0;
+                info!("touch buttons: {}", if visible.0 { "shown" } else { "hidden" });
+            }
             _ => {}
         }
         last.0 = *interaction;
@@ -284,29 +292,6 @@ fn drive_virtual_input(
     virt.ultimate_just_pressed = ultimate_edge;
     virt.cycle_next_just_pressed = cycle_next_edge;
     virt.cycle_prev_just_pressed = cycle_prev_edge;
-}
-
-/// Watch the HideButtons touch — on press, flip
-/// `TouchButtonsVisible`. Edge-triggered so a held tap doesn't
-/// chatter.
-fn drive_visibility_toggle(
-    mut visible: ResMut<TouchButtonsVisible>,
-    mut q: Query<(&Interaction, &TouchAction, &mut LastInteraction)>,
-) {
-    for (interaction, action, mut last) in &mut q {
-        if !matches!(action, TouchAction::ToggleButtons) {
-            continue;
-        }
-        let is_active = matches!(interaction, Interaction::Pressed);
-        let was_active = matches!(last.0, Interaction::Pressed);
-        if is_active && !was_active {
-            visible.0 = !visible.0;
-            info!("touch buttons: {}", if visible.0 { "shown" } else { "hidden" });
-        }
-        // NOTE: don't overwrite `last.0` here — drive_virtual_input
-        // already manages it for every button, including this one,
-        // and we want exactly one writer per component.
-    }
 }
 
 /// Sync each cluster's Visibility with `TouchButtonsVisible`. The
