@@ -584,6 +584,23 @@ pub struct ShipFrames {
     pub frames: Vec<Handle<Image>>,
 }
 
+/// Inertialess-drive marker. A ship with this component has its
+/// linear velocity *directly* set from thrust input each tick:
+/// thrust held → forward at `speed_max`; thrust released → zero
+/// instantly. Acceleration is infinite — no momentum accumulation,
+/// no coasting.
+///
+/// Because the velocity is overwritten every tick, external impulses
+/// (collisions, tractor beams, projectile recoil) get cancelled out
+/// automatically — matching the canonical
+/// `shparisk.cpp:ArilouSkiff::accelerate` which rejects any
+/// acceleration whose `source != this`.
+///
+/// Used by Arilou Skiff today. Generic enough that any future ship
+/// with the same flavour can pick it up via a marker insert.
+#[derive(Component, Debug)]
+pub struct InertialessDrive;
+
 /// Per-ship rolling state for Inertial-mode steering. Bevy's
 /// `ButtonInput::just_released` is fragile when `FixedUpdate` runs at
 /// a different cadence than the main render loop — the release event
@@ -1000,6 +1017,12 @@ fn spawn_ship(
     // abilities on the first frame (applied=None → needs apply).
     if let Some(modes) = modes_for(class, stats, frames, &derived, phys.collider_radius, assets) {
         entity.insert(modes);
+    }
+    // Per-class one-off markers. Cleaner than a generic
+    // `feature_flags_for` since the set is small. Add to the match
+    // when a new ship needs a class-specific tweak.
+    if matches!(class, ShipClass::Arisk) {
+        entity.insert(InertialessDrive);
     }
     let entity_id = entity.id();
 
@@ -2296,16 +2319,32 @@ fn apply_player_input(
         &Ship,
         &ShipClass,
         &ShipPhysicsDerived,
+        &Rotation,
         &mut ConstantLocalForce,
         &mut ConstantTorque,
         &mut AngularVelocity,
+        &mut LinearVelocity,
         Option<&ShipModes>,
         &mut LastTurnInput,
+        Option<&InertialessDrive>,
     )>,
 ) {
-    for (ship, class, derived, mut thrust, mut torque, mut ang_vel, modes, mut last_turn) in
-        &mut q
+    for (
+        ship,
+        class,
+        derived,
+        rot,
+        mut thrust,
+        mut torque,
+        mut ang_vel,
+        mut lin_vel,
+        modes,
+        mut last_turn,
+        inertialess,
+    ) in &mut q
     {
+        let rot_cos = rot.cos;
+        let rot_sin = rot.sin;
         let input = input::read_local_input(&keys, ship.player_slot);
 
         let dir = if input.pressed(input::INPUT_LEFT) {
@@ -2356,6 +2395,28 @@ fn apply_player_input(
                 }
                 // else: leave ang_vel as-is (collision spin survives).
             }
+        }
+
+        // Inertialess drive (Arilou): direct velocity control,
+        // infinite acceleration / instant stop. Overrides the
+        // force-based thrust path entirely. By overwriting LinearVel
+        // every tick we also cancel any external impulse on this
+        // ship (canonical "external accelerations rejected" — see
+        // `shparisk.cpp:accelerate`).
+        if inertialess.is_some() {
+            thrust.0 = Vec2::ZERO;
+            // Forward in world space, derived from ship's current rotation.
+            let forward = Vec2::new(0.0, 1.0);
+            let world_forward = Vec2::new(
+                forward.x * rot_cos - forward.y * rot_sin,
+                forward.x * rot_sin + forward.y * rot_cos,
+            );
+            lin_vel.0 = if input.pressed(input::INPUT_THRUST) {
+                world_forward * derived.speed_max
+            } else {
+                Vec2::ZERO
+            };
+            continue;
         }
 
         // Some modes lock thrust on (Andro Blazer auto-comets the
