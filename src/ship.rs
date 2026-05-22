@@ -584,6 +584,18 @@ pub struct ShipFrames {
     pub frames: Vec<Handle<Image>>,
 }
 
+/// Per-ship rolling state for Inertial-mode steering. Bevy's
+/// `ButtonInput::just_released` is fragile when `FixedUpdate` runs at
+/// a different cadence than the main render loop — the release event
+/// can be cleared between Bevy frames before any FixedUpdate ticks
+/// observe it. We track the previous tick's "is a turn key held"
+/// state on the ship itself, so the rising/falling edge is detected
+/// deterministically in the same schedule that consumes it.
+#[derive(Component, Default, Debug)]
+pub struct LastTurnInput {
+    pub had_input: bool,
+}
+
 pub struct ShipPlugin;
 
 impl Plugin for ShipPlugin {
@@ -927,6 +939,7 @@ fn spawn_ship(
         },
         WeaponCooldown::default(),
         SpecialCooldown::default(),
+        LastTurnInput::default(),
         ShipFrames {
             frames: frames.to_vec(),
         },
@@ -2287,9 +2300,12 @@ fn apply_player_input(
         &mut ConstantTorque,
         &mut AngularVelocity,
         Option<&ShipModes>,
+        &mut LastTurnInput,
     )>,
 ) {
-    for (ship, class, derived, mut thrust, mut torque, mut ang_vel, modes) in &mut q {
+    for (ship, class, derived, mut thrust, mut torque, mut ang_vel, modes, mut last_turn) in
+        &mut q
+    {
         let input = input::read_local_input(&keys, ship.player_slot);
 
         let dir = if input.pressed(input::INPUT_LEFT) {
@@ -2305,6 +2321,12 @@ fn apply_player_input(
             .0
             .unwrap_or_else(|| physics_spec(*class).angular_control);
 
+        // Edge detection done in-system so it's robust against the
+        // Bevy ButtonInput-vs-FixedUpdate timing race.
+        let has_input_now = dir != 0.0;
+        let just_released = !has_input_now && last_turn.had_input;
+        last_turn.had_input = has_input_now;
+
         match mode {
             AngularControl::Classic => {
                 // Snap to commanded rate; ignore impulses (SC2 default).
@@ -2312,34 +2334,27 @@ fn apply_player_input(
                 torque.0 = 0.0;
             }
             AngularControl::Inertial => {
-                // Three cases, mutually exclusive on each tick:
-                //   1. Player is HOLDING a turn key — snap to target
-                //      rate (feels like Classic). Any external spin
-                //      from collisions gets overwritten while the
-                //      key is held.
-                //   2. Player JUST RELEASED a turn key — snap ang_vel
-                //      to zero. Kills the player-induced spin so
-                //      deliberate steering doesn't leave momentum
-                //      behind. Collision-induced spin acquired
-                //      between presses survives — those ticks fall
-                //      into case 3, not case 2.
-                //   3. No input AND no release transition — leave
-                //      ang_vel and torque alone. Collision impulses
-                //      now persist as visible tumble. With
-                //      AngularDamping=0 the tumble lasts until the
-                //      player taps a turn key (case 1 takes over and
-                //      brakes / reverses it) or another collision.
+                // Three mutually-exclusive cases per tick:
+                //   1. Holding L or R — snap `ang_vel = target_omega`.
+                //      Feels like Classic. Any spin from a collision
+                //      acquired before this tick gets overwritten
+                //      while the key is held.
+                //   2. JUST released L or R (had input last tick, none
+                //      this tick) — snap `ang_vel = 0`. Kills the
+                //      player-induced spin so deliberate steering
+                //      doesn't leave momentum behind.
+                //   3. No input, no transition — leave `ang_vel`
+                //      alone. Collision impulses persist as visible
+                //      tumble (AngularDamping=0). The player taps a
+                //      turn key to right themselves (case 1 takes
+                //      over and brakes/reverses the spin).
                 torque.0 = 0.0;
-                let just_released =
-                    input::read_local_just_released(&keys, ship.player_slot);
-                if dir != 0.0 {
+                if has_input_now {
                     ang_vel.0 = target_omega;
-                } else if just_released.pressed(input::INPUT_LEFT)
-                    || just_released.pressed(input::INPUT_RIGHT)
-                {
+                } else if just_released {
                     ang_vel.0 = 0.0;
                 }
-                // else: leave ang_vel as-is (preserves collision spin).
+                // else: leave ang_vel as-is (collision spin survives).
             }
         }
 
