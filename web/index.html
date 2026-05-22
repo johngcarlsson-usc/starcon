@@ -39,33 +39,63 @@
     Loading Starcon&hellip;
     <small>first load is ~50 MB, subsequent loads are instant</small>
   </div>
-  <script type="module">
-    // Browsers create AudioContext in `suspended` state until a user
-    // gesture. Bevy/rodio doesn't auto-resume on WASM, so the first
-    // few seconds of audio play to a paused context = silence. Patch
-    // the AudioContext constructor so we can collect every context
-    // and call `resume()` on the first input event.
-    const _AudioContext = window.AudioContext || window.webkitAudioContext;
-    if (_AudioContext) {
-      const ctxs = [];
-      const Wrapped = function (...args) {
-        const ctx = new _AudioContext(...args);
-        ctxs.push(ctx);
-        return ctx;
-      };
-      Wrapped.prototype = _AudioContext.prototype;
-      window.AudioContext = Wrapped;
-      window.webkitAudioContext = Wrapped;
-      const resume = () => {
-        for (const c of ctxs) {
-          if (c.state === 'suspended') c.resume().catch(() => {});
+  <script>
+    // Browsers create AudioContext in 'suspended' state until a
+    // user gesture, and bevy_audio (via cpal+rodio) doesn't auto-
+    // resume on WASM — so the first few seconds of audio play to
+    // a paused context = silence and a console warning.
+    //
+    // We Proxy the AudioContext constructor so every context Bevy
+    // creates lands in a Set, then resume()-all on any user input.
+    // This script is SYNCHRONOUS (not type=module) so it runs before
+    // the wasm-bindgen JS imports and the patch is in place before
+    // Bevy ever asks for an AudioContext. Also covers webkitAudioContext
+    // for older Safari.
+    (function () {
+      var Original = window.AudioContext || window.webkitAudioContext;
+      if (!Original) return;
+      var contexts = new Set();
+      var Wrapped = new Proxy(Original, {
+        construct: function (target, args, newTarget) {
+          var ctx = Reflect.construct(target, args, newTarget);
+          contexts.add(ctx);
+          // Try to resume immediately — works if a prior gesture
+          // already armed the audio policy.
+          try { ctx.resume(); } catch (e) {}
+          return ctx;
         }
-      };
-      ['click', 'touchstart', 'keydown', 'pointerdown'].forEach((ev) => {
-        window.addEventListener(ev, resume, { capture: true });
       });
-    }
-
+      try {
+        Object.defineProperty(window, 'AudioContext', {
+          value: Wrapped, writable: true, configurable: true,
+        });
+        Object.defineProperty(window, 'webkitAudioContext', {
+          value: Wrapped, writable: true, configurable: true,
+        });
+      } catch (e) {
+        // Older browsers may forbid redefinition; fall back to
+        // direct assignment.
+        window.AudioContext = Wrapped;
+        window.webkitAudioContext = Wrapped;
+      }
+      function resumeAll() {
+        contexts.forEach(function (c) {
+          if (c.state === 'suspended') {
+            c.resume().catch(function () {});
+          }
+        });
+      }
+      // Listen on both window and document, capture phase, so
+      // even if Bevy's canvas listener calls stopPropagation we
+      // see the event first.
+      var events = ['pointerdown', 'mousedown', 'touchstart', 'keydown', 'click'];
+      events.forEach(function (ev) {
+        window.addEventListener(ev, resumeAll, { capture: true, passive: true });
+        document.addEventListener(ev, resumeAll, { capture: true, passive: true });
+      });
+    })();
+  </script>
+  <script type="module">
     // ?v=__BUILD_SHA__ is replaced by the CI workflow with this
     // commit's short SHA so the import URL changes on every deploy.
     // Without it, GH Pages' default cache headers can serve stale
