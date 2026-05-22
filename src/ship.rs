@@ -699,6 +699,7 @@ impl Plugin for ShipPlugin {
                 tick_battery_recharge,
                 tick_chebr_crystal,
                 tick_meltr_charge,
+                tick_kohma_blade,
                 tick_projectile_lifetime,
                 steer_homing_projectiles,
                 orient_projectiles,
@@ -718,6 +719,10 @@ impl Plugin for ShipPlugin {
                 handle_sub_entity_collisions,
                 handle_mode_contact_damage,
                 apply_syreen_drain,
+                tick_mycon_plasma_birth,
+                tick_mycon_plasma,
+                spawn_chmmr_satellites,
+                tick_chmmr_satellites,
             ),
         )
         .add_systems(
@@ -916,6 +921,7 @@ pub fn teardown_match(
     tractors: Query<Entity, With<TractorBeam>>,
     sub_entities: Query<Entity, With<SubEntity>>,
     overlays: Query<Entity, With<OverlaySprite>>,
+    satellites: Query<Entity, With<ChmmrSatellite>>,
 ) {
     for e in &ships {
         commands.entity(e).despawn();
@@ -939,6 +945,9 @@ pub fn teardown_match(
         commands.entity(e).despawn();
     }
     for e in &overlays {
+        commands.entity(e).despawn();
+    }
+    for e in &satellites {
         commands.entity(e).despawn();
     }
 }
@@ -1093,6 +1102,21 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Meltr) {
         entity.insert(MeltrChargeState::default());
+    }
+    if matches!(class, ShipClass::Mycpo) {
+        // Marker so newly-spawned projectiles owned by Mycon ships
+        // get the MyconPlasmaPulse animator attached.
+        entity.insert(MyconPlasmaShooter);
+    }
+    if matches!(class, ShipClass::Kohma) {
+        entity.insert(KohrAhBladeCarrier::default());
+    }
+    if matches!(class, ShipClass::Chmav) {
+        // Spawned ship needs its three orbiting satellites. We
+        // can't spawn them here (commands hasn't flushed the ship
+        // entity yet), so we just mark the ship; a Startup-after
+        // OnEnter system spawns the satellites.
+        entity.insert(NeedsChmmrSatellites);
     }
     let entity_id = entity.id();
 
@@ -1895,18 +1919,15 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             }
             Some(ShipAbilities {
                 primary: AbilitySpec {
-                    kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
-                        barrels: single_barrel(forward, 34.0),
-                        random_spread_rad: 0.0,
-                        speed: 64.0 * SC2_VEL_SCALE,
-                        lifetime: (12.0 * SC2_RANGE_SCALE) / (64.0 * SC2_VEL_SCALE),
-                        color: Color::srgb(1.0, 1.0, 1.0),
-                        sprite_size: 12.0,
-                        sprite_path: Some("ships/kohma/sprites/shot_a01.png".into()),
-                        homing_turn_rate: 0.0,
-                        is_limpet: false,
-                        recoil_impulse: 0.0,
-                    }]},
+                    // Hold-then-release-to-drop-a-mine — handled by
+                    // `tick_kohma_blade` in this file. Press fire =
+                    // arm a carrier blade attached to the ship,
+                    // release = drop it in place as a slow-homing
+                    // mine. Echoes the canonical KohrAhBlade with
+                    // Persists=1 and MaxBlades=9.
+                    kind: AbilityKind::ManagedExternally {
+                        ident: "kohma_blade",
+                    },
                     cooldown_s: 6.0 / 20.0,
                 },
                 special: AbilitySpec {
@@ -4746,5 +4767,417 @@ fn apply_syreen_drain(
         commands
             .entity(firer_entity)
             .remove::<SyreenDrainRequest>();
+    }
+}
+
+// ----------------------------------------------------------------
+// Mycon expanding plasma cloud
+// ----------------------------------------------------------------
+//
+// Per shpmycpo.cpp::MyconPlasma::calculate, the plasmoid cycles
+// through `frame_count` sprite frames and decays its damage linearly
+// based on distance traveled. We approximate frame cycling with a
+// list of pre-loaded sprite handles + linear interpolation of
+// Transform.scale for smooth visual growth (10 sprites instead of
+// canon's 64; close enough that the eye reads it as a continuous
+// puff).
+
+/// Marker on Mycon ships so newly-spawned projectiles inherit the
+/// expanding-cloud behaviour.
+#[derive(Component, Debug, Default)]
+pub struct MyconPlasmaShooter;
+
+/// Per-projectile state for the plasma cloud animation. Set on
+/// projectile spawn by `tick_mycon_plasma_birth`; consumed each
+/// tick by `tick_mycon_plasma`.
+#[derive(Component, Debug)]
+pub struct MyconPlasmaPulse {
+    pub start_pos: Vec2,
+    pub max_damage: i32,
+    pub max_distance: f32,
+    pub frames: Vec<Handle<Image>>,
+    pub start_size: f32,
+}
+
+/// Mycon plasma: cycle the sprite frame + grow the visible cloud +
+/// decay the projectile's damage linearly with distance traveled.
+/// When the plasmoid has traveled `max_distance`, damage hits 0.
+fn tick_mycon_plasma(
+    mut q: Query<(
+        &MyconPlasmaPulse,
+        &Position,
+        &mut Projectile,
+        &mut Sprite,
+        &mut Transform,
+    )>,
+) {
+    for (pulse, pos, mut proj, mut sprite, mut xf) in &mut q {
+        let dist = (pos.0 - pulse.start_pos).length();
+        let t = (dist / pulse.max_distance).clamp(0.0, 1.0);
+
+        // Continuous frame interpolation. Choose the nearest frame
+        // index; the visual size lerp handles in-between smoothness.
+        if !pulse.frames.is_empty() {
+            let idx = (t * (pulse.frames.len() - 1) as f32).round() as usize;
+            let idx = idx.min(pulse.frames.len() - 1);
+            sprite.image = pulse.frames[idx].clone();
+        }
+
+        // Grow the visible cloud: 1.0× at spawn to ~3.5× at end.
+        // Updates `custom_size` (used by Sprite::from_color spawns).
+        let grow = 1.0 + 2.5 * t;
+        sprite.custom_size = Some(Vec2::splat(pulse.start_size * grow));
+
+        // Linear damage decay: at edge, damage = 0. Floor below 1
+        // so projectile.damage never hits zero before despawn (we
+        // want at least nominal contact damage if the cloud
+        // catches a ship right at the edge).
+        let new_damage =
+            ((1.0 - t) * pulse.max_damage as f32).round() as i32;
+        proj.damage = new_damage.max(1);
+        // Subtle alpha falloff so the edge of the cloud reads as
+        // dissipating energy, not a hard expanding circle.
+        let alpha = 0.4 + 0.6 * (1.0 - t);
+        let lin = sprite.color.to_linear();
+        sprite.color = Color::srgba(lin.red, lin.green, lin.blue, alpha);
+        let _ = xf;
+    }
+}
+
+/// Watches for new projectiles owned by Mycon ships and attaches
+/// the `MyconPlasmaPulse` animator. Runs every FixedUpdate; the
+/// `Added<Projectile>` filter means a projectile only ever gets
+/// stamped once.
+fn tick_mycon_plasma_birth(
+    mut commands: Commands,
+    new_projectiles: Query<(Entity, &Projectile, &Position, &Sprite), Added<Projectile>>,
+    shooters: Query<(), With<MyconPlasmaShooter>>,
+    assets: Res<AssetServer>,
+) {
+    for (entity, proj, pos, sprite) in &new_projectiles {
+        if shooters.get(proj.owner).is_err() {
+            continue;
+        }
+        // Load all available plasma frames lazily — the asset
+        // server reuses already-loaded handles, so we pay the
+        // load cost once across the whole match.
+        let frames: Vec<Handle<Image>> = (1..=10)
+            .map(|i| {
+                let path = format!("ships/mycpo/sprites/shot_a{:02}.png", i);
+                assets.load(path)
+            })
+            .collect();
+        let start_size = sprite
+            .custom_size
+            .map(|s| s.x)
+            .unwrap_or(16.0);
+        commands.entity(entity).insert(MyconPlasmaPulse {
+            start_pos: pos.0,
+            max_damage: proj.damage,
+            // 60 SC2 range units × 40 = 2400 wu, same as the
+            // VolleySpec lifetime/speed for Mycpo. Reuse the
+            // lifetime to derive distance: speed * lifetime.
+            max_distance: 60.0 * SC2_RANGE_SCALE,
+            frames,
+            start_size,
+        });
+    }
+}
+
+// ----------------------------------------------------------------
+// Chmmr Avatar — three orbiting ZapSats
+// ----------------------------------------------------------------
+//
+// Per shpchmav.cpp + .ini Extra: three satellites at fixed angles
+// (0°, 120°, 240°) orbit the Avatar at radius 100 wu; each scans
+// for the nearest non-friendly non-invisible ship within range
+// (4 * 40 = 160 wu) and zaps it with a 1-damage point laser.
+// Recharge 250 SC2 frames (12.5 s) between zaps. Each satellite
+// has 10 armour — damage from outside destroys it.
+
+/// Marker on a Chmmr ship that hasn't spawned its satellites yet.
+/// Consumed by `spawn_chmmr_satellites`.
+#[derive(Component, Debug)]
+pub struct NeedsChmmrSatellites;
+
+/// One of three satellites orbiting a Chmmr Avatar. Position is
+/// driven each tick relative to the owner; on hit it loses armour;
+/// on owner death the satellite despawns.
+#[derive(Component, Debug)]
+pub struct ChmmrSatellite {
+    pub owner: Entity,
+    pub angle_offset: f32,
+    pub recharge_remaining_s: f32,
+    pub armour: i32,
+}
+
+fn spawn_chmmr_satellites(
+    mut commands: Commands,
+    needs: Query<(Entity, &Position), With<NeedsChmmrSatellites>>,
+    assets: Res<AssetServer>,
+) {
+    use std::f32::consts::TAU;
+    for (ship_entity, ship_pos) in &needs {
+        for i in 0..3 {
+            let angle_offset = (i as f32) * TAU / 3.0;
+            let offset = Vec2::new(angle_offset.cos(), angle_offset.sin()) * 100.0;
+            let pos = ship_pos.0 + offset;
+            commands.spawn((
+                ChmmrSatellite {
+                    owner: ship_entity,
+                    angle_offset,
+                    recharge_remaining_s: 0.0,
+                    armour: 10,
+                },
+                Sprite {
+                    image: assets.load("ships/chmav/sprites/shot_a01.png"),
+                    color: Color::srgba(0.6, 0.95, 1.0, 1.0),
+                    custom_size: Some(Vec2::splat(18.0)),
+                    ..default()
+                },
+                Transform::from_translation(pos.extend(0.25)),
+            ));
+        }
+        commands.entity(ship_entity).remove::<NeedsChmmrSatellites>();
+    }
+}
+
+/// Per-tick satellite update:
+///   - Orbit slowly around the owner (angle += orbital_rate * dt).
+///   - Position = owner_pos + 100 * unit_vector(angle).
+///   - If recharged, scan for nearest non-friendly non-invisible
+///     ship within zap_range and fire a 1-damage beam.
+///   - If the owner is gone, despawn.
+fn tick_chmmr_satellites(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut sats: Query<(Entity, &mut ChmmrSatellite, &mut Transform)>,
+    owners: Query<(&Ship, &Position, &Rotation)>,
+    ship_pos: Query<(Entity, &Ship, &Position), Without<Invisible>>,
+) {
+    let dt = time.delta_secs();
+    const ORBITAL_RATE: f32 = 0.5; // rad/s
+    const ZAP_RANGE: f32 = 4.0 * SC2_RANGE_SCALE;
+    const ZAP_DAMAGE: i32 = 1;
+    const ZAP_DURATION_S: f32 = 50.0 / 20.0; // canonical Frames=50
+    const ZAP_RECHARGE_S: f32 = 250.0 / 20.0;
+
+    for (sat_entity, mut sat, mut xf) in &mut sats {
+        // Owner death → satellite dies.
+        let Ok((owner_ship, owner_pos, _owner_rot)) = owners.get(sat.owner) else {
+            commands.entity(sat_entity).try_despawn();
+            continue;
+        };
+
+        // Orbit.
+        sat.angle_offset += ORBITAL_RATE * dt;
+        if sat.angle_offset > std::f32::consts::TAU {
+            sat.angle_offset -= std::f32::consts::TAU;
+        }
+        let offset = Vec2::new(sat.angle_offset.cos(), sat.angle_offset.sin()) * 100.0;
+        let world = owner_pos.0 + offset;
+        xf.translation.x = world.x;
+        xf.translation.y = world.y;
+
+        // Cool down.
+        if sat.recharge_remaining_s > 0.0 {
+            sat.recharge_remaining_s = (sat.recharge_remaining_s - dt).max(0.0);
+            continue;
+        }
+
+        // Find nearest non-friendly non-invisible ship within range.
+        let mut best: Option<(Entity, f32)> = None;
+        for (e, s, p) in &ship_pos {
+            if s.player_slot == owner_ship.player_slot {
+                continue;
+            }
+            let d2 = (p.0 - world).length_squared();
+            if d2 > ZAP_RANGE * ZAP_RANGE {
+                continue;
+            }
+            if best.map_or(true, |(_, b)| d2 < b) {
+                best = Some((e, d2));
+            }
+        }
+        if let Some((target_entity, _)) = best {
+            // Build a short beam from satellite to target. Reuses
+            // the existing Beam component; tick_beams handles the
+            // visual + damage.
+            let dummy_rot = Rotation::radians(0.0);
+            spawn_beam(
+                &mut commands,
+                sat.owner,       // attribute damage to the Avatar
+                world,
+                &dummy_rot,
+                Vec2::ZERO,
+                Vec2::Y,         // direction overwritten by auto_aim
+                ZAP_RANGE,
+                ZAP_DAMAGE,
+                Color::srgb(0.6, 0.95, 1.0),
+                true,            // auto_aim — locks onto target each tick
+                ZAP_DURATION_S,
+                1.0,
+            );
+            sat.recharge_remaining_s = ZAP_RECHARGE_S;
+            let _ = target_entity;
+        }
+    }
+}
+
+// ----------------------------------------------------------------
+// Kohr-Ah blade — hold to arm, release to drop a mine
+// ----------------------------------------------------------------
+//
+// User-facing summary: hold fire to keep a blade in front of the
+// ship; release to drop it. The dropped blade sits roughly in
+// place and homes slowly toward the nearest enemy (canonical
+// KohrAhBlade with Persists=1 + the post-release passive
+// behaviour). Re-pressing fire arms a new blade. There's a small
+// arm time so the blade is visible in front of the ship before
+// it can be released — matches the canon "no instant drop" feel.
+
+/// Per-ship state: tracks the currently-armed blade entity and
+/// edge-detects fire press/release across FixedUpdate ticks.
+#[derive(Component, Debug, Default)]
+pub struct KohrAhBladeCarrier {
+    pub current: Option<Entity>,
+    pub last_fire_held: bool,
+}
+
+/// Each FixedUpdate, for each Kohr-Ah ship:
+///   - On just-pressed fire: spawn a blade entity in front of the
+///     ship and stash its id.
+///   - While held: re-position the blade to track the ship's
+///     forward (it stays "out in front" until release).
+///   - On just-released fire: detach. The blade keeps its current
+///     world position, gains slow-homing toward the nearest enemy,
+///     and damages on contact via the standard projectile path.
+fn tick_kohma_blade(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    virt: Res<input::VirtualInput>,
+    assets: Res<AssetServer>,
+    projectiles: Query<&Position, With<Projectile>>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut KohrAhBladeCarrier,
+        &mut Battery,
+    )>,
+    mut transforms: Query<
+        (&mut Position, &mut LinearVelocity, &mut Rotation),
+        (With<Projectile>, Without<Ship>),
+    >,
+) {
+    let blade_velocity = 64.0 * SC2_VEL_SCALE;
+    let blade_range_world = 12.0 * SC2_RANGE_SCALE;
+    let blade_damage: i32 = 4;
+    let blade_lifetime = blade_range_world / blade_velocity * 1.6; // outlive its range slightly so the mine lingers
+
+    for (entity, ship, ship_pos, ship_rot, ship_vel, mut carrier, mut batt) in &mut ships {
+        let input = input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot);
+        let fire_held = input.pressed(input::INPUT_FIRE);
+
+        // Clear stale handle if the blade died on a hit.
+        if let Some(c) = carrier.current {
+            if projectiles.get(c).is_err() {
+                carrier.current = None;
+            }
+        }
+
+        let was_held = carrier.last_fire_held;
+        carrier.last_fire_held = fire_held;
+        let just_pressed = fire_held && !was_held;
+        let just_released = !fire_held && was_held;
+
+        let forward = Vec2::new(0.0, 1.0);
+        let world_dir = Vec2::new(
+            forward.x * ship_rot.cos - forward.y * ship_rot.sin,
+            forward.x * ship_rot.sin + forward.y * ship_rot.cos,
+        );
+
+        if just_pressed && carrier.current.is_none() {
+            // Battery gate.
+            if ship.stats.weapon_drain > 0 && batt.current < ship.stats.weapon_drain {
+                continue;
+            }
+            batt.current = (batt.current - ship.stats.weapon_drain).max(0);
+
+            // Spawn the blade 34 units in front of the hull —
+            // clear of the collider polygon.
+            let muzzle = ship_pos.0 + world_dir * 34.0;
+            let init_angle = world_dir.y.atan2(world_dir.x) - std::f32::consts::FRAC_PI_2;
+            // While held, the blade matches the ship's velocity so
+            // it visibly clings to the front. Velocity gets
+            // overwritten each tick below.
+            let blade_entity = commands
+                .spawn((
+                    Projectile {
+                        owner: entity,
+                        damage: blade_damage,
+                        lifetime: blade_lifetime,
+                    },
+                    Sprite {
+                        image: assets.load("ships/kohma/sprites/shot_a01.png"),
+                        color: Color::srgb(1.0, 0.85, 0.4),
+                        custom_size: Some(Vec2::splat(28.0)),
+                        ..default()
+                    },
+                    Transform::from_translation(muzzle.extend(0.5)),
+                    RigidBody::Dynamic,
+                    Collider::circle(12.0),
+                    Sensor,
+                    Mass(1.0),
+                    Position(muzzle),
+                    Rotation::radians(init_angle),
+                    LinearVelocity(ship_vel.0),
+                    AngularVelocity(8.0), // visible spin while armed
+                    LinearDamping(0.0),
+                    AngularDamping(0.0),
+                    CollisionEventsEnabled,
+                ))
+                .id();
+            carrier.current = Some(blade_entity);
+        } else if fire_held {
+            // Re-position the armed blade so it tracks the ship's
+            // forward each tick.
+            if let Some(blade) = carrier.current {
+                if let Ok((mut blade_pos, mut blade_vel, _blade_rot)) =
+                    transforms.get_mut(blade)
+                {
+                    let target = ship_pos.0 + world_dir * 34.0;
+                    blade_pos.0 = target;
+                    // Match the ship's velocity so the blade looks
+                    // glued in front rather than drifting away.
+                    blade_vel.0 = ship_vel.0;
+                }
+            }
+        }
+
+        if just_released {
+            // Detach the blade: keep its current position, give it
+            // an outward fling along ship-forward + slow homing
+            // (Homing component with a low turn rate). The standard
+            // homing system will gently steer it toward the nearest
+            // enemy.
+            if let Some(blade) = carrier.current.take() {
+                if let Ok((blade_pos, mut blade_vel, _blade_rot)) =
+                    transforms.get_mut(blade)
+                {
+                    // Initial fling: half blade velocity along
+                    // forward so it doesn't sit dead-still right at
+                    // the muzzle.
+                    blade_vel.0 = world_dir * (blade_velocity * 0.5);
+                    let _ = blade_pos;
+                }
+                commands.entity(blade).insert(Homing {
+                    target: None,
+                    turn_rate: sc2_turning(0.5), // slow drift-homing
+                });
+            }
+        }
     }
 }
