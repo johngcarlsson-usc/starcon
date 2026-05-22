@@ -619,6 +619,7 @@ impl Plugin for ShipPlugin {
                 tick_sub_entities,
                 handle_projectile_hits,
                 handle_sub_entity_collisions,
+                handle_mode_contact_damage,
             ),
         )
         .add_systems(Update, (swap_rotation_frame, update_overlay_sprites));
@@ -2768,6 +2769,13 @@ fn tick_ship_modes(
             *mass = Mass(new_mass);
             frames.frames = new_frames;
             commands.entity(entity).insert(new_abilities);
+            info!(
+                "mode applied: {} (speed_max={:.0}, mass={:.1}, thrust_locked={})",
+                modes.modes[idx].name,
+                derived.speed_max,
+                mass.0,
+                modes.modes[idx].thrust_locked,
+            );
             modes.applied = Some(idx);
         }
 
@@ -3238,17 +3246,64 @@ fn handle_projectile_hits(
 /// spin); on top of that we deduct crew proportional to how fast they
 /// were closing. Below a threshold relative speed it's just a love tap,
 /// no damage.
-// Ship-ship ramming damage was an invention — canon SC2 / TW melee
-// has ZERO baseline ram damage. Ships just bounce off each other
-// (Avian's solver handles the elastic-ish collision response). The
-// few classes that *do* damage on contact (Androsynth Blazer mode,
-// Arilou post-teleport telefrag, Pkunk reborn-phaser) get it via
-// per-special components/abilities, not via a generic system.
-//
-// If we need ram damage again as an opt-in (e.g. for a custom mode
-// or a future ship that's all about ramming), add it as an
-// `AbilityKind::GrantRamDamage` or a class-marker component rather
-// than as a global rule.
+// Generic ram-damage was an invention — canon has no baseline
+// ramming damage. But specific modes (canonical: Androsynth Blazer)
+// DO deal collision damage to the other ship. This system reads
+// `Mode.collide_damage` from each colliding ship's currently-active
+// mode and applies that as crew damage to the OTHER ship. Shield-
+// aware. Owner of the mode is never damaged by its own collide_damage.
+fn handle_mode_contact_damage(
+    mut reader: MessageReader<CollisionStart>,
+    modes: Query<&ShipModes>,
+    mut crews: Query<&mut Crew>,
+    shields: Query<&ShieldActive>,
+    ships: Query<&Ship>,
+) {
+    for event in reader.read() {
+        // Bidirectional: each side independently checks its own
+        // mode and damages the other.
+        for (attacker, target) in [
+            (event.collider1, event.collider2),
+            (event.collider2, event.collider1),
+        ] {
+            let Ok(modes) = modes.get(attacker) else {
+                continue;
+            };
+            let Some(m) = modes.modes.get(modes.current) else {
+                continue;
+            };
+            if m.collide_damage <= 0 {
+                continue;
+            }
+            // Don't friendly-fire.
+            let Ok(a_ship) = ships.get(attacker) else {
+                continue;
+            };
+            let Ok(t_ship) = ships.get(target) else {
+                continue;
+            };
+            if a_ship.player_slot == t_ship.player_slot {
+                continue;
+            }
+            if let Ok(mut crew) = crews.get_mut(target) {
+                let factor = shields
+                    .get(target)
+                    .map(|s| s.damage_factor)
+                    .unwrap_or(1.0);
+                let dmg = ((m.collide_damage as f32 * factor).round() as i32).max(0);
+                if dmg > 0 {
+                    crew.current = (crew.current - dmg).max(0);
+                    info!(
+                        "{} contact: -{} crew on P{}",
+                        m.name,
+                        dmg,
+                        t_ship.player_slot + 1
+                    );
+                }
+            }
+        }
+    }
+}
 
 fn tick_shield(
     mut commands: Commands,

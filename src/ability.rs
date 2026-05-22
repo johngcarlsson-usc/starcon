@@ -336,8 +336,18 @@ fn dispatch_special(
         if cd.0 > 0.0 {
             continue;
         }
-        let input = input::read_local_input(&keys, ship.player_slot);
-        if !input.pressed(input::INPUT_SPECIAL) {
+        // Some abilities (ToggleMode) want edge-trigger semantics —
+        // a single key press should fire exactly once, even if the
+        // player holds the key longer than the cooldown. Otherwise
+        // a 100ms hold flips Mmrnmhrm form 2–3 times in the cooldown
+        // window and lands back where it started.
+        let edge_only = matches!(abilities.special.kind, AbilityKind::ToggleMode);
+        let triggered = if edge_only {
+            input::read_local_just_pressed(&keys, ship.player_slot).pressed(input::INPUT_SPECIAL)
+        } else {
+            input::read_local_input(&keys, ship.player_slot).pressed(input::INPUT_SPECIAL)
+        };
+        if !triggered {
             continue;
         }
         if ship.stats.special_drain > 0 && batt.current < ship.stats.special_drain {

@@ -22,11 +22,8 @@ impl PlayerInput {
     }
 }
 
-/// Read local keyboard state into a `PlayerInput`. Player 1 uses arrows + Z/X;
-/// player 2 (couch co-op) uses WASD + G/H.
-pub fn read_local_input(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput {
-    let mut buttons = 0u8;
-    let map: &[(KeyCode, u8)] = match slot {
+fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
+    match slot {
         0 => &[
             (KeyCode::ArrowLeft, INPUT_LEFT),
             (KeyCode::ArrowRight, INPUT_RIGHT),
@@ -41,9 +38,31 @@ pub fn read_local_input(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput
             (KeyCode::KeyG, INPUT_FIRE),
             (KeyCode::KeyH, INPUT_SPECIAL),
         ],
-    };
-    for (key, mask) in map {
+    }
+}
+
+/// Read local keyboard state into a `PlayerInput`. Player 1 uses arrows + Z/X;
+/// player 2 (couch co-op) uses WASD + G/H. This returns the *held* state — a
+/// bit is set as long as the key is down.
+pub fn read_local_input(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput {
+    let mut buttons = 0u8;
+    for (key, mask) in keymap(slot) {
         if keys.pressed(*key) {
+            buttons |= mask;
+        }
+    }
+    PlayerInput { buttons }
+}
+
+/// Like `read_local_input` but only sets a bit on the *rising edge* —
+/// the tick the key transitioned from up to down. Used by abilities
+/// that should fire once per press regardless of how long the player
+/// holds the button (e.g. `ToggleMode`), so a 100ms key press doesn't
+/// flip the mode 3 times in the cooldown window.
+pub fn read_local_just_pressed(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput {
+    let mut buttons = 0u8;
+    for (key, mask) in keymap(slot) {
+        if keys.just_pressed(*key) {
             buttons |= mask;
         }
     }
