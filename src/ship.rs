@@ -2595,8 +2595,19 @@ fn swap_rotation_frame(mut q: Query<(&Rotation, &ShipFrames, &mut Sprite, &mut T
 /// 90° and thrusts will still get force applied perpendicular to its
 /// current velocity, curving the trajectory without ever exceeding
 /// the magnitude cap.
-fn cap_velocity(mut q: Query<(&ShipPhysicsDerived, &mut LinearVelocity)>) {
-    for (derived, mut vel) in &mut q {
+fn cap_velocity(
+    mut q: Query<(
+        &ShipPhysicsDerived,
+        &mut LinearVelocity,
+        Option<&crate::ultimate::HyperActive>,
+    )>,
+) {
+    for (derived, mut vel, hyper) in &mut q {
+        // Skip ships mid-ultimate — the lightspeed jump deliberately
+        // exceeds speed_max for the duration of the cinematic.
+        if hyper.is_some() {
+            continue;
+        }
         let speed = vel.0.length();
         if speed > derived.speed_max && derived.speed_max > 0.0 {
             vel.0 = vel.0 / speed * derived.speed_max;

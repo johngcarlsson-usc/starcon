@@ -59,6 +59,24 @@ impl Material2d for PortraitMaterial {
     }
 }
 
+/// Pulsating bluish-white halo used by the Earthling
+/// jump-to-light-speed ultimate. Radial gradient + tint baked into
+/// the shader; only `params.x` (intensity) is animated.
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct GlowMaterial {
+    #[uniform(0)]
+    pub params: Vec4,
+}
+
+impl Material2d for GlowMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/lightspeed_glow.wgsl".into()
+    }
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+}
+
 // ----------------------------------------------------------------
 // Sequencer state + components.
 // ----------------------------------------------------------------
@@ -67,6 +85,7 @@ impl Material2d for PortraitMaterial {
 pub struct UltimateState {
     pub phase: UltimatePhase,
     pub phase_timer_s: f32,
+    pub variant: UltimateVariant,
     pub player_entity: Option<Entity>,
     pub orig_cam_pos: Vec3,
     pub orig_cam_scale: f32,
@@ -84,6 +103,30 @@ pub struct UltimateState {
     /// Spawned beam-entity ids — despawned on exit so repeated
     /// triggers don't leak entities.
     pub beam_entities: Vec<Entity>,
+    // -- Earthling lightspeed jump --
+    pub glow_entity: Option<Entity>,
+    pub glow_material: Option<Handle<GlowMaterial>>,
+    /// Ship's original Transform.scale, captured at the start of the
+    /// Earthling cinematic so we can restore it after stretching.
+    pub orig_ship_scale: Option<Vec3>,
+    /// Forward world direction captured at the start of the blast —
+    /// the ship can't steer mid-jump, so we lock the direction.
+    pub blast_dir: Option<Vec2>,
+}
+
+/// Which captain's ultimate is currently playing. Drives portrait /
+/// voice asset selection and which behaviours run during the active
+/// phases.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum UltimateVariant {
+    #[default]
+    None,
+    /// Arilou: spin-and-slash lightsaber blade.
+    Arilou,
+    /// Earthling: jump-to-light-speed; ship charges, springs, then
+    /// blasts forward at 4× top speed for 3 s, dealing massive
+    /// contact damage.
+    Earthling,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -91,23 +134,53 @@ pub enum UltimatePhase {
     #[default]
     Idle,
     /// Time is paused. Camera rams toward the ship, portrait fades
-    /// in. No spin, no blade — the held breath before the move.
+    /// in. No active behaviour yet — the held breath before the
+    /// move. Shared by all variants.
     DramaticZoomIn,
+    // ---- Arilou ----
     /// Time resumes. Camera pulls back to its original framing
     /// *while* the ship spins and the blade slashes — the zoom-out
     /// itself is the punch of the move.
-    Unleashing,
+    ArilouUnleashing,
+    // ---- Earthling jump-to-light-speed ----
+    /// Time paused. Ship is covered in a pulsating bluish-white
+    /// glow that ramps up — the energy-buildup beat.
+    EarthlingCharging,
+    /// Time paused. Ship loses all velocity and stretches
+    /// vertically like a spring loading up.
+    EarthlingStretching,
+    /// Time resumes. Ship snaps back to its normal scale and
+    /// blasts forward at 4× top speed for 3 s. Anything in its
+    /// path takes massive contact damage. Leaves a jagged trail.
+    EarthlingBlasting,
 }
 
-/// Marker on the spinning ship while the cinematic is active.
+/// Marker on the ship while the cinematic is active.
 /// `apply_player_input` reads this and stops touching the ship's
-/// AngularVelocity. `tick_beams` reads this and fattens the regular
-/// beam visual (used outside the cinematic — during it physics is
-/// paused so this is mostly cosmetic).
+/// AngularVelocity / LinearVelocity / thrust. `cap_velocity` also
+/// reads it so the Earthling jump isn't clamped to speed_max.
+/// `tick_beams` reads it and fattens the regular beam visual.
 #[derive(Component, Debug)]
 pub struct HyperActive {
     pub forced_ang_vel: f32,
     pub beam_width_mult: f32,
+}
+
+/// Marker on the bluish glow halo that overlays the Earthling ship
+/// during the charge / stretch phases. Despawned on exit.
+#[derive(Component)]
+pub struct LightspeedGlow;
+
+/// Spawned each frame during `EarthlingBlasting` behind the ship —
+/// a stretched triangular streak with a chaotic alpha gradient.
+/// Fades and despawns over `total_s`.
+#[derive(Component, Debug)]
+pub struct BlastTrail {
+    pub remaining_s: f32,
+    pub total_s: f32,
+    pub peak_alpha: f32,
+    pub base_color: Color,
+    pub material: Handle<bevy::sprite_render::ColorMaterial>,
 }
 
 /// One of the layered beam sprites that make up the lightsaber:
@@ -152,20 +225,26 @@ pub struct UltimatePlugin;
 
 impl Plugin for UltimatePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(Material2dPlugin::<PortraitMaterial>::default())
-            .init_resource::<UltimateState>()
-            .add_systems(
-                Update,
-                (
-                    hyper_trigger,
-                    tick_ultimate_phases,
-                    drive_camera_during_ultimate,
-                    drive_ship_rotation_during_ultimate,
-                    tick_ultimate_beams,
-                    tick_beam_trails,
-                )
-                    .chain(),
-            );
+        app.add_plugins((
+            Material2dPlugin::<PortraitMaterial>::default(),
+            Material2dPlugin::<GlowMaterial>::default(),
+        ))
+        .init_resource::<UltimateState>()
+        .add_systems(
+            Update,
+            (
+                hyper_trigger,
+                tick_ultimate_phases,
+                drive_camera_during_ultimate,
+                drive_ship_rotation_during_ultimate,
+                tick_ultimate_beams,
+                tick_beam_trails,
+                tick_lightspeed_glow,
+                tick_earthling_blast,
+                tick_blast_trails,
+            )
+                .chain(),
+        );
     }
 }
 
@@ -193,8 +272,41 @@ const HYPER_BEAM_LEN: f32 = 380.0;
 /// Unleashing phase is only ~1.6 s the total damage is bounded.
 const HYPER_DAMAGE_PER_SEC: f32 = 600.0;
 const PORTRAIT_KEY: KeyCode = KeyCode::Space;
-const PORTRAIT_PATH: &str = "ultimate/portrait_arisk.png";
-const VOICE_PATH: &str = "ultimate/arisk_voi.wav";
+
+// -- Earthling jump-to-light-speed --
+const EARTH_CHARGE_S: f32 = 0.55;
+const EARTH_STRETCH_S: f32 = 0.30;
+const EARTH_BLAST_S: f32 = 3.0;
+/// How much faster than `speed_max` the ship goes during the blast.
+const EARTH_BLAST_SPEED_MULT: f32 = 4.0;
+/// Crew damage applied per second to anything overlapping the
+/// blasting ship. Enormous on purpose — the move should one-shot
+/// almost anything in its path.
+const EARTH_BLAST_DMG_PER_SEC: f32 = 1200.0;
+/// Stretch ratio at peak: ship sprite is this many × longer along
+/// its forward axis at the moment of spring-release.
+const EARTH_STRETCH_PEAK: f32 = 2.4;
+
+fn portrait_path(variant: UltimateVariant) -> &'static str {
+    match variant {
+        UltimateVariant::Earthling => "ultimate/portrait_earcr.png",
+        _ => "ultimate/portrait_arisk.png",
+    }
+}
+
+fn voice_path(variant: UltimateVariant) -> &'static str {
+    match variant {
+        UltimateVariant::Earthling => "ultimate/earcr_voi.wav",
+        _ => "ultimate/arisk_voi.wav",
+    }
+}
+
+fn variant_for_class(class: ShipClass) -> UltimateVariant {
+    match class {
+        ShipClass::Earcr => UltimateVariant::Earthling,
+        _ => UltimateVariant::Arilou,
+    }
+}
 
 /// Shared 1×1 quad mesh used by the portrait. Width/height come from
 /// `Transform.scale`.
@@ -214,10 +326,11 @@ fn hyper_trigger(
     touch_virt: Res<crate::input::VirtualInput>,
     mut state: ResMut<UltimateState>,
     cameras: Query<(&Transform, &Projection), With<Camera2d>>,
-    ships: Query<(Entity, &Ship, &ShipClass)>,
+    ships: Query<(Entity, &Ship, &ShipClass, &Transform), Without<Camera2d>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PortraitMaterial>>,
+    mut glow_materials: ResMut<Assets<GlowMaterial>>,
     mut color_mats: ResMut<Assets<bevy::sprite_render::ColorMaterial>>,
     assets: Res<AssetServer>,
     mut virt: ResMut<Time<Virtual>>,
@@ -228,8 +341,8 @@ fn hyper_trigger(
     if !keys.just_pressed(PORTRAIT_KEY) && !touch_virt.ultimate_just_pressed {
         return;
     }
-    let Some((entity, ship, class)) =
-        ships.iter().find(|(_, s, _)| s.player_slot == 0)
+    let Some((entity, ship, class, ship_xf)) =
+        ships.iter().find(|(_, s, _, _)| s.player_slot == 0)
     else {
         return;
     };
@@ -237,12 +350,14 @@ fn hyper_trigger(
         return;
     };
 
+    state.variant = variant_for_class(*class);
     state.player_entity = Some(entity);
     state.orig_cam_pos = cam_xf.translation;
     state.orig_cam_scale = match projection {
         Projection::Orthographic(ortho) => ortho.scale,
         _ => 1.0,
     };
+    state.orig_ship_scale = Some(ship_xf.scale);
     state.phase = UltimatePhase::DramaticZoomIn;
     state.phase_timer_s = 0.0;
 
@@ -262,8 +377,9 @@ fn hyper_trigger(
     }
 
     // Portrait: Mesh2d + custom material with radial alpha fade.
+    // Path is per-variant so each captain gets their own art.
     let material = materials.add(PortraitMaterial {
-        image: assets.load(PORTRAIT_PATH),
+        image: assets.load(portrait_path(state.variant)),
         params: Vec4::new(0.0, 0.0, 0.0, 0.0),
     });
     let portrait = commands
@@ -278,26 +394,58 @@ fn hyper_trigger(
     state.portrait_entity = Some(portrait);
     state.portrait_material = Some(material);
 
-    // Three layered beam triangles — core / mid / halo. Each layer
-    // gets its own ColorMaterial so we can fade alpha independently
-    // each frame. Hidden until the phase progresses to Unleashing.
     state.beam_materials.clear();
     state.beam_entities.clear();
-    for layer in 0u8..3 {
-        let (_w, color, z) = beam_layer_pose(layer, 0.0);
-        let mat_handle =
-            color_mats.add(bevy::sprite_render::ColorMaterial::from_color(color));
-        let id = commands
-            .spawn((
-                UltimateBeam { layer },
-                Mesh2d(BLADE_MESH_HANDLE.clone()),
-                MeshMaterial2d(mat_handle.clone()),
-                Transform::from_translation(Vec3::new(0.0, 0.0, z)),
-                Visibility::Hidden,
-            ))
-            .id();
-        state.beam_materials.push(mat_handle);
-        state.beam_entities.push(id);
+    state.glow_entity = None;
+    state.glow_material = None;
+    state.blast_dir = None;
+
+    match state.variant {
+        UltimateVariant::Arilou => {
+            // Three layered beam triangles — core / mid / halo. Each
+            // layer gets its own ColorMaterial so alphas can be
+            // animated independently. Hidden until Unleashing.
+            for layer in 0u8..3 {
+                let (_w, color, z) = beam_layer_pose(layer, 0.0);
+                let mat_handle = color_mats
+                    .add(bevy::sprite_render::ColorMaterial::from_color(color));
+                let id = commands
+                    .spawn((
+                        UltimateBeam { layer },
+                        Mesh2d(BLADE_MESH_HANDLE.clone()),
+                        MeshMaterial2d(mat_handle.clone()),
+                        Transform::from_translation(Vec3::new(0.0, 0.0, z)),
+                        Visibility::Hidden,
+                    ))
+                    .id();
+                state.beam_materials.push(mat_handle);
+                state.beam_entities.push(id);
+            }
+        }
+        UltimateVariant::Earthling => {
+            // Pulsating bluish-white halo overlay. Sits at z just
+            // above the ship sprite; alpha is driven by
+            // `tick_lightspeed_glow`. Despawned in
+            // `exit_cinematic`.
+            let glow_mat = glow_materials.add(GlowMaterial {
+                params: Vec4::new(0.0, 0.0, 0.0, 0.0),
+            });
+            let id = commands
+                .spawn((
+                    LightspeedGlow,
+                    Mesh2d(QUAD_MESH_HANDLE.clone()),
+                    MeshMaterial2d(glow_mat.clone()),
+                    // Roughly 3× ship's pre-rotated sprite footprint
+                    // — big enough that the halo extends well past
+                    // the hull.
+                    Transform::from_scale(Vec3::new(240.0, 240.0, 1.0))
+                        .with_translation(ship_xf.translation.truncate().extend(0.40)),
+                ))
+                .id();
+            state.glow_entity = Some(id);
+            state.glow_material = Some(glow_mat);
+        }
+        UltimateVariant::None => {}
     }
 
     // Pause everything else.
@@ -307,7 +455,7 @@ fn hyper_trigger(
     // Vocal sample. `PlaybackSettings::DESPAWN` removes the AudioPlayer
     // entity when the clip finishes so we don't accumulate.
     commands.spawn((
-        AudioPlayer::<AudioSource>(assets.load(VOICE_PATH)),
+        AudioPlayer::<AudioSource>(assets.load(voice_path(state.variant))),
         PlaybackSettings::DESPAWN,
     ));
 
@@ -342,29 +490,39 @@ fn tick_ultimate_phases(
     // Per-phase derived values:
     //   `phase_total`        — duration of the current phase
     //   `portrait_alpha`     — 0..1, fade target this tick
-    //   `beam_visible`       — whether the blade should be rendering
-    //   `spin`               — angular velocity to lock the ship at
+    //   `beam_visible`       — Arilou blade visibility
+    //   `spin`               — angular velocity (Arilou only)
     //   `should_be_paused`   — Time<Virtual> pause state
     let (phase_total, portrait_alpha, beam_visible, spin, should_be_paused) =
         match state.phase {
             UltimatePhase::DramaticZoomIn => {
                 let p = (state.phase_timer_s / PHASE_ZOOM_IN_S).clamp(0.0, 1.0);
-                // Ease-out so the portrait snaps in fast then settles.
                 let eased = 1.0 - (1.0 - p).powi(3);
                 (PHASE_ZOOM_IN_S, eased, false, 0.0, true)
             }
-            UltimatePhase::Unleashing => {
+            UltimatePhase::ArilouUnleashing => {
                 let p = (state.phase_timer_s / PHASE_UNLEASH_S).clamp(0.0, 1.0);
-                // Portrait fades out over the first 60% of the zoom-
-                // out so the player's eye returns to the action.
                 let portrait_p = (p / 0.6).clamp(0.0, 1.0);
-                let portrait = 1.0 - portrait_p;
-                (PHASE_UNLEASH_S, portrait, true, HYPER_SPIN_RAD_PER_S, false)
+                (PHASE_UNLEASH_S, 1.0 - portrait_p, true, HYPER_SPIN_RAD_PER_S, false)
+            }
+            UltimatePhase::EarthlingCharging => {
+                // Portrait holds full alpha through the charge.
+                (EARTH_CHARGE_S, 1.0, false, 0.0, true)
+            }
+            UltimatePhase::EarthlingStretching => {
+                // Portrait still full while the spring loads.
+                (EARTH_STRETCH_S, 1.0, false, 0.0, true)
+            }
+            UltimatePhase::EarthlingBlasting => {
+                // Portrait fades over the first 35% of the blast.
+                let p = (state.phase_timer_s / EARTH_BLAST_S).clamp(0.0, 1.0);
+                let portrait_p = (p / 0.35).clamp(0.0, 1.0);
+                (EARTH_BLAST_S, 1.0 - portrait_p, false, 0.0, false)
             }
             UltimatePhase::Idle => unreachable!(),
         };
 
-    // Unpause Time<Virtual> the first tick of Unleashing.
+    // Unpause Time<Virtual> the first tick of an unpaused phase.
     if !should_be_paused && state.was_paused {
         virt.unpause();
         state.was_paused = false;
@@ -388,7 +546,11 @@ fn tick_ultimate_phases(
     }
 
     if let Ok(mut av) = ships.get_mut(p1) {
-        av.0 = spin;
+        av.0 = match state.variant {
+            UltimateVariant::Arilou => spin,
+            // Earthling locks orientation so the blast goes straight.
+            _ => 0.0,
+        };
     }
     commands.entity(p1).insert(HyperActive {
         forced_ang_vel: spin,
@@ -397,13 +559,25 @@ fn tick_ultimate_phases(
 
     if state.phase_timer_s >= phase_total {
         state.phase_timer_s = 0.0;
-        state.phase = match state.phase {
-            UltimatePhase::DramaticZoomIn => UltimatePhase::Unleashing,
-            UltimatePhase::Unleashing => {
+        state.phase = match (state.phase, state.variant) {
+            // Shared entry: variant decides what comes next.
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Arilou) => {
+                UltimatePhase::ArilouUnleashing
+            }
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Earthling) => {
+                UltimatePhase::EarthlingCharging
+            }
+            (UltimatePhase::EarthlingCharging, _) => UltimatePhase::EarthlingStretching,
+            (UltimatePhase::EarthlingStretching, _) => UltimatePhase::EarthlingBlasting,
+            (UltimatePhase::ArilouUnleashing, _)
+            | (UltimatePhase::EarthlingBlasting, _) => {
                 exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
                 return;
             }
-            UltimatePhase::Idle => UltimatePhase::Idle,
+            _ => {
+                exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
+                return;
+            }
         };
     }
 }
@@ -427,6 +601,13 @@ fn exit_cinematic(
     for e in state.beam_entities.drain(..) {
         commands.entity(e).despawn();
     }
+    if let Some(g) = state.glow_entity.take() {
+        commands.entity(g).despawn();
+    }
+    state.glow_material = None;
+    state.orig_ship_scale = None;
+    state.blast_dir = None;
+    state.variant = UltimateVariant::None;
     state.beam_materials.clear();
     state.portrait_material = None;
     zoom_state.target_scale = state.orig_cam_scale;
@@ -477,11 +658,23 @@ fn drive_camera_during_ultimate(
                 state.orig_cam_scale * (1.0 - eased) + HYPER_CAM_SCALE * eased,
             )
         }
-        UltimatePhase::Unleashing => {
+        UltimatePhase::ArilouUnleashing => {
             let p = (state.phase_timer_s / PHASE_UNLEASH_S).clamp(0.0, 1.0);
-            // Ease-in on the zoom-out so the punch holds for a beat
-            // then accelerates outward.
             let eased = p * p;
+            (
+                1.0 - eased,
+                HYPER_CAM_SCALE * (1.0 - eased) + state.orig_cam_scale * eased,
+            )
+        }
+        // Earthling: stay fully zoomed in through charge + stretch,
+        // then rapidly pull back during the blast so the action
+        // returns to game-scale.
+        UltimatePhase::EarthlingCharging | UltimatePhase::EarthlingStretching => {
+            (1.0, HYPER_CAM_SCALE)
+        }
+        UltimatePhase::EarthlingBlasting => {
+            let p = (state.phase_timer_s / 0.45).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - p).powi(3);
             (
                 1.0 - eased,
                 HYPER_CAM_SCALE * (1.0 - eased) + state.orig_cam_scale * eased,
@@ -526,7 +719,7 @@ fn drive_ship_rotation_during_ultimate(
     // integrates AngularVelocity normally — we don't need to write
     // Rotation by hand any more. This system stays as a safety in
     // case we ever pause again mid-Unleashing.
-    if state.phase != UltimatePhase::Unleashing {
+    if state.phase != UltimatePhase::ArilouUnleashing {
         return;
     }
     let dt = time.delta_secs();
@@ -565,7 +758,7 @@ fn tick_ultimate_beams(
     // "held breath" before the punch. Ramps up fast at the start of
     // Unleashing and holds until a brief fade in the last 15%.
     let phase_alpha = match state.phase {
-        UltimatePhase::Unleashing => {
+        UltimatePhase::ArilouUnleashing => {
             let p = (state.phase_timer_s / PHASE_UNLEASH_S).clamp(0.0, 1.0);
             // Snap on over the first 0.08 of the phase; hold; fade
             // out over the last 0.15.
@@ -631,7 +824,7 @@ fn tick_ultimate_beams(
     // set per layer), each at a sub-frame interpolated angle. Result:
     // at 60 fps + 42 rad/s the blade moves ~12° per frame; we emit
     // 6 copies across that arc, so the trail looks smoothly swept.
-    if state.phase != UltimatePhase::Unleashing {
+    if state.phase != UltimatePhase::ArilouUnleashing {
         // Always record the latest angle even on phases that don't
         // emit, so the next-Unleashing frame doesn't see a stale gap.
         state.last_blade_angle = Some(angle);
@@ -801,6 +994,274 @@ fn tick_beam_trails(
         if let Some(mat) = color_mats.get_mut(&trail.material) {
             let lin = trail.base_color.to_linear();
             mat.color = Color::srgba(lin.red, lin.green, lin.blue, alpha);
+        }
+    }
+}
+
+// ----------------------------------------------------------------
+// Earthling jump-to-light-speed — glow, stretch, blast, trail.
+// ----------------------------------------------------------------
+
+/// Pulsating glow that overlays the Earthling ship through the
+/// Charging and Stretching phases. Sets the glow material's alpha
+/// each tick to a `sin`-modulated breathing curve, scales the halo
+/// up during the buildup, follows the ship's world position, and
+/// stretches the ship sprite during the spring-load phase.
+fn tick_lightspeed_glow(
+    time: Res<Time<Real>>,
+    state: Res<UltimateState>,
+    mut glow_mats: ResMut<Assets<GlowMaterial>>,
+    ships: Query<(&Position, &Rotation), With<Ship>>,
+    mut transforms: Query<&mut Transform, Without<Ship>>,
+    mut ship_transforms: Query<&mut Transform, With<Ship>>,
+    mut lin_vels: Query<&mut LinearVelocity, With<Ship>>,
+) {
+    if state.variant != UltimateVariant::Earthling {
+        return;
+    }
+    let Some(p1) = state.player_entity else {
+        return;
+    };
+    let Ok((pos, rot)) = ships.get(p1) else { return };
+
+    // Pulse alpha intensity: ramps up during Charging, holds during
+    // Stretching, vanishes at Blasting. The high-frequency `sin`
+    // gives the breathing "energy buildup" feel.
+    let (base_intensity, halo_scale) = match state.phase {
+        UltimatePhase::EarthlingCharging => {
+            let p = (state.phase_timer_s / EARTH_CHARGE_S).clamp(0.0, 1.0);
+            // Quadratic ramp-up so the build feels like it
+            // accelerates toward release.
+            (p * p, 200.0 + 80.0 * p)
+        }
+        UltimatePhase::EarthlingStretching => {
+            // Full intensity, halo pulses bigger as the ship
+            // stretches — about to release.
+            let p = (state.phase_timer_s / EARTH_STRETCH_S).clamp(0.0, 1.0);
+            (1.0, 280.0 + 80.0 * (p * p))
+        }
+        UltimatePhase::EarthlingBlasting => {
+            // Quick fade-out as the ship springs forward.
+            let p = (state.phase_timer_s / 0.12).clamp(0.0, 1.0);
+            (1.0 - p, 360.0 + 200.0 * p)
+        }
+        _ => (0.0, 200.0),
+    };
+    let pulse = 0.75 + 0.25 * (time.elapsed_secs() * 14.0).sin();
+    let intensity = base_intensity * pulse;
+
+    if let Some(mat_handle) = state.glow_material.clone() {
+        if let Some(mat) = glow_mats.get_mut(&mat_handle) {
+            mat.params.x = intensity.clamp(0.0, 1.0);
+        }
+    }
+    if let Some(glow_entity) = state.glow_entity {
+        if let Ok(mut xf) = transforms.get_mut(glow_entity) {
+            xf.translation.x = pos.0.x;
+            xf.translation.y = pos.0.y;
+            xf.scale = Vec3::new(halo_scale, halo_scale, 1.0);
+        }
+    }
+
+    // Spring-load: ship swells then snaps back. We use a uniform
+    // scale rather than a directional stretch because the ship
+    // renders via pre-rotated sprite frames whose texture-Y axis
+    // is world-Y, not the ship's facing direction — a directional
+    // stretch would only point "correctly" for the up-facing frame.
+    // Uniform scale reads as "loading energy" instead of literal
+    // elongation but lands the same beat.
+    let stretch = match state.phase {
+        UltimatePhase::EarthlingCharging => 1.0,
+        UltimatePhase::EarthlingStretching => {
+            let p = (state.phase_timer_s / EARTH_STRETCH_S).clamp(0.0, 1.0);
+            // Ease-in cubic — wind-up accelerates toward release.
+            1.0 + (EARTH_STRETCH_PEAK - 1.0) * (p * p * p)
+        }
+        UltimatePhase::EarthlingBlasting => 1.0,
+        _ => 1.0,
+    };
+    if let Some(orig_scale) = state.orig_ship_scale {
+        if let Ok(mut ship_xf) = ship_transforms.get_mut(p1) {
+            let _ = rot;
+            ship_xf.scale = orig_scale * stretch;
+        }
+    }
+
+    // Ship loses all inertia at the start of Charging and stays
+    // pinned to zero velocity until Blasting starts.
+    if matches!(
+        state.phase,
+        UltimatePhase::EarthlingCharging | UltimatePhase::EarthlingStretching
+    ) {
+        if let Ok(mut lv) = lin_vels.get_mut(p1) {
+            lv.0 = Vec2::ZERO;
+        }
+    }
+}
+
+/// Earthling blast: ship slams forward at 4× speed_max along the
+/// direction it was facing at the start of the blast, deals massive
+/// contact damage to anything overlapping it each tick, and spawns
+/// a jagged streak trail behind itself.
+fn tick_earthling_blast(
+    time: Res<Time<Real>>,
+    mut state: ResMut<UltimateState>,
+    spatial: SpatialQuery,
+    ships: Query<(&Position, &Rotation), With<Ship>>,
+    ship_lookup: Query<&Ship>,
+    derived_q: Query<&crate::ship::ShipPhysicsDerived>,
+    mut lin_vels: Query<&mut LinearVelocity, With<Ship>>,
+    mut crews: Query<&mut Crew>,
+    mut color_mats: ResMut<Assets<bevy::sprite_render::ColorMaterial>>,
+    mut commands: Commands,
+) {
+    if state.variant != UltimateVariant::Earthling
+        || state.phase != UltimatePhase::EarthlingBlasting
+    {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok((pos, rot)) = ships.get(p1) else { return };
+
+    // Lock the blast direction the first tick — the ship's
+    // orientation at the moment of spring-release. After that the
+    // ship can't be steered.
+    if state.blast_dir.is_none() {
+        let world_dir = Vec2::new(-rot.sin, rot.cos);
+        state.blast_dir = Some(world_dir);
+    }
+    let dir = state.blast_dir.unwrap();
+
+    // Override LinearVelocity each frame so cap_velocity / damping
+    // can't slow us. (`cap_velocity` is also patched to skip
+    // HyperActive ships as a belt-and-suspenders.)
+    let speed_max = derived_q
+        .get(p1)
+        .map(|d| d.speed_max)
+        .unwrap_or(200.0);
+    let target_vel = dir * speed_max * EARTH_BLAST_SPEED_MULT;
+    if let Ok(mut lv) = lin_vels.get_mut(p1) {
+        lv.0 = target_vel;
+    }
+
+    // Damage everything overlapping the ship's circle this tick.
+    // We use a circle shape-intersection ahead of the ship covering
+    // the swept area for this frame, so a tiny enemy doesn't
+    // tunnel through between physics steps.
+    let frame_travel = target_vel.length() * time.delta_secs();
+    let probe_radius = 60.0_f32.max(frame_travel * 0.6);
+    let probe_center = pos.0 + dir * frame_travel * 0.5;
+    let filter = SpatialQueryFilter::default().with_excluded_entities([p1]);
+    let hits = spatial.shape_intersections(
+        &Collider::circle(probe_radius),
+        probe_center,
+        0.0,
+        &filter,
+    );
+    let dmg = (EARTH_BLAST_DMG_PER_SEC * time.delta_secs()).round() as i32;
+    if dmg > 0 {
+        for hit_entity in hits {
+            if let (Ok(target_ship), Ok(owner_ship)) =
+                (ship_lookup.get(hit_entity), ship_lookup.get(p1))
+            {
+                if target_ship.player_slot != owner_ship.player_slot {
+                    if let Ok(mut crew) = crews.get_mut(hit_entity) {
+                        crew.current = (crew.current - dmg).max(0);
+                    }
+                }
+            }
+        }
+    }
+
+    // Emit jagged streak trails behind the ship. 3 ghosts per
+    // frame, each with random lateral offset and angle jitter so
+    // the trail reads as "broken / shattering" rather than a clean
+    // line.
+    const TRAILS_PER_FRAME: usize = 3;
+    for i in 0..TRAILS_PER_FRAME {
+        let t = (i as f32 + 0.5) / TRAILS_PER_FRAME as f32;
+        let lateral = (fastrand::f32() - 0.5) * 22.0;
+        let along = -t * frame_travel * 0.7;
+        let tangent = Vec2::new(-dir.y, dir.x);
+        let origin = pos.0 + dir * along + tangent * lateral;
+
+        // Random jagged angle offset so segments fork at angles.
+        let angle_jit = (fastrand::f32() - 0.5) * 0.30;
+        let trail_dir = Vec2::new(
+            dir.x * angle_jit.cos() - dir.y * angle_jit.sin(),
+            dir.x * angle_jit.sin() + dir.y * angle_jit.cos(),
+        );
+        let local_angle = trail_dir.y.atan2(trail_dir.x) - std::f32::consts::FRAC_PI_2;
+
+        // Length-jittered streak, oriented BACKWARDS along the
+        // blast direction (apex AT the ship, base extending behind).
+        // To flip the triangle (apex behind, base toward us), we
+        // simply rotate by +π so local +Y points opposite to dir.
+        let streak_len = 70.0 + fastrand::f32() * 140.0;
+        let streak_width = 8.0 + fastrand::f32() * 14.0;
+        let lifetime = 0.45 + fastrand::f32() * 0.40;
+        let peak = 0.85 + fastrand::f32() * 0.15;
+
+        // Gradient: hot-white center fading toward blue. The
+        // shader-less version just uses one solid colour per trail,
+        // varied by the ghost — gives the gradient feel across the
+        // population of ghosts.
+        let hot = fastrand::f32();
+        let color = Color::srgba(
+            0.55 + 0.45 * hot,
+            0.75 + 0.25 * hot,
+            1.0,
+            peak,
+        );
+        let mat_handle =
+            color_mats.add(bevy::sprite_render::ColorMaterial::from_color(color));
+        commands.spawn((
+            BlastTrail {
+                remaining_s: lifetime,
+                total_s: lifetime,
+                peak_alpha: peak,
+                base_color: color,
+                material: mat_handle.clone(),
+            },
+            Mesh2d(BLADE_MESH_HANDLE.clone()),
+            MeshMaterial2d(mat_handle),
+            Transform {
+                translation: origin.extend(0.28),
+                // Rotate by π extra so the triangle's apex sits at
+                // the ship side and the base trails behind.
+                rotation: Quat::from_rotation_z(local_angle + std::f32::consts::PI),
+                scale: Vec3::new(streak_width, streak_len, 1.0),
+            },
+        ));
+    }
+}
+
+/// Tick + fade out the jagged blast trails. Same shape as
+/// `tick_beam_trails` but with a faster, more violent decay.
+fn tick_blast_trails(
+    time: Res<Time<Real>>,
+    mut commands: Commands,
+    mut color_mats: ResMut<Assets<bevy::sprite_render::ColorMaterial>>,
+    mut q: Query<(Entity, &mut BlastTrail, &mut Transform)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut trail, mut xf) in &mut q {
+        trail.remaining_s -= dt;
+        if trail.remaining_s <= 0.0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        let frac = (trail.remaining_s / trail.total_s).clamp(0.0, 1.0);
+        let age = 1.0 - frac;
+        // Width contracts as it fades — opposite of the beam smoke
+        // billow; here we want the streak to thin out as it dies.
+        xf.scale.x *= 0.985;
+        // Length stretches slightly so the streak "leans" away.
+        xf.scale.y *= 1.004;
+        let alpha = trail.peak_alpha * frac.powf(0.8) * (1.0 - 0.4 * age);
+        if let Some(mat) = color_mats.get_mut(&trail.material) {
+            let lin = trail.base_color.to_linear();
+            mat.color = Color::srgba(lin.red, lin.green, lin.blue, alpha.max(0.0));
         }
     }
 }
