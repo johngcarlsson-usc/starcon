@@ -83,9 +83,13 @@ pub struct UltimateState {
 pub enum UltimatePhase {
     #[default]
     Idle,
-    ZoomingIn,
+    /// Time is paused. Camera rams toward the ship, portrait fades
+    /// in. No spin, no blade — the held breath before the move.
+    DramaticZoomIn,
+    /// Time resumes. Camera pulls back to its original framing
+    /// *while* the ship spins and the blade slashes — the zoom-out
+    /// itself is the punch of the move.
     Unleashing,
-    ZoomingOut,
 }
 
 /// Marker on the spinning ship while the cinematic is active.
@@ -152,16 +156,25 @@ impl Plugin for UltimatePlugin {
 // Tuning.
 // ----------------------------------------------------------------
 
-const PHASE_ZOOM_IN_S: f32 = 0.45;
-const PHASE_UNLEASH_S: f32 = 2.8;
-const PHASE_ZOOM_OUT_S: f32 = 0.5;
-const HYPER_CAM_SCALE: f32 = 0.45;
-const HYPER_SPIN_RAD_PER_S: f32 = 36.0;
+/// Fast ram-in while the world is paused — the dramatic pause
+/// before the punch. Short enough to feel like a snap, long enough
+/// to read the portrait fading in.
+const PHASE_ZOOM_IN_S: f32 = 0.22;
+/// Time resumes for this phase. Camera pulls back from full close-
+/// up to the original framing across this duration *while* the
+/// blade slashes — the zoom-out itself sells the move.
+const PHASE_UNLEASH_S: f32 = 1.6;
+/// How far the camera rams in during the pause. Smaller = more
+/// dramatic close-up (was 0.45; 0.18 fills the screen with the
+/// ship).
+const HYPER_CAM_SCALE: f32 = 0.20;
+const HYPER_SPIN_RAD_PER_S: f32 = 42.0;
 const HYPER_BEAM_LEN: f32 = 380.0;
 /// Per-second crew damage applied to anything the blade is currently
-/// touching. Scaled by `dt` each tick. ~480 dmg/sec means even high-
-/// crew ships die in well under a second of contact.
-const HYPER_DAMAGE_PER_SEC: f32 = 480.0;
+/// touching. Scaled by `dt` each tick. ~600 dmg/sec — even high-
+/// crew ships die in a couple frames of contact, and since the
+/// Unleashing phase is only ~1.6 s the total damage is bounded.
+const HYPER_DAMAGE_PER_SEC: f32 = 600.0;
 const PORTRAIT_KEY: KeyCode = KeyCode::Space;
 const PORTRAIT_PATH: &str = "ultimate/portrait_arisk.png";
 const VOICE_PATH: &str = "ultimate/arisk_voi.wav";
@@ -207,7 +220,7 @@ fn hyper_trigger(
         Projection::Orthographic(ortho) => ortho.scale,
         _ => 1.0,
     };
-    state.phase = UltimatePhase::ZoomingIn;
+    state.phase = UltimatePhase::DramaticZoomIn;
     state.phase_timer_s = 0.0;
 
     if meshes.get(&QUAD_MESH_HANDLE).is_none() {
@@ -282,22 +295,40 @@ fn tick_ultimate_phases(
         return;
     };
 
-    let (phase_total, alpha, beam_visible) = match state.phase {
-        UltimatePhase::ZoomingIn => {
-            let p = (state.phase_timer_s / PHASE_ZOOM_IN_S).clamp(0.0, 1.0);
-            (PHASE_ZOOM_IN_S, p, p > 0.35)
-        }
-        UltimatePhase::Unleashing => (PHASE_UNLEASH_S, 1.0, true),
-        UltimatePhase::ZoomingOut => {
-            let p = (state.phase_timer_s / PHASE_ZOOM_OUT_S).clamp(0.0, 1.0);
-            (PHASE_ZOOM_OUT_S, 1.0 - p, p < 0.7)
-        }
-        UltimatePhase::Idle => unreachable!(),
-    };
+    // Per-phase derived values:
+    //   `phase_total`        — duration of the current phase
+    //   `portrait_alpha`     — 0..1, fade target this tick
+    //   `beam_visible`       — whether the blade should be rendering
+    //   `spin`               — angular velocity to lock the ship at
+    //   `should_be_paused`   — Time<Virtual> pause state
+    let (phase_total, portrait_alpha, beam_visible, spin, should_be_paused) =
+        match state.phase {
+            UltimatePhase::DramaticZoomIn => {
+                let p = (state.phase_timer_s / PHASE_ZOOM_IN_S).clamp(0.0, 1.0);
+                // Ease-out so the portrait snaps in fast then settles.
+                let eased = 1.0 - (1.0 - p).powi(3);
+                (PHASE_ZOOM_IN_S, eased, false, 0.0, true)
+            }
+            UltimatePhase::Unleashing => {
+                let p = (state.phase_timer_s / PHASE_UNLEASH_S).clamp(0.0, 1.0);
+                // Portrait fades out over the first 60% of the zoom-
+                // out so the player's eye returns to the action.
+                let portrait_p = (p / 0.6).clamp(0.0, 1.0);
+                let portrait = 1.0 - portrait_p;
+                (PHASE_UNLEASH_S, portrait, true, HYPER_SPIN_RAD_PER_S, false)
+            }
+            UltimatePhase::Idle => unreachable!(),
+        };
+
+    // Unpause Time<Virtual> the first tick of Unleashing.
+    if !should_be_paused && state.was_paused {
+        virt.unpause();
+        state.was_paused = false;
+    }
 
     if let Some(mat_handle) = state.portrait_material.clone() {
         if let Some(mat) = materials.get_mut(&mat_handle) {
-            mat.params.x = alpha * 0.92;
+            mat.params.x = portrait_alpha * 0.92;
         }
     }
 
@@ -312,42 +343,19 @@ fn tick_ultimate_phases(
         }
     }
 
-    let spin = match state.phase {
-        UltimatePhase::ZoomingIn => {
-            let p = (state.phase_timer_s / PHASE_ZOOM_IN_S).clamp(0.0, 1.0);
-            HYPER_SPIN_RAD_PER_S * p
-        }
-        UltimatePhase::Unleashing => HYPER_SPIN_RAD_PER_S,
-        UltimatePhase::ZoomingOut => {
-            let p = (state.phase_timer_s / PHASE_ZOOM_OUT_S).clamp(0.0, 1.0);
-            HYPER_SPIN_RAD_PER_S * (1.0 - p)
-        }
-        UltimatePhase::Idle => 0.0,
-    };
     if let Ok(mut av) = ships.get_mut(p1) {
         av.0 = spin;
     }
-    let width_mult = match state.phase {
-        UltimatePhase::ZoomingIn => {
-            (state.phase_timer_s / PHASE_ZOOM_IN_S).clamp(0.0, 1.0)
-        }
-        UltimatePhase::Unleashing => 1.0,
-        UltimatePhase::ZoomingOut => {
-            1.0 - (state.phase_timer_s / PHASE_ZOOM_OUT_S).clamp(0.0, 1.0)
-        }
-        UltimatePhase::Idle => 0.0,
-    };
     commands.entity(p1).insert(HyperActive {
         forced_ang_vel: spin,
-        beam_width_mult: width_mult,
+        beam_width_mult: if beam_visible { 1.0 } else { 0.0 },
     });
 
     if state.phase_timer_s >= phase_total {
         state.phase_timer_s = 0.0;
         state.phase = match state.phase {
-            UltimatePhase::ZoomingIn => UltimatePhase::Unleashing,
-            UltimatePhase::Unleashing => UltimatePhase::ZoomingOut,
-            UltimatePhase::ZoomingOut => {
+            UltimatePhase::DramaticZoomIn => UltimatePhase::Unleashing,
+            UltimatePhase::Unleashing => {
                 exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
                 return;
             }
@@ -411,14 +419,25 @@ fn drive_camera_during_ultimate(
     let Ok(ship_pos) = ships.get(p1) else { return };
 
     let (blend, scale) = match state.phase {
-        UltimatePhase::ZoomingIn => {
+        UltimatePhase::DramaticZoomIn => {
             let p = (state.phase_timer_s / PHASE_ZOOM_IN_S).clamp(0.0, 1.0);
-            (p, state.orig_cam_scale * (1.0 - p) + HYPER_CAM_SCALE * p)
+            // Hard ease-out so the camera *snaps* toward the ship —
+            // the punch of the dramatic zoom-in.
+            let eased = 1.0 - (1.0 - p).powi(4);
+            (
+                eased,
+                state.orig_cam_scale * (1.0 - eased) + HYPER_CAM_SCALE * eased,
+            )
         }
-        UltimatePhase::Unleashing => (1.0, HYPER_CAM_SCALE),
-        UltimatePhase::ZoomingOut => {
-            let p = (state.phase_timer_s / PHASE_ZOOM_OUT_S).clamp(0.0, 1.0);
-            (1.0 - p, HYPER_CAM_SCALE * (1.0 - p) + state.orig_cam_scale * p)
+        UltimatePhase::Unleashing => {
+            let p = (state.phase_timer_s / PHASE_UNLEASH_S).clamp(0.0, 1.0);
+            // Ease-in on the zoom-out so the punch holds for a beat
+            // then accelerates outward.
+            let eased = p * p;
+            (
+                1.0 - eased,
+                HYPER_CAM_SCALE * (1.0 - eased) + state.orig_cam_scale * eased,
+            )
         }
         UltimatePhase::Idle => return,
     };
@@ -454,26 +473,16 @@ fn drive_ship_rotation_during_ultimate(
     state: Res<UltimateState>,
     mut rotations: Query<&mut Rotation, With<HyperActive>>,
 ) {
-    if state.phase == UltimatePhase::Idle {
+    // No manual rotation in DramaticZoomIn (ship is frozen with the
+    // world). During Unleashing, Time<Virtual> is unpaused so Avian
+    // integrates AngularVelocity normally — we don't need to write
+    // Rotation by hand any more. This system stays as a safety in
+    // case we ever pause again mid-Unleashing.
+    if state.phase != UltimatePhase::Unleashing {
         return;
     }
     let dt = time.delta_secs();
-    let spin = match state.phase {
-        UltimatePhase::ZoomingIn => {
-            let p = (state.phase_timer_s / PHASE_ZOOM_IN_S).clamp(0.0, 1.0);
-            HYPER_SPIN_RAD_PER_S * p
-        }
-        UltimatePhase::Unleashing => HYPER_SPIN_RAD_PER_S,
-        UltimatePhase::ZoomingOut => {
-            let p = (state.phase_timer_s / PHASE_ZOOM_OUT_S).clamp(0.0, 1.0);
-            HYPER_SPIN_RAD_PER_S * (1.0 - p)
-        }
-        UltimatePhase::Idle => 0.0,
-    };
-    for mut rot in &mut rotations {
-        let new_angle = rot.as_radians() + spin * dt;
-        *rot = Rotation::radians(new_angle);
-    }
+    let _ = (dt, &mut rotations);
 }
 
 // ----------------------------------------------------------------
@@ -503,15 +512,23 @@ fn tick_ultimate_beams(
     let sin = rot.sin;
     let world_dir = Vec2::new(-sin, cos);
 
+    // Blade only exists during Unleashing — DramaticZoomIn is the
+    // "held breath" before the punch. Ramps up fast at the start of
+    // Unleashing and holds until a brief fade in the last 15%.
     let phase_alpha = match state.phase {
-        UltimatePhase::ZoomingIn => {
-            (state.phase_timer_s / PHASE_ZOOM_IN_S).clamp(0.0, 1.0)
+        UltimatePhase::Unleashing => {
+            let p = (state.phase_timer_s / PHASE_UNLEASH_S).clamp(0.0, 1.0);
+            // Snap on over the first 0.08 of the phase; hold; fade
+            // out over the last 0.15.
+            if p < 0.08 {
+                (p / 0.08).clamp(0.0, 1.0)
+            } else if p > 0.85 {
+                ((1.0 - p) / 0.15).clamp(0.0, 1.0)
+            } else {
+                1.0
+            }
         }
-        UltimatePhase::Unleashing => 1.0,
-        UltimatePhase::ZoomingOut => {
-            1.0 - (state.phase_timer_s / PHASE_ZOOM_OUT_S).clamp(0.0, 1.0)
-        }
-        UltimatePhase::Idle => 0.0,
+        _ => 0.0,
     };
     if phase_alpha <= 0.001 {
         return;
@@ -555,9 +572,9 @@ fn tick_ultimate_beams(
     // and this frame's so the smear is continuous at any frame rate.
     // Spawn TRAIL_SAMPLES_PER_FRAME * 3 layers of ghost copies (one
     // set per layer), each at a sub-frame interpolated angle. Result:
-    // at 60 fps + 36 rad/s the blade moves ~10° per frame; we emit
+    // at 60 fps + 42 rad/s the blade moves ~12° per frame; we emit
     // 6 copies across that arc, so the trail looks smoothly swept.
-    if state.phase != UltimatePhase::Unleashing && state.phase != UltimatePhase::ZoomingOut {
+    if state.phase != UltimatePhase::Unleashing {
         // Always record the latest angle even on phases that don't
         // emit, so the next-Unleashing frame doesn't see a stale gap.
         state.last_blade_angle = Some(angle);
