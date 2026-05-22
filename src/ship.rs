@@ -2406,21 +2406,48 @@ fn cycle_angular_override(
 /// Frame 0 = sprite as authored (pointing up / +Y in world space).
 /// Frames go clockwise around 360° as the index increases, matching
 /// the legacy Allegro datafile convention.
+/// Picks the nearest pre-rotated sprite frame for the ship's current
+/// angle AND applies a small `Transform.rotation` residual so the
+/// visible orientation is continuous (not stepped) between frame
+/// boundaries. With 64 frames that's 5.625° per step — at slow spins
+/// the discrete jumps are noticeable, but a sub-step Transform
+/// rotation of up to ±2.8° smooths the gap to invisible.
+///
+/// Safe to write `Transform.rotation` here because we disabled
+/// `PhysicsTransformConfig::transform_to_position`; Avian doesn't
+/// read Transform back into the authoritative `Rotation`.
 fn swap_rotation_frame(mut q: Query<(&Rotation, &ShipFrames, &mut Sprite, &mut Transform)>) {
+    use std::f32::consts::{PI, TAU};
     for (rot, frames, mut sprite, mut transform) in &mut q {
         if frames.frames.is_empty() {
             continue;
         }
-        let angle = rot.sin.atan2(rot.cos);
-        let n = frames.frames.len() as f32;
-        let mut idx = ((-angle) / std::f32::consts::TAU * n).rem_euclid(n) as usize;
-        if idx >= frames.frames.len() {
+        let n = frames.frames.len();
+        let nf = n as f32;
+        let angle = rot.sin.atan2(rot.cos); // ∈ [-π, π]
+
+        // Find the closest frame index by *rounding* (not floor)
+        // so the residual is bounded to ±half a step (±π/n rad).
+        let raw = ((-angle) / TAU * nf).rem_euclid(nf);
+        let mut idx = (raw.round() as usize) % n;
+        if idx >= n {
             idx = 0;
         }
+        // The angle that frame `idx` is drawn at, in world radians.
+        let frame_angle = -(idx as f32) * TAU / nf;
+        // Difference between the actual rotation and the frame's
+        // baked-in rotation — apply as Transform.rotation to fill
+        // the gap visually.
+        let mut residual = angle - frame_angle;
+        // Wrap to [-π, π] for the smallest rotation.
+        if residual > PI {
+            residual -= TAU;
+        } else if residual < -PI {
+            residual += TAU;
+        }
+
         sprite.image = frames.frames[idx].clone();
-        // Cancel Avian's rotation sync on this sprite — the chosen
-        // frame already encodes the rotation visually.
-        transform.rotation = Quat::IDENTITY;
+        transform.rotation = Quat::from_rotation_z(residual);
     }
 }
 
@@ -2886,6 +2913,7 @@ fn update_overlay_sprites(
     parents: Query<(&Position, &Rotation), With<Ship>>,
     mut overlays: Query<(Entity, &OverlaySprite, &mut Sprite, &mut Transform)>,
 ) {
+    use std::f32::consts::{PI, TAU};
     for (overlay_entity, overlay, mut sprite, mut transform) in &mut overlays {
         let Ok((parent_pos, parent_rot)) = parents.get(overlay.parent) else {
             commands.entity(overlay_entity).despawn();
@@ -2895,20 +2923,29 @@ fn update_overlay_sprites(
         if n == 0 {
             continue;
         }
+        let nf = n as f32;
         let parent_angle = parent_rot.sin.atan2(parent_rot.cos);
         let total = parent_angle + overlay.extra_angle;
-        let n_f = n as f32;
-        let mut idx = ((-total) / std::f32::consts::TAU * n_f).rem_euclid(n_f) as usize;
+
+        // Same nearest-frame + residual interpolation as
+        // `swap_rotation_frame` — keeps the turret rotation visually
+        // continuous instead of stepping in 5.6° chunks.
+        let raw = ((-total) / TAU * nf).rem_euclid(nf);
+        let mut idx = (raw.round() as usize) % n;
         if idx >= n {
             idx = 0;
         }
+        let frame_angle = -(idx as f32) * TAU / nf;
+        let mut residual = total - frame_angle;
+        if residual > PI {
+            residual -= TAU;
+        } else if residual < -PI {
+            residual += TAU;
+        }
+
         sprite.image = overlay.frames[idx].clone();
         transform.translation = parent_pos.0.extend(overlay.z_offset);
-        // Same trick as `swap_rotation_frame` — the chosen frame
-        // already encodes the rotation, so cancel any Transform-side
-        // rotation. Avian doesn't touch this entity (no RigidBody),
-        // so this stays at IDENTITY across frames.
-        transform.rotation = Quat::IDENTITY;
+        transform.rotation = Quat::from_rotation_z(residual);
     }
 }
 
