@@ -795,7 +795,7 @@ pub fn spawn_match(
         &ship_colliders,
     );
 
-    spawn_asteroids(&mut commands);
+    spawn_asteroids(&mut commands, &assets);
 }
 
 /// Class-picker hotkeys. Two ways in:
@@ -5258,7 +5258,7 @@ pub struct Asteroid;
 /// Sprinkle a handful of asteroids at random positions across the
 /// arena, avoiding the player-ship spawn corridors. Called once
 /// per match from `spawn_match`.
-pub fn spawn_asteroids(commands: &mut Commands) {
+pub fn spawn_asteroids(commands: &mut Commands, assets: &AssetServer) {
     use std::f32::consts::TAU;
     const N: usize = 8;
     /// Half-side of the arena (matches STAR_AREA_HALF in starfield
@@ -5268,6 +5268,10 @@ pub fn spawn_asteroids(commands: &mut Commands) {
     /// Don't spawn asteroids too close to the ship spawn corridor.
     const KEEP_OUT_X: f32 = 600.0;
     const KEEP_OUT_Y: f32 = 350.0;
+    /// melee.dat ships 64 rotation frames per asteroid sprite
+    /// (`ASTERO01..64`, indices 1-based). Pick one at random per
+    /// asteroid so the field doesn't read as 8 identical rocks.
+    const ASTEROID_FRAMES: usize = 64;
 
     for _ in 0..N {
         let pos = loop {
@@ -5283,19 +5287,18 @@ pub fn spawn_asteroids(commands: &mut Commands) {
         let theta = fastrand::f32() * TAU;
         let speed = 18.0 + fastrand::f32() * 28.0;
         let vel = Vec2::new(theta.cos(), theta.sin()) * speed;
-        // Asteroid radius — between small and chunky, with the
-        // sprite drawn slightly bigger than the collider so the
-        // silhouette feels solid.
         let radius = 22.0 + fastrand::f32() * 16.0;
         let visual = radius * 2.2;
-        // Earthy grey-brown with small per-asteroid colour jitter
-        // for visual variety.
-        let r = 0.45 + fastrand::f32() * 0.15;
-        let g = 0.40 + fastrand::f32() * 0.15;
-        let b = 0.38 + fastrand::f32() * 0.10;
+        let frame_idx = 1 + (fastrand::usize(..) % ASTEROID_FRAMES);
+        let sprite_path = format!("asteroids/astero{:02}.png", frame_idx);
         commands.spawn((
             Asteroid,
-            Sprite::from_color(Color::srgba(r, g, b, 1.0), Vec2::splat(visual)),
+            Sprite {
+                image: assets.load(sprite_path),
+                color: Color::WHITE,
+                custom_size: Some(Vec2::splat(visual)),
+                ..default()
+            },
             Transform::from_translation(pos.extend(0.1)),
             RigidBody::Dynamic,
             Collider::circle(radius),

@@ -497,8 +497,8 @@ const SLYP_STORM_S: f32 = 4.0;
 /// Min/max launch speed of each asteroid (world units / second).
 /// The randomisation across this range gives the swarm its chaotic
 /// feel.
-const SLYP_LAUNCH_SPEED_MIN: f32 = 220.0;
-const SLYP_LAUNCH_SPEED_MAX: f32 = 620.0;
+const SLYP_LAUNCH_SPEED_MIN: f32 = 440.0;
+const SLYP_LAUNCH_SPEED_MAX: f32 = 1240.0;
 /// How long an asteroid stays "armed" — glowing and dealing contact
 /// damage — after launch. Once it expires the rock returns to
 /// being an inert physical obstacle.
@@ -1297,18 +1297,24 @@ fn drive_camera_during_ultimate(
             let z = portrait_xf.translation.z;
             portrait_xf.translation = cam_xf.translation + Vec3::new(off_x, off_y, 0.0);
             portrait_xf.translation.z = z;
-            // Preserve the source image's aspect ratio. If we don't
-            // know it yet (image still loading) fall back to the
-            // historical 620×930 (0.667). Once detected, width
-            // = target_height * aspect — no stretching.
-            let target_h = 930.0_f32;
+            // Preserve the source image's aspect ratio, and cap
+            // the longer screen dimension so a landscape portrait
+            // (Chenjesu) doesn't fill the screen. MAX_SCREEN_DIM
+            // keeps the portrait around 1/5 of the canonical
+            // 1280-px window in area regardless of orientation.
+            const MAX_SCREEN_DIM: f32 = 450.0;
             let aspect = if state.portrait_aspect > 0.0 {
                 state.portrait_aspect
             } else {
                 620.0 / 930.0
             };
+            let (w_px, h_px) = if aspect >= 1.0 {
+                (MAX_SCREEN_DIM, MAX_SCREEN_DIM / aspect)
+            } else {
+                (MAX_SCREEN_DIM * aspect, MAX_SCREEN_DIM)
+            };
             portrait_xf.scale =
-                Vec3::new(target_h * aspect * scale, target_h * scale, 1.0);
+                Vec3::new(w_px * scale, h_px * scale, 1.0);
         }
     }
 }
@@ -2432,8 +2438,9 @@ fn tick_slylandro_glow(
     for (e, mut launched, mut sprite) in &mut q {
         launched.remaining_s -= dt;
         if launched.remaining_s <= 0.0 {
-            // Done glowing — restore default asteroid color.
-            sprite.color = Color::srgba(0.55, 0.50, 0.45, 1.0);
+            // Done glowing — restore default white tint so the
+            // asteroid sprite renders at its native colour.
+            sprite.color = Color::WHITE;
             if let Ok(mut ec) = commands.get_entity(e) {
                 ec.remove::<SlylandroLaunched>();
             }

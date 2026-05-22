@@ -72,6 +72,11 @@ pub struct ZoomState {
     /// throughout the tween — i.e. the zoom centres on the cursor,
     /// not on screen-centre. Cleared once the scale tween settles.
     pub pivot: Option<ZoomPivot>,
+    /// Last frame's ship count. The follow system uses this to
+    /// detect a 0→N transition (match start / first spawn) and
+    /// snap the camera + scale to the tight bounding box instead
+    /// of slowly easing in.
+    pub last_ship_count: usize,
 }
 
 /// Captured at the moment of a scroll event: `offset_px` is the
@@ -91,6 +96,7 @@ impl Default for ZoomState {
             last_scroll_dir: 0.0,
             last_pinch_dist: None,
             pivot: None,
+            last_ship_count: 0,
         }
     }
 }
@@ -451,7 +457,7 @@ fn follow_ships_with_camera(
     mut zoom_state: ResMut<ZoomState>,
     ships: Query<&Position, With<Ship>>,
     windows: Query<&Window>,
-    mut cameras: Query<&mut Transform, With<Camera2d>>,
+    mut cameras: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
 ) {
     if *mode != CameraFollowMode::Auto {
         return;
@@ -519,13 +525,26 @@ fn follow_ships_with_camera(
         cur
     };
 
-    // Lerp toward both target position and target scale. Higher
-    // rate = snappier follow.
+    // First-frame detection: if we just transitioned from 0 ships
+    // to ≥1 (match start / rematch), snap the camera + scale to
+    // the bounding box instead of slowly easing in from wherever
+    // the camera was sitting before.
+    let snap = zoom_state.last_ship_count == 0 && count > 0;
+    zoom_state.last_ship_count = count;
+
     let dt = time.delta_secs();
-    let blend = (4.0 * dt).min(1.0);
-    if let Ok(mut cam_xf) = cameras.single_mut() {
+    let blend = if snap { 1.0 } else { (4.0 * dt).min(1.0) };
+
+    if let Ok((mut cam_xf, mut projection)) = cameras.single_mut() {
         cam_xf.translation.x += (center.x - cam_xf.translation.x) * blend;
         cam_xf.translation.y += (center.y - cam_xf.translation.y) * blend;
+        if snap {
+            // Match the actual orthographic scale as well so the
+            // first rendered frame already fits the bbox.
+            if let Projection::Orthographic(ref mut ortho) = *projection {
+                ortho.scale = raw_scale * 1.05;
+            }
+        }
     }
     let cur = zoom_state.target_scale;
     zoom_state.target_scale = cur + (target_scale - cur) * blend;
