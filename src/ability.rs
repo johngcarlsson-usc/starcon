@@ -280,6 +280,7 @@ impl Plugin for AbilityPlugin {
 fn dispatch_primary(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
+    virt: Res<input::VirtualInput>,
     assets: Res<AssetServer>,
     mut q: Query<(
         Entity,
@@ -303,7 +304,7 @@ fn dispatch_primary(
         if cd.0 > 0.0 {
             continue;
         }
-        let input = input::read_local_input(&keys, ship.player_slot);
+        let input = input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot);
         if !input.pressed(input::INPUT_FIRE) {
             continue;
         }
@@ -332,6 +333,7 @@ fn dispatch_primary(
 fn dispatch_special(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
+    virt: Res<input::VirtualInput>,
     assets: Res<AssetServer>,
     mut q: Query<(
         Entity,
@@ -356,9 +358,11 @@ fn dispatch_special(
         // window and lands back where it started.
         let edge_only = matches!(abilities.special.kind, AbilityKind::ToggleMode);
         let triggered = if edge_only {
-            input::read_local_just_pressed(&keys, ship.player_slot).pressed(input::INPUT_SPECIAL)
+            input::read_local_just_pressed_with_virtual(&keys, Some(&virt), ship.player_slot)
+                .pressed(input::INPUT_SPECIAL)
         } else {
-            input::read_local_input(&keys, ship.player_slot).pressed(input::INPUT_SPECIAL)
+            input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot)
+                .pressed(input::INPUT_SPECIAL)
         };
         if !triggered {
             continue;

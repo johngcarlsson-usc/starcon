@@ -22,6 +22,20 @@ impl PlayerInput {
     }
 }
 
+/// Synthetic input state populated by the touch-controls module
+/// (`mobile_controls.rs`). Bits set here are OR'd into player 1's
+/// keyboard input each tick so the touch buttons "are" the keyboard.
+/// Also drives the ultimate-cinematic trigger on touch devices where
+/// there's no Space bar to press.
+#[derive(Resource, Default, Debug, Clone, Copy)]
+pub struct VirtualInput {
+    pub held: PlayerInput,
+    pub just_pressed: PlayerInput,
+    pub just_released: PlayerInput,
+    /// Edge-triggered: true the tick the on-screen ULT button is hit.
+    pub ultimate_just_pressed: bool,
+}
+
 fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
     match slot {
         0 => &[
@@ -44,6 +58,11 @@ fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
 /// Read local keyboard state into a `PlayerInput`. Player 1 uses arrows + Z/X;
 /// player 2 (couch co-op) uses WASD + G/H. This returns the *held* state — a
 /// bit is set as long as the key is down.
+///
+/// On touch devices the virtual-controls overlay (see
+/// `mobile_controls.rs`) writes into a `VirtualInput` resource; we OR
+/// those bits into player 1's input each tick. Player 2 is unaffected
+/// because there's only one set of touch buttons on screen.
 pub fn read_local_input(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput {
     let mut buttons = 0u8;
     for (key, mask) in keymap(slot) {
@@ -52,6 +71,23 @@ pub fn read_local_input(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput
         }
     }
     PlayerInput { buttons }
+}
+
+/// Same as `read_local_input` but also OR's in the virtual touch
+/// controls for player 1. Pass an `Option` so callers in test paths
+/// can pass `None` and keep deterministic behaviour.
+pub fn read_local_input_with_virtual(
+    keys: &ButtonInput<KeyCode>,
+    virt: Option<&VirtualInput>,
+    slot: usize,
+) -> PlayerInput {
+    let mut input = read_local_input(keys, slot);
+    if slot == 0 {
+        if let Some(v) = virt {
+            input.buttons |= v.held.buttons;
+        }
+    }
+    input
 }
 
 /// Like `read_local_input` but only sets a bit on the *rising edge* —
@@ -67,6 +103,20 @@ pub fn read_local_just_pressed(keys: &ButtonInput<KeyCode>, slot: usize) -> Play
         }
     }
     PlayerInput { buttons }
+}
+
+pub fn read_local_just_pressed_with_virtual(
+    keys: &ButtonInput<KeyCode>,
+    virt: Option<&VirtualInput>,
+    slot: usize,
+) -> PlayerInput {
+    let mut input = read_local_just_pressed(keys, slot);
+    if slot == 0 {
+        if let Some(v) = virt {
+            input.buttons |= v.just_pressed.buttons;
+        }
+    }
+    input
 }
 
 /// Like `read_local_just_pressed` but for the *falling edge* — the
@@ -87,5 +137,7 @@ pub fn read_local_just_released(keys: &ButtonInput<KeyCode>, slot: usize) -> Pla
 pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
-    fn build(&self, _app: &mut App) {}
+    fn build(&self, app: &mut App) {
+        app.init_resource::<VirtualInput>();
+    }
 }

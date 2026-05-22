@@ -2376,6 +2376,7 @@ fn load_rotation_frames(
 ///     `AngularControl` doc-comment.
 fn apply_player_input(
     keys: Res<ButtonInput<KeyCode>>,
+    virt: Res<input::VirtualInput>,
     angular_override: Res<AngularControlOverride>,
     mut q: Query<(
         &Ship,
@@ -2416,7 +2417,7 @@ fn apply_player_input(
         }
         let rot_cos = rot.cos;
         let rot_sin = rot.sin;
-        let input = input::read_local_input(&keys, ship.player_slot);
+        let input = input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot);
 
         let dir = if input.pressed(input::INPUT_LEFT) {
             1.0
@@ -3261,6 +3262,7 @@ fn tick_projectile_lifetime(
 fn tick_chebr_crystal(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
+    virt: Res<input::VirtualInput>,
     assets: Res<AssetServer>,
     projectiles: Query<&Position, With<Projectile>>,
     mut ships: Query<
@@ -3283,7 +3285,7 @@ fn tick_chebr_crystal(
     let weapon_damage = 6;
 
     for (entity, ship, ship_pos, ship_rot, ship_vel, mut carrier, mut batt) in &mut ships {
-        let input = input::read_local_input(&keys, ship.player_slot);
+        let input = input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot);
         let fire_held = input.pressed(input::INPUT_FIRE);
 
         // Clear stale handle if the crystal died on a hit (collision
@@ -3458,6 +3460,7 @@ fn tick_chebr_crystal(
 fn tick_meltr_charge(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
+    virt: Res<input::VirtualInput>,
     assets: Res<AssetServer>,
     time: Res<Time<Physics>>,
     mut projectiles: Query<(
@@ -3502,7 +3505,7 @@ fn tick_meltr_charge(
     const FLASH_DURATION_S: f32 = 0.4;
 
     for (entity, ship, ship_pos, ship_rot, ship_vel, mut state, mut batt) in &mut ships {
-        let input = input::read_local_input(&keys, ship.player_slot);
+        let input = input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot);
         let fire_held = input.pressed(input::INPUT_FIRE);
         let was_held = state.last_fire_held;
         state.last_fire_held = fire_held;

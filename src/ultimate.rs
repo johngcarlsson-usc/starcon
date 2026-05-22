@@ -176,6 +176,7 @@ const QUAD_MESH_HANDLE: Handle<Mesh> = uuid_handle!("ec3a8f1e-7e8b-4f1b-9b3c-43c
 
 fn hyper_trigger(
     keys: Res<ButtonInput<KeyCode>>,
+    touch_virt: Res<crate::input::VirtualInput>,
     mut state: ResMut<UltimateState>,
     cameras: Query<(&Transform, &Projection), With<Camera2d>>,
     ships: Query<(Entity, &Ship, &ShipClass)>,
@@ -188,7 +189,7 @@ fn hyper_trigger(
     if state.phase != UltimatePhase::Idle {
         return;
     }
-    if !keys.just_pressed(PORTRAIT_KEY) {
+    if !keys.just_pressed(PORTRAIT_KEY) && !touch_virt.ultimate_just_pressed {
         return;
     }
     let Some((entity, ship, class)) =

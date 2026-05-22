@@ -5,6 +5,7 @@ mod input;
 mod netplay;
 mod physics;
 mod ship;
+mod mobile_controls;
 mod starfield;
 mod timeflow;
 mod ultimate;
@@ -64,6 +65,7 @@ fn main() {
             hud::HudPlugin,
             starfield::StarfieldPlugin,
             ultimate::UltimatePlugin,
+            mobile_controls::MobileControlsPlugin,
         ))
         .add_systems(Startup, setup_camera)
         .add_systems(OnEnter(AppState::Loading), ship::load_ship_catalog)
