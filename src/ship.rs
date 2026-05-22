@@ -824,6 +824,7 @@ pub fn spawn_match(
 /// Lets you test ship behaviours without waiting for one to die.
 fn class_picker_input(
     keys: Res<ButtonInput<KeyCode>>,
+    virt: Res<crate::input::VirtualInput>,
     mut config: ResMut<MatchConfig>,
     mut next_state: ResMut<NextState<crate::AppState>>,
     current_state: Res<State<crate::AppState>>,
@@ -891,8 +892,14 @@ fn class_picker_input(
     }
 
     // Cycling hotkeys — quick way to walk the roster mid-match.
-    if keys.just_pressed(KeyCode::Tab) {
-        let dir: i32 = if shift { -1 } else { 1 };
+    // Tab / Shift+Tab on keyboard, or the on-screen ⟨ / ⟩ buttons
+    // (which set `virt.cycle_*_just_pressed`) on phones.
+    let cycle_next =
+        keys.just_pressed(KeyCode::Tab) && !shift || virt.cycle_next_just_pressed;
+    let cycle_prev =
+        keys.just_pressed(KeyCode::Tab) && shift || virt.cycle_prev_just_pressed;
+    if cycle_next || cycle_prev {
+        let dir: i32 = if cycle_prev { -1 } else { 1 };
         config.p1_class = cycle_class(config.p1_class, dir);
         info!("P1 → {:?}", config.p1_class);
         changed = true;

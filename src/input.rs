@@ -34,6 +34,12 @@ pub struct VirtualInput {
     pub just_released: PlayerInput,
     /// Edge-triggered: true the tick the on-screen ULT button is hit.
     pub ultimate_just_pressed: bool,
+    /// Edge-triggered: true the tick the on-screen "next class" /
+    /// "prev class" cycle button is hit. Drives P1's roster cycle
+    /// without a keyboard Tab. `class_picker_input` consumes both
+    /// edges each frame.
+    pub cycle_next_just_pressed: bool,
+    pub cycle_prev_just_pressed: bool,
 }
 
 fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
