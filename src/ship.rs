@@ -953,7 +953,7 @@ pub fn teardown_match(
     }
 }
 
-fn spawn_class(
+pub fn spawn_class(
     commands: &mut Commands,
     catalog: &ShipCatalog,
     assets: &AssetServer,
@@ -962,18 +962,18 @@ fn spawn_class(
     rotation_rad: f32,
     slot: usize,
     ship_colliders: &crate::collider::ShipColliders,
-) {
+) -> Option<Entity> {
     let code = class.code();
     let Some(stats) = catalog.ships.get(code).cloned() else {
         error!("{code} missing from catalog");
-        return;
+        return None;
     };
     let frames = load_rotation_frames(assets, code, class);
     if frames.is_empty() {
         error!("no rotation frames found for {code}");
-        return;
+        return None;
     }
-    spawn_ship(
+    let id = spawn_ship(
         commands,
         assets,
         class,
@@ -985,6 +985,7 @@ fn spawn_class(
         ship_colliders,
     );
     info!("spawned P{} as {}", slot + 1, stats.name);
+    Some(id)
 }
 
 /// Spawns a playable ship at the given pose. All ships share this builder so
@@ -1004,7 +1005,7 @@ fn spawn_ship(
     rotation_rad: f32,
     slot: usize,
     ship_colliders: &crate::collider::ShipColliders,
-) {
+) -> Entity {
     let initial = frames.first().cloned().unwrap_or_default();
     let phys = physics_spec(class);
     let derived = ShipPhysicsDerived::from_stats(stats, phys.collider_radius);
@@ -1138,6 +1139,7 @@ fn spawn_ship(
             Transform::from_translation(position.extend(builder.z_offset)),
         ));
     }
+    entity_id
 }
 
 /// Per-class overlay sprite spec. Returns `None` for ships with no
@@ -4685,7 +4687,13 @@ fn tick_special_cooldown(time: Res<Time<Physics>>, mut q: Query<&mut SpecialCool
 /// sprite back to white. We don't touch `image` (that's the rotation
 /// frame, managed by `swap_rotation_frame`), only `color`.
 fn tick_invisible_visual(
-    mut ships: Query<(&mut Sprite, Option<&Invisible>), With<Ship>>,
+    mut ships: Query<
+        (&mut Sprite, Option<&Invisible>),
+        // Pkunk clones get a per-frame magenta-cyan tint from
+        // `tick_pkunk_clone_visual`; we'd fight that if we kept
+        // writing white here.
+        (With<Ship>, Without<crate::ultimate::PkunkClone>),
+    >,
 ) {
     for (mut sprite, invisible) in &mut ships {
         let target = if invisible.is_some() {

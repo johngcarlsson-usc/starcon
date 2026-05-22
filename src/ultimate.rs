@@ -136,6 +136,20 @@ pub struct UltimateState {
     pub yehat_fighters: Vec<Entity>,
     // -- Chenjesu --
     pub chebr_ring_timer_s: f32,
+    // -- Pkunk --
+    pub pkunk_clones: Vec<Entity>,
+}
+
+/// Ephemeral clone of a Pkunk ship spawned by its ultimate. Shares
+/// the original's player_slot so `apply_player_input` /
+/// `dispatch_primary` / `dispatch_special` all drive it as if it
+/// were the original ship — the player effectively controls a
+/// formation of three identical ships at once for `remaining_s`
+/// seconds before the clone fades out and despawns.
+#[derive(Component, Debug)]
+pub struct PkunkClone {
+    pub remaining_s: f32,
+    pub total_s: f32,
 }
 
 /// Yehat ultimate sub-entity — a fighter orbiting the parent
@@ -174,6 +188,13 @@ pub enum UltimateVariant {
     /// detonates with a vast lethal radius and destroys the
     /// firer.
     Shofixti,
+    /// Pkunk: two ephemeral clones spawn alongside the Fury in
+    /// an equilateral formation; all three share the same input
+    /// channel so the player commands three ships at once for a
+    /// few seconds. Camera does a three-step pan over the trio
+    /// during the paused reveal, then time resumes and the
+    /// formation flies until the clones expire.
+    Pkunk,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -226,6 +247,18 @@ pub enum UltimatePhase {
     /// Unpaused single moment: massive damage zone detonates and
     /// the firer's crew goes to zero.
     ShofixtiNova,
+    // ---- Pkunk clone formation ----
+    /// Paused. Two clones spawn at the trailing vertices of an
+    /// equilateral triangle. Their sprites fade in over the phase.
+    PkunkSummoning,
+    /// Paused. Camera pans original → clone-1 → clone-2 → all-3
+    /// centroid (with a slow zoom-out by the final step) so the
+    /// player sees who they're now commanding.
+    PkunkPan,
+    /// Unpaused. All three ships share the same player_slot so
+    /// every input the player gives drives all three identically.
+    /// Clones tick down their lifetime and fade as they expire.
+    PkunkFormation,
 }
 
 /// Marker on the ship while the cinematic is active.
@@ -333,6 +366,8 @@ impl Plugin for UltimatePlugin {
                 tick_spathi_barrage,
                 tick_chenjesu_tempest,
                 tick_shofixti_nova,
+                tick_pkunk_clones,
+                tick_pkunk_clone_visual,
             )
                 .chain(),
         );
@@ -401,6 +436,15 @@ const SHOSC_CHARGE_S: f32 = 0.8;
 const SHOSC_NOVA_S: f32 = 0.5;
 const SHOSC_NOVA_RADIUS: f32 = 1500.0;
 
+// -- Pkunk formation --
+const PKUNK_SUMMON_S: f32 = 0.5;
+const PKUNK_PAN_S: f32 = 1.6;
+const PKUNK_FORMATION_S: f32 = 5.0;
+/// Side length of the equilateral formation triangle (world units).
+const PKUNK_FORMATION_SIDE: f32 = 240.0;
+/// How wide the camera frames the three ships at the end of the pan.
+const PKUNK_PAN_FAR_SCALE: f32 = 1.2;
+
 fn portrait_path(variant: UltimateVariant) -> &'static str {
     match variant {
         UltimateVariant::Earthling => "ultimate/portrait_earcr.png",
@@ -408,6 +452,7 @@ fn portrait_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Spathi => "ultimate/portrait_spael.png",
         UltimateVariant::Chenjesu => "ultimate/portrait_chebr.png",
         UltimateVariant::Shofixti => "ultimate/portrait_shosc.png",
+        UltimateVariant::Pkunk => "ultimate/portrait_pkufu.png",
         _ => "ultimate/portrait_arisk.png",
     }
 }
@@ -423,6 +468,7 @@ fn voice_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Spathi => "ultimate/spael_voi.wav",
         UltimateVariant::Chenjesu => "ultimate/chebr_voi.wav",
         UltimateVariant::Shofixti => "ultimate/shosc_voi.wav",
+        UltimateVariant::Pkunk => "ultimate/pkufu_voi.wav",
         _ => "ultimate/arisk_voi.wav",
     }
 }
@@ -434,6 +480,7 @@ fn variant_for_class(class: ShipClass) -> UltimateVariant {
         ShipClass::Spael => UltimateVariant::Spathi,
         ShipClass::Chebr => UltimateVariant::Chenjesu,
         ShipClass::Shosc => UltimateVariant::Shofixti,
+        ShipClass::Pkufu => UltimateVariant::Pkunk,
         _ => UltimateVariant::Arilou,
     }
 }
@@ -457,6 +504,9 @@ fn hyper_trigger(
     mut state: ResMut<UltimateState>,
     cameras: Query<(&Transform, &Projection), With<Camera2d>>,
     ships: Query<(Entity, &Ship, &ShipClass, &Transform), Without<Camera2d>>,
+    ship_pose: Query<(&Position, &Rotation), With<Ship>>,
+    catalog: Res<crate::ship::ShipCatalog>,
+    ship_colliders: Res<crate::collider::ShipColliders>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PortraitMaterial>>,
@@ -597,6 +647,51 @@ fn hyper_trigger(
             state.glow_entity = Some(id);
             state.glow_material = Some(glow_mat);
         }
+        UltimateVariant::Pkunk => {
+            // Spawn the two clones immediately, at the trailing
+            // vertices of an equilateral triangle whose front
+            // vertex is the player ship. All three share the same
+            // `player_slot`, so apply_player_input /
+            // dispatch_primary / dispatch_special drive all three
+            // identically. Visual tint is applied each frame by
+            // `tick_pkunk_clone_visual`.
+            state.pkunk_clones.clear();
+            if let Ok((pos, rot)) = ship_pose.get(entity) {
+                let side = PKUNK_FORMATION_SIDE;
+                // Local-frame offsets for the two trailing
+                // vertices (the player's ship is the lead vertex).
+                let local_offsets = [
+                    Vec2::new(-side * 0.5, -side * 0.5 * 1.732_050_8),
+                    Vec2::new( side * 0.5, -side * 0.5 * 1.732_050_8),
+                ];
+                let rot_angle = rot.sin.atan2(rot.cos);
+                let cos = rot.cos;
+                let sin = rot.sin;
+                for offset in local_offsets {
+                    let world_offset = Vec2::new(
+                        offset.x * cos - offset.y * sin,
+                        offset.x * sin + offset.y * cos,
+                    );
+                    let clone_pos = pos.0 + world_offset;
+                    if let Some(clone_entity) = crate::ship::spawn_class(
+                        &mut commands,
+                        &catalog,
+                        &assets,
+                        *class,
+                        clone_pos,
+                        rot_angle,
+                        ship.player_slot, // SAME slot — shares input
+                        &ship_colliders,
+                    ) {
+                        commands.entity(clone_entity).insert(PkunkClone {
+                            remaining_s: PKUNK_FORMATION_S,
+                            total_s: PKUNK_FORMATION_S,
+                        });
+                        state.pkunk_clones.push(clone_entity);
+                    }
+                }
+            }
+        }
         // The remaining variants do their spawning later, in
         // their first active phase. Nothing pre-spawned here.
         UltimateVariant::Yehat
@@ -701,6 +796,13 @@ fn tick_ultimate_phases(
                 let p = (state.phase_timer_s / SHOSC_NOVA_S).clamp(0.0, 1.0);
                 (SHOSC_NOVA_S, 1.0 - p, false, 0.0, false)
             }
+            UltimatePhase::PkunkSummoning => (PKUNK_SUMMON_S, 1.0, false, 0.0, true),
+            UltimatePhase::PkunkPan => (PKUNK_PAN_S, 1.0, false, 0.0, true),
+            UltimatePhase::PkunkFormation => {
+                let p = (state.phase_timer_s / PKUNK_FORMATION_S).clamp(0.0, 1.0);
+                let portrait_p = (p / 0.35).clamp(0.0, 1.0);
+                (PKUNK_FORMATION_S, 1.0 - portrait_p, false, 0.0, false)
+            }
             UltimatePhase::Idle => unreachable!(),
         };
 
@@ -761,19 +863,25 @@ fn tick_ultimate_phases(
             (UltimatePhase::DramaticZoomIn, UltimateVariant::Shofixti) => {
                 UltimatePhase::ShofixtiCharging
             }
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Pkunk) => {
+                UltimatePhase::PkunkSummoning
+            }
             (UltimatePhase::EarthlingCharging, _) => UltimatePhase::EarthlingStretching,
             (UltimatePhase::EarthlingStretching, _) => UltimatePhase::EarthlingBlasting,
             (UltimatePhase::YehatSummoning, _) => UltimatePhase::YehatBattle,
             (UltimatePhase::SpathiLockOn, _) => UltimatePhase::SpathiBarrage,
             (UltimatePhase::ChenjesuCharging, _) => UltimatePhase::ChenjesuTempest,
             (UltimatePhase::ShofixtiCharging, _) => UltimatePhase::ShofixtiNova,
+            (UltimatePhase::PkunkSummoning, _) => UltimatePhase::PkunkPan,
+            (UltimatePhase::PkunkPan, _) => UltimatePhase::PkunkFormation,
             // Final phases: exit.
             (UltimatePhase::ArilouUnleashing, _)
             | (UltimatePhase::EarthlingBlasting, _)
             | (UltimatePhase::YehatBattle, _)
             | (UltimatePhase::SpathiBarrage, _)
             | (UltimatePhase::ChenjesuTempest, _)
-            | (UltimatePhase::ShofixtiNova, _) => {
+            | (UltimatePhase::ShofixtiNova, _)
+            | (UltimatePhase::PkunkFormation, _) => {
                 exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
                 return;
             }
@@ -825,6 +933,11 @@ fn exit_cinematic(
     }
     for f in state.yehat_fighters.drain(..) {
         if let Ok(mut ec) = commands.get_entity(f) {
+            ec.try_despawn();
+        }
+    }
+    for clone in state.pkunk_clones.drain(..) {
+        if let Ok(mut ec) = commands.get_entity(clone) {
             ec.try_despawn();
         }
     }
@@ -966,15 +1079,103 @@ fn drive_camera_during_ultimate(
                 HYPER_CAM_SCALE * (1.0 - eased) + zoom_far * eased,
             )
         }
+        // Pkunk: tight on the player ship through Summoning;
+        // PkunkPan + PkunkFormation use a custom target (handled
+        // below by overriding the lerp target).
+        UltimatePhase::PkunkSummoning => (1.0, HYPER_CAM_SCALE),
+        UltimatePhase::PkunkPan => (1.0, HYPER_CAM_SCALE),
+        UltimatePhase::PkunkFormation => {
+            let p = (state.phase_timer_s / 0.5).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - p).powi(3);
+            let zoom_far = state.orig_cam_scale.max(PKUNK_PAN_FAR_SCALE);
+            (
+                1.0 - eased,
+                PKUNK_PAN_FAR_SCALE * (1.0 - eased) + zoom_far * eased,
+            )
+        }
         UltimatePhase::Idle => return,
     };
 
     if let Ok((mut cam_xf, mut projection)) = cameras.single_mut() {
-        let target = ship_pos.0.extend(cam_xf.translation.z);
-        cam_xf.translation = state.orig_cam_pos.lerp(target, blend);
-        if let Projection::Orthographic(ref mut ortho) = *projection {
-            ortho.scale = scale;
+        // Pkunk gets a custom multi-keyframe target during PkunkPan
+        // so the camera quickly snaps between the three ships
+        // before settling on the centroid.
+        let mut custom_target: Option<Vec2> = None;
+        let mut custom_scale: Option<f32> = None;
+        if state.variant == UltimateVariant::Pkunk {
+            // Gather clone positions (filter out despawned ones).
+            let mut positions: Vec<Vec2> = Vec::with_capacity(3);
+            positions.push(ship_pos.0);
+            for &c in &state.pkunk_clones {
+                if let Ok(p) = ships.get(c) {
+                    positions.push(p.0);
+                }
+            }
+            let centroid = if positions.is_empty() {
+                ship_pos.0
+            } else {
+                positions.iter().copied().sum::<Vec2>() / positions.len() as f32
+            };
+            match state.phase {
+                UltimatePhase::PkunkPan => {
+                    // Four sub-segments across PKUNK_PAN_S:
+                    //   0   .. 0.20: hold on player
+                    //   0.20.. 0.45: snap-pan to clone 1
+                    //   0.45.. 0.70: snap-pan to clone 2
+                    //   0.70.. 1.00: pull back to centroid + zoom out
+                    let t = (state.phase_timer_s / PKUNK_PAN_S).clamp(0.0, 1.0);
+                    let p1 = positions.first().copied().unwrap_or(ship_pos.0);
+                    let c1 = positions.get(1).copied().unwrap_or(centroid);
+                    let c2 = positions.get(2).copied().unwrap_or(centroid);
+                    let (target, scale_t) = if t < 0.20 {
+                        (p1, 0.0)
+                    } else if t < 0.45 {
+                        let sub = ((t - 0.20) / 0.25).clamp(0.0, 1.0);
+                        let eased = 1.0 - (1.0 - sub).powi(3);
+                        (p1.lerp(c1, eased), 0.0)
+                    } else if t < 0.70 {
+                        let sub = ((t - 0.45) / 0.25).clamp(0.0, 1.0);
+                        let eased = 1.0 - (1.0 - sub).powi(3);
+                        (c1.lerp(c2, eased), 0.0)
+                    } else {
+                        let sub = ((t - 0.70) / 0.30).clamp(0.0, 1.0);
+                        let eased = 1.0 - (1.0 - sub).powi(3);
+                        (c2.lerp(centroid, eased), sub)
+                    };
+                    custom_target = Some(target);
+                    // During the first 70% of pan, stay zoomed in.
+                    // In the last 30%, ease out to PKUNK_PAN_FAR_SCALE
+                    // so the player sees the full formation.
+                    custom_scale = Some(
+                        HYPER_CAM_SCALE * (1.0 - scale_t)
+                            + PKUNK_PAN_FAR_SCALE * scale_t,
+                    );
+                }
+                UltimatePhase::PkunkFormation => {
+                    // Follow the centroid of the trio.
+                    custom_target = Some(centroid);
+                }
+                _ => {}
+            }
         }
+
+        let blended_default = state.orig_cam_pos.lerp(
+            ship_pos.0.extend(cam_xf.translation.z),
+            blend,
+        );
+        if let Some(target) = custom_target {
+            // For Pkunk pan, snap directly to the computed target
+            // (the per-segment ease is baked into the lerp above).
+            cam_xf.translation =
+                Vec3::new(target.x, target.y, cam_xf.translation.z);
+        } else {
+            cam_xf.translation = blended_default;
+        }
+        let final_scale = custom_scale.unwrap_or(scale);
+        if let Projection::Orthographic(ref mut ortho) = *projection {
+            ortho.scale = final_scale;
+        }
+        let scale = final_scale;
 
         if let Ok(mut portrait_xf) = portraits.single_mut() {
             // Anchor portrait to lower-right of camera in world
@@ -1902,4 +2103,64 @@ fn tick_shofixti_nova(
         crew.current = 0;
     }
     state.phase_timer_s = 0.05;
+}
+
+// ----------------------------------------------------------------
+// Pkunk — clone-formation ultimate
+// ----------------------------------------------------------------
+
+/// Tick PkunkClone lifetimes during PkunkFormation; despawn when
+/// the timer expires. The clones share the player's input by
+/// virtue of having the same player_slot, so no input plumbing is
+/// needed here — they just fly with the same controls until the
+/// timer runs out.
+fn tick_pkunk_clones(
+    time: Res<Time<Real>>,
+    state: Res<UltimateState>,
+    mut commands: Commands,
+    mut clones: Query<(Entity, &mut PkunkClone)>,
+) {
+    // Only count down while the formation is active. During earlier
+    // paused phases the clones exist but their timer doesn't run.
+    if state.phase != UltimatePhase::PkunkFormation {
+        return;
+    }
+    let dt = time.delta_secs();
+    for (e, mut clone) in &mut clones {
+        clone.remaining_s -= dt;
+        if clone.remaining_s <= 0.0 {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
+        }
+    }
+}
+
+/// Pulsing magenta-cyan tint on PkunkClone sprites so the player
+/// can tell the ephemeral copies from the real ship. Also fades
+/// alpha as the clone's remaining_s drops, so the visual countdown
+/// communicates "you're about to lose your wingmen".
+///
+/// Runs in Update after swap_rotation_frame so the per-frame sprite
+/// image swap doesn't overwrite our color. swap_rotation_frame
+/// touches `image` only, not `color`, so they coexist fine — this
+/// is just a write to a different field.
+fn tick_pkunk_clone_visual(
+    time: Res<Time<Real>>,
+    mut clones: Query<(&PkunkClone, &mut Sprite)>,
+) {
+    let t = time.elapsed_secs();
+    for (clone, mut sprite) in &mut clones {
+        // Pulse along magenta ↔ cyan over ~1 s for a clear
+        // "ephemeral / chaotic" feel that Pkunk's identity invites.
+        let phase = (t * 4.0).sin() * 0.5 + 0.5;
+        let r = 1.0;
+        let g = 0.45 + 0.4 * phase;
+        let b = 0.85 + 0.15 * (1.0 - phase);
+        // Linear alpha fade over the lifetime so the clone visibly
+        // "wears thin" as it expires.
+        let life = (clone.remaining_s / clone.total_s).clamp(0.0, 1.0);
+        let alpha = 0.45 + 0.45 * life;
+        sprite.color = Color::srgba(r, g, b, alpha);
+    }
 }
