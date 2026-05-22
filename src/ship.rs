@@ -584,6 +584,25 @@ pub struct ShipFrames {
     pub frames: Vec<Handle<Image>>,
 }
 
+/// Per-ship state for Melnorme charge-and-release primary. The shot
+/// is spawned on fire-press, stays attached to the ship's muzzle
+/// while held (Position snapped each tick, no forward motion), and
+/// accumulates charge phases over time. Each phase doubles damage
+/// and adds `RangeUp` to its range. Up to 3 phases. On fire-release
+/// the shot detaches and flies forward at full power.
+///
+/// Mirrors `shpmeltr.cpp:MelnormeShot::calculate`. 2.5 seconds per
+/// charge phase (5 charge_frames × 500 ms anim cycle in legacy).
+#[derive(Component, Debug, Default)]
+pub struct MeltrChargeState {
+    pub active: Option<Entity>,
+    /// Current charge phase: 0..=3. Each phase doubles damage.
+    pub phase: i32,
+    /// Seconds accumulated toward the next phase.
+    pub sub_charge_s: f32,
+    pub last_fire_held: bool,
+}
+
 /// Per-ship state for ships whose primary launches a charging or
 /// held projectile that needs on-release handling. Currently used by
 /// Chenjesu Broodhome — the crystal stays in flight until the fire
@@ -659,6 +678,7 @@ impl Plugin for ShipPlugin {
                 tick_point_defense,
                 tick_battery_recharge,
                 tick_chebr_crystal,
+                tick_meltr_charge,
                 tick_projectile_lifetime,
                 steer_homing_projectiles,
                 orient_projectiles,
@@ -1046,6 +1066,9 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Chebr) {
         entity.insert(CrystalCarrier::default());
+    }
+    if matches!(class, ShipClass::Meltr) {
+        entity.insert(MeltrChargeState::default());
     }
     let entity_id = entity.id();
 
@@ -2236,21 +2259,17 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
 
         // Melnorme Trader — chargeable plasma (TODO ChargedFire) +
         // confusion ray (TODO InputOverride).
+        // Melnorme Trader — chargeable plasma cannon. Hold fire to
+        // charge through up to 3 phases (2.5 s each), each doubling
+        // damage and adding RangeUp to the shot's range. Release to
+        // fire. Implemented by the dedicated `tick_meltr_charge`
+        // system per shpmeltr.cpp:MelnormeShot::calculate.
         ShipClass::Meltr => Some(ShipAbilities {
             primary: AbilitySpec {
-                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
-                    barrels: single_barrel(forward, 28.0),
-                    random_spread_rad: 0.0,
-                    speed: 112.0 * SC2_VEL_SCALE,
-                    lifetime: (21.0 * SC2_RANGE_SCALE) / (112.0 * SC2_VEL_SCALE),
-                    color: Color::srgb(1.0, 1.0, 1.0),
-                    sprite_size: 10.0,
-                    sprite_path: Some("ships/meltr/sprites/shot_a01.png".into()),
-                    homing_turn_rate: 0.0,
-                    is_limpet: false,
-                    recoil_impulse: 0.0,
-                }]},
-                cooldown_s: 1.0 / 20.0,
+                kind: AbilityKind::ManagedExternally {
+                    ident: "meltr-charge",
+                },
+                cooldown_s: 0.0,
             },
             special: AbilitySpec {
                 kind: AbilityKind::Todo { ident: "Melnorme confusion ray (shpmeltr.cpp:1215)" },
@@ -3351,6 +3370,171 @@ fn tick_chebr_crystal(
                     commands.entity(crystal_entity).despawn();
                     info!("chebr crystal shatter: 8 shards");
                 }
+            }
+        }
+    }
+}
+
+/// Melnorme charge-and-release primary. Mirrors
+/// `shpmeltr.cpp:MelnormeShot::calculate`.
+///
+///   - press fire: spawn one charging-shot projectile at the
+///     muzzle. damage = base, lifetime = huge (so it doesn't expire
+///     mid-charge). Battery drain deducted on press.
+///   - hold fire: each tick snap the shot's `Position` to the
+///     ship's muzzle and its `LinearVelocity` to the ship's vel
+///     (so it tracks the ship without drifting forward). Accumulate
+///     `sub_charge_s`; every 2.5 s cross a phase boundary →
+///     phase += 1, projectile.damage *= 2. Cap at phase 3.
+///   - release fire: detach the shot — set its `LinearVelocity` to
+///     `ship_vel + forward * speed`, recompute lifetime from
+///     `(base_range + phase * RangeUp) / speed`. Clear state.
+///   - shot hits something during charge: still damages (the
+///     charging shot is canonically dangerous to touch).
+///     handle_projectile_hits despawns; state clears next tick.
+///
+/// All projectiles use Avian colliders + Position/Velocity, so
+/// damage is delivered through `CollisionStart` events the same
+/// way every other projectile in the game is.
+fn tick_meltr_charge(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    assets: Res<AssetServer>,
+    time: Res<Time<Physics>>,
+    mut projectiles: Query<(&mut Projectile, &mut Position, &mut LinearVelocity)>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut MeltrChargeState,
+        &mut Battery,
+    ), Without<Projectile>>,
+) {
+    let dt = time.delta_secs();
+    let charge_period_s = 2.5;
+    let base_damage = 2;
+    let base_range_world = 21.0 * SC2_RANGE_SCALE;
+    let range_up_world = 3.0 * SC2_RANGE_SCALE;
+    let speed = 112.0 * SC2_VEL_SCALE;
+    let muzzle_local = Vec2::new(0.0, 28.0);
+
+    for (entity, ship, ship_pos, ship_rot, ship_vel, mut state, mut batt) in &mut ships {
+        let input = input::read_local_input(&keys, ship.player_slot);
+        let fire_held = input.pressed(input::INPUT_FIRE);
+        let was_held = state.last_fire_held;
+        state.last_fire_held = fire_held;
+        let just_pressed = fire_held && !was_held;
+        let just_released = !fire_held && was_held;
+
+        // Clean up stale entity ref.
+        if let Some(e) = state.active {
+            if projectiles.get(e).is_err() {
+                state.active = None;
+                state.phase = 0;
+                state.sub_charge_s = 0.0;
+            }
+        }
+
+        // Forward / muzzle world position from ship pose.
+        let forward_local = Vec2::new(0.0, 1.0);
+        let world_forward = Vec2::new(
+            forward_local.x * ship_rot.cos - forward_local.y * ship_rot.sin,
+            forward_local.x * ship_rot.sin + forward_local.y * ship_rot.cos,
+        );
+        let world_muzzle_off = Vec2::new(
+            muzzle_local.x * ship_rot.cos - muzzle_local.y * ship_rot.sin,
+            muzzle_local.x * ship_rot.sin + muzzle_local.y * ship_rot.cos,
+        );
+        let muzzle = ship_pos.0 + world_muzzle_off;
+
+        // Press → spawn charging shot.
+        if just_pressed && state.active.is_none() {
+            if ship.stats.weapon_drain > 0 && batt.current < ship.stats.weapon_drain {
+                continue;
+            }
+            batt.current = (batt.current - ship.stats.weapon_drain).max(0);
+
+            let initial_angle = world_forward.y.atan2(world_forward.x) - std::f32::consts::FRAC_PI_2;
+            let shot_entity = commands
+                .spawn((
+                    Projectile {
+                        owner: entity,
+                        damage: base_damage,
+                        // Huge lifetime so the shot survives the
+                        // longest possible charge (7.5 s). Reset on
+                        // release to a sane range-based value.
+                        lifetime: 60.0,
+                    },
+                    Sprite {
+                        image: assets.load("ships/meltr/sprites/shot_a01.png"),
+                        color: Color::srgb(1.0, 1.0, 1.0),
+                        custom_size: Some(Vec2::splat(10.0)),
+                        ..default()
+                    },
+                    Transform::from_translation(muzzle.extend(0.5)),
+                    RigidBody::Dynamic,
+                    Collider::circle(5.0),
+                    Mass(0.5 + base_damage as f32 * 0.4),
+                    Position(muzzle),
+                    Rotation::radians(initial_angle),
+                    LinearVelocity(ship_vel.0),
+                    AngularVelocity::ZERO,
+                    LinearDamping(0.0),
+                    AngularDamping(0.0),
+                    CollisionEventsEnabled,
+                ))
+                .id();
+            state.active = Some(shot_entity);
+            state.phase = 0;
+            state.sub_charge_s = 0.0;
+            info!("meltr charge: shot fired (phase 0, dmg {})", base_damage);
+        }
+
+        // While shot exists: charge and track.
+        if let Some(shot_entity) = state.active {
+            if fire_held {
+                // Charge tick.
+                if state.phase < 3 {
+                    state.sub_charge_s += dt;
+                    while state.sub_charge_s >= charge_period_s && state.phase < 3 {
+                        state.sub_charge_s -= charge_period_s;
+                        state.phase += 1;
+                        if let Ok((mut proj, _, _)) = projectiles.get_mut(shot_entity) {
+                            proj.damage *= 2;
+                        }
+                        info!(
+                            "meltr charge: phase → {}, dmg now {}",
+                            state.phase,
+                            base_damage * (1 << state.phase)
+                        );
+                    }
+                }
+                // Snap pose to muzzle — shot rides with the ship.
+                if let Ok((_, mut pos, mut vel)) = projectiles.get_mut(shot_entity) {
+                    pos.0 = muzzle;
+                    vel.0 = ship_vel.0;
+                }
+            }
+
+            // Release → detach.
+            if just_released {
+                let final_range = base_range_world + state.phase as f32 * range_up_world;
+                let final_lifetime = final_range / speed;
+                if let Ok((mut proj, _, mut vel)) = projectiles.get_mut(shot_entity) {
+                    vel.0 = ship_vel.0 + world_forward * speed;
+                    proj.lifetime = final_lifetime;
+                }
+                info!(
+                    "meltr charge: released phase {} (final dmg {}, range {:.0})",
+                    state.phase,
+                    base_damage * (1 << state.phase),
+                    final_range
+                );
+                state.active = None;
+                state.phase = 0;
+                state.sub_charge_s = 0.0;
             }
         }
     }
