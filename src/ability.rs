@@ -196,6 +196,13 @@ pub enum AbilityKind {
     /// every primitive to land — the missing one becomes a focused
     /// follow-up PR. See `docs/EXTENSIBILITY.md` for the list.
     Todo { ident: &'static str },
+
+    /// This ability is handled by a dedicated per-ship system (not the
+    /// generic dispatcher). The dispatcher silently skips ships
+    /// carrying this variant — useful for primaries that need
+    /// per-tick state and on-release behaviour (Chenjesu crystal
+    /// shatter, Melnorme charge-and-release).
+    ManagedExternally { ident: &'static str },
 }
 
 /// Per-variant AI tuning for `SpawnSubEntity`. Each variant maps
@@ -287,6 +294,12 @@ fn dispatch_primary(
     )>,
 ) {
     for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew) in &mut q {
+        // Ships whose primary lives in a dedicated system get skipped
+        // here so they fully own input handling + cooldown + drain
+        // (Chenjesu crystal launcher, Melnorme charge-and-release).
+        if matches!(abilities.primary.kind, AbilityKind::ManagedExternally { .. }) {
+            continue;
+        }
         if cd.0 > 0.0 {
             continue;
         }
@@ -640,6 +653,10 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
             for step in steps {
                 apply_kind(ctx, step);
             }
+        }
+        AbilityKind::ManagedExternally { .. } => {
+            // No-op here — a dedicated per-ship system reads input
+            // for this ship and fires its primary/special directly.
         }
         AbilityKind::Todo { ident } => {
             info!(

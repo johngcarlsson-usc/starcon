@@ -584,6 +584,25 @@ pub struct ShipFrames {
     pub frames: Vec<Handle<Image>>,
 }
 
+/// Per-ship state for ships whose primary launches a charging or
+/// held projectile that needs on-release handling. Currently used by
+/// Chenjesu Broodhome — the crystal stays in flight until the fire
+/// button is released, at which point it shatters into 8 shards
+/// radiating from its current position.
+///
+/// `current` is `Some(projectile_entity)` while a held projectile is
+/// alive, `None` otherwise. The dedicated tick system clears it
+/// either when the projectile dies on a hit (collision → despawn) or
+/// after the on-release behaviour fires.
+#[derive(Component, Debug, Default)]
+pub struct CrystalCarrier {
+    pub current: Option<Entity>,
+    /// Rolling state mirror — same idea as `LastTurnInput`. Bevy's
+    /// `just_pressed`/`just_released` is fragile across FixedUpdate,
+    /// so we track edge transitions ourselves.
+    pub last_fire_held: bool,
+}
+
 /// Inertialess-drive marker. A ship with this component has its
 /// linear velocity *directly* set from thrust input each tick:
 /// thrust held → forward at `speed_max`; thrust released → zero
@@ -639,6 +658,7 @@ impl Plugin for ShipPlugin {
                 tick_shield,
                 tick_point_defense,
                 tick_battery_recharge,
+                tick_chebr_crystal,
                 tick_projectile_lifetime,
                 steer_homing_projectiles,
                 orient_projectiles,
@@ -1023,6 +1043,9 @@ fn spawn_ship(
     // when a new ship needs a class-specific tweak.
     if matches!(class, ShipClass::Arisk) {
         entity.insert(InertialessDrive);
+    }
+    if matches!(class, ShipClass::Chebr) {
+        entity.insert(CrystalCarrier::default());
     }
     let entity_id = entity.id();
 
@@ -1947,23 +1970,18 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             },
         }),
 
-        // Chenjesu Broodhome — crystal (TODO shatter-on-release) +
-        // DOGI sub-entity (TODO).
+        // Chenjesu Broodhome — crystal with on-release shatter +
+        // DOGI sub-entity. Crystal is implemented by the dedicated
+        // `tick_chebr_crystal` system (per `shpchebr.cpp:calculate`)
+        // because the canonical behaviour needs per-ship state and
+        // an on-release-of-fire-button hook that the generic
+        // dispatcher doesn't model.
         ShipClass::Chebr => Some(ShipAbilities {
             primary: AbilitySpec {
-                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
-                    barrels: single_barrel(forward, 32.0),
-                    random_spread_rad: 0.0,
-                    speed: 64.0 * SC2_VEL_SCALE,
-                    lifetime: 4.0,
-                    color: Color::srgb(1.0, 1.0, 1.0),
-                    sprite_size: 14.0,
-                    sprite_path: Some("ships/chebr/sprites/shot_a_01_tga.png".into()),
-                    homing_turn_rate: 0.0,
-                    is_limpet: false,
-                    recoil_impulse: 0.0,
-                }]},
-                cooldown_s: 1.0 / 20.0,
+                kind: AbilityKind::ManagedExternally {
+                    ident: "chebr-crystal",
+                },
+                cooldown_s: 0.0,
             },
             special: AbilitySpec {
                 // shpchebr.cpp activate_special: spawn 1 ChenjesuDOGI
@@ -3166,6 +3184,174 @@ fn tick_projectile_lifetime(
         proj.lifetime -= dt;
         if proj.lifetime <= 0.0 {
             commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Chenjesu Broodhome primary — manages the held-crystal projectile
+/// and the on-release shatter into 8 shards. Mirrors the canonical
+/// shpchebr.cpp:calculate logic:
+///
+///   - press fire (transition up→down): spawn one ChenjesuShot
+///     (a normal homing-less Projectile) from (0, +size.y/2). Only
+///     one crystal active at a time per ship.
+///   - hold fire: crystal continues forward as a normal physics
+///     projectile. Avian handles its motion + collisions naturally.
+///   - release fire (transition down→up) while crystal still alive:
+///     query its current Position, spawn 8 shards radiating at
+///     π/4 increments, despawn the crystal.
+///   - crystal dies on a hit: handle_projectile_hits despawns it,
+///     this system clears `CrystalCarrier.current` next tick.
+///
+/// All projectiles (crystal + shards) are RigidBody::Dynamic with
+/// Position/Velocity/Collider → Avian's collision events drive the
+/// hits via handle_projectile_hits, no custom range queries needed.
+/// .ini Chebr.Weapon: Velocity=64, Damage=6, ShardDamage=2,
+/// ShardRange=9, ShardArmour=2, ShardRotation=1.
+fn tick_chebr_crystal(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    assets: Res<AssetServer>,
+    projectiles: Query<&Position, With<Projectile>>,
+    mut ships: Query<
+        (
+            Entity,
+            &Ship,
+            &Position,
+            &Rotation,
+            &LinearVelocity,
+            &mut CrystalCarrier,
+            &mut Battery,
+        ),
+        With<Ship>,
+    >,
+) {
+    let weapon_velocity = 64.0 * SC2_VEL_SCALE;
+    let shard_range_world = 9.0 * SC2_RANGE_SCALE;
+    let shard_lifetime = shard_range_world / weapon_velocity;
+    let shard_damage = 2;
+    let weapon_damage = 6;
+
+    for (entity, ship, ship_pos, ship_rot, ship_vel, mut carrier, mut batt) in &mut ships {
+        let input = input::read_local_input(&keys, ship.player_slot);
+        let fire_held = input.pressed(input::INPUT_FIRE);
+
+        // Clear stale handle if the crystal died on a hit (collision
+        // → handle_projectile_hits despawned it). projectiles.get()
+        // returns Err → we know it's gone.
+        if let Some(c) = carrier.current {
+            if projectiles.get(c).is_err() {
+                carrier.current = None;
+            }
+        }
+
+        let was_held = carrier.last_fire_held;
+        carrier.last_fire_held = fire_held;
+
+        let just_pressed = fire_held && !was_held;
+        let just_released = !fire_held && was_held;
+
+        if just_pressed && carrier.current.is_none() {
+            // Spawn the crystal. Battery gate matches the dispatcher path.
+            if ship.stats.weapon_drain > 0 && batt.current < ship.stats.weapon_drain {
+                continue;
+            }
+            batt.current = (batt.current - ship.stats.weapon_drain).max(0);
+
+            let forward = Vec2::new(0.0, 1.0);
+            let local_pos = Vec2::new(0.0, 32.0); // (0, size.y/2-ish)
+            let world_off = Vec2::new(
+                local_pos.x * ship_rot.cos - local_pos.y * ship_rot.sin,
+                local_pos.x * ship_rot.sin + local_pos.y * ship_rot.cos,
+            );
+            let world_dir = Vec2::new(
+                forward.x * ship_rot.cos - forward.y * ship_rot.sin,
+                forward.x * ship_rot.sin + forward.y * ship_rot.cos,
+            );
+            let muzzle = ship_pos.0 + world_off;
+            let proj_vel = ship_vel.0 + world_dir * weapon_velocity;
+            let initial_angle = world_dir.y.atan2(world_dir.x) - std::f32::consts::FRAC_PI_2;
+
+            let crystal_entity = commands
+                .spawn((
+                    Projectile {
+                        owner: entity,
+                        damage: weapon_damage,
+                        lifetime: 6.0, // generous; player typically releases earlier
+                    },
+                    Sprite {
+                        image: assets.load("ships/chebr/sprites/shot_a_01_tga.png"),
+                        color: Color::srgb(1.0, 1.0, 1.0),
+                        custom_size: Some(Vec2::splat(14.0)),
+                        ..default()
+                    },
+                    Transform::from_translation(muzzle.extend(0.5)),
+                    RigidBody::Dynamic,
+                    Collider::circle(7.0),
+                    Mass(0.5 + weapon_damage as f32 * 0.4),
+                    Position(muzzle),
+                    Rotation::radians(initial_angle),
+                    LinearVelocity(proj_vel),
+                    AngularVelocity::ZERO,
+                    LinearDamping(0.0),
+                    AngularDamping(0.0),
+                    CollisionEventsEnabled,
+                ))
+                .id();
+            carrier.current = Some(crystal_entity);
+            info!("chebr crystal launched");
+        }
+
+        if just_released {
+            if let Some(crystal_entity) = carrier.current.take() {
+                // Query its world Position so the shards spawn from
+                // wherever the crystal *currently* is, not the ship.
+                if let Ok(crystal_pos) = projectiles.get(crystal_entity) {
+                    let burst_at = crystal_pos.0;
+                    let crystal_angle = (ship_rot.sin).atan2(ship_rot.cos); // not great — better to read crystal Rotation but Position-only query
+                    let n_shards = 8;
+                    for i in 0..n_shards {
+                        let theta = crystal_angle
+                            + std::f32::consts::PI / 4.0 * (i as f32);
+                        let dir = Vec2::new(theta.cos(), theta.sin());
+                        // Velocity inherits a fraction of the crystal's
+                        // motion via shardRelativity=0 in .ini, so we
+                        // don't add the crystal's velocity here —
+                        // shards fire outward from the burst point.
+                        let shard_vel = dir * weapon_velocity;
+                        let init_angle =
+                            dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
+                        commands.spawn((
+                            Projectile {
+                                owner: entity,
+                                damage: shard_damage,
+                                lifetime: shard_lifetime,
+                            },
+                            Sprite {
+                                image: assets
+                                    .load("ships/chebr/sprites/shot_c_00_tga.png"),
+                                color: Color::srgb(0.9, 0.9, 1.0),
+                                custom_size: Some(Vec2::splat(8.0)),
+                                ..default()
+                            },
+                            Transform::from_translation(burst_at.extend(0.5)),
+                            RigidBody::Dynamic,
+                            Collider::circle(4.0),
+                            Mass(0.5 + shard_damage as f32 * 0.4),
+                            Position(burst_at),
+                            Rotation::radians(init_angle),
+                            LinearVelocity(shard_vel),
+                            AngularVelocity::ZERO,
+                            LinearDamping(0.0),
+                            AngularDamping(0.0),
+                            CollisionEventsEnabled,
+                        ));
+                    }
+                    // Despawn the crystal itself.
+                    commands.entity(crystal_entity).despawn();
+                    info!("chebr crystal shatter: 8 shards");
+                }
+            }
         }
     }
 }
