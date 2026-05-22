@@ -163,6 +163,12 @@ pub struct PkunkClone {
     pub total_s: f32,
     pub reveal_at_pan_t: f32,
     pub warp_in_t: f32,
+    /// Position offset of this clone relative to the leader's
+    /// local frame at spawn. The formation-correction system uses
+    /// `leader_pos + rotate(offset, leader_rotation)` as the
+    /// desired world position; deviations cause the clone to
+    /// thrust/turn itself back into formation.
+    pub formation_offset_local: Vec2,
 }
 
 /// Marker on an asteroid that's been thrown by the Slylandro
@@ -801,6 +807,7 @@ fn hyper_trigger(
                             total_s: PKUNK_FORMATION_S,
                             reveal_at_pan_t: reveal_at,
                             warp_in_t: 0.0,
+                            formation_offset_local: offset,
                         });
                         state.pkunk_clones.push(clone_entity);
                     }
@@ -2811,4 +2818,116 @@ pub fn build_ultimate_meshes(
     );
     tri.insert_indices(Indices::U32(vec![0, 1, 2]));
     ultimate_meshes.blade = meshes.add(tri);
+}
+
+/// Pkunk formation auto-correction. Each FixedUpdate during the
+/// `PkunkFormation` phase, for every clone:
+///   - Compute the desired world pose from the leader's
+///     `(Position, Rotation)` and the clone's
+///     `formation_offset_local`.
+///   - If the clone is far from its desired position, override
+///     `ConstantLocalForce` + `AngularVelocity` to steer toward
+///     it (turn first if mis-aligned, thrust forward once roughly
+///     pointed the right way) — same controls the player would
+///     use, applied automatically.
+///   - If the clone is in position but the heading is off from
+///     the leader's, rotate to match without thrusting.
+///   - If both are within tolerance, leave the values that
+///     `apply_player_input` already wrote so the clone keeps
+///     responding to the player's input.
+///
+/// The system runs `.after(apply_player_input)` so its overrides
+/// take precedence when the clone is out of formation.
+pub fn tick_pkunk_formation_correction(
+    state: Res<crate::ultimate::UltimateState>,
+    leader_pose: Query<(&Position, &Rotation), With<crate::ship::Ship>>,
+    mut clones: Query<
+        (
+            &PkunkClone,
+            &Position,
+            &Rotation,
+            &crate::ship::ShipPhysicsDerived,
+            &mut ConstantLocalForce,
+            &mut AngularVelocity,
+        ),
+        With<crate::ship::Ship>,
+    >,
+) {
+    if state.variant != UltimateVariant::Pkunk
+        || state.phase != UltimatePhase::PkunkFormation
+    {
+        return;
+    }
+    let Some(leader) = state.player_entity else { return };
+    let Ok((leader_pos, leader_rot)) = leader_pose.get(leader) else { return };
+    let leader_xy = leader_pos.0;
+    let leader_angle = leader_rot.sin.atan2(leader_rot.cos);
+    let cos_l = leader_rot.cos;
+    let sin_l = leader_rot.sin;
+
+    use std::f32::consts::{FRAC_PI_2, PI, TAU};
+
+    for (clone, pos, rot, derived, mut thrust, mut ang_vel) in &mut clones {
+        // Desired world position = leader_pos +
+        // rotate(formation_offset_local, leader_rotation).
+        let off = clone.formation_offset_local;
+        let world_off = Vec2::new(
+            off.x * cos_l - off.y * sin_l,
+            off.x * sin_l + off.y * cos_l,
+        );
+        let desired_pos = leader_xy + world_off;
+        let pos_err = desired_pos - pos.0;
+        let pos_err_dist = pos_err.length();
+
+        let cur_heading = rot.sin.atan2(rot.cos);
+        let mut heading_err = leader_angle - cur_heading;
+        while heading_err > PI {
+            heading_err -= TAU;
+        }
+        while heading_err < -PI {
+            heading_err += TAU;
+        }
+
+        // Tolerances. Pretty generous so small-amplitude wiggles
+        // (collision impulses, asset float jitter) don't trigger
+        // continuous "correction" thrash.
+        const POS_TOL: f32 = 35.0;
+        const ANG_TOL: f32 = 0.10;
+
+        if pos_err_dist > POS_TOL {
+            // Out of position. Aim the ship at the desired point,
+            // thrust forward once roughly pointing the right way.
+            // Steering target is the bearing TO `desired_pos`,
+            // expressed in the ship's "0 = facing +Y" frame.
+            let bearing = pos_err.y.atan2(pos_err.x) - FRAC_PI_2;
+            let mut steer_err = bearing - cur_heading;
+            while steer_err > PI {
+                steer_err -= TAU;
+            }
+            while steer_err < -PI {
+                steer_err += TAU;
+            }
+            let omega_sign = if steer_err.abs() < 1e-3 {
+                0.0
+            } else {
+                steer_err.signum()
+            };
+            ang_vel.0 = omega_sign * derived.target_omega;
+            // Thrust only if the ship is roughly facing the target
+            // (cos > ~0.5 → within ~60°). Stops the clone burning
+            // thrust away from where it needs to go.
+            thrust.0 = if steer_err.abs() < FRAC_PI_2 * 0.8 {
+                Vec2::new(0.0, derived.thrust_force)
+            } else {
+                Vec2::ZERO
+            };
+        } else if heading_err.abs() > ANG_TOL {
+            // In position but heading off. Rotate to match the
+            // leader without thrusting.
+            ang_vel.0 = heading_err.signum() * derived.target_omega;
+            thrust.0 = Vec2::ZERO;
+        }
+        // Else: in formation — leave whatever apply_player_input
+        // wrote in place so the clone keeps responding to input.
+    }
 }
