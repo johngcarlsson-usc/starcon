@@ -55,13 +55,18 @@
       var Original = window.AudioContext || window.webkitAudioContext;
       if (!Original) return;
       var contexts = new Set();
+      var gestureSeen = false;
       var Wrapped = new Proxy(Original, {
         construct: function (target, args, newTarget) {
           var ctx = Reflect.construct(target, args, newTarget);
           contexts.add(ctx);
-          // Try to resume immediately — works if a prior gesture
-          // already armed the audio policy.
-          try { ctx.resume(); } catch (e) {}
+          // Only attempt immediate resume if a user gesture has
+          // already happened — otherwise the browser logs a
+          // "AudioContext was not allowed to start" warning even
+          // though we don't actually need to play yet.
+          if (gestureSeen && ctx.state === 'suspended') {
+            ctx.resume().catch(function () {});
+          }
           return ctx;
         }
       });
@@ -79,6 +84,7 @@
         window.webkitAudioContext = Wrapped;
       }
       function resumeAll() {
+        gestureSeen = true;
         contexts.forEach(function (c) {
           if (c.state === 'suspended') {
             c.resume().catch(function () {});

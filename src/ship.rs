@@ -5057,7 +5057,9 @@ fn tick_kohma_blade(
     keys: Res<ButtonInput<KeyCode>>,
     virt: Res<input::VirtualInput>,
     assets: Res<AssetServer>,
-    projectiles: Query<&Position, With<Projectile>>,
+    // Liveness check only — no Position access, so this can't
+    // conflict with the mutable `transforms` query below.
+    projectile_alive: Query<(), With<Projectile>>,
     mut ships: Query<(
         Entity,
         &Ship,
@@ -5083,7 +5085,7 @@ fn tick_kohma_blade(
 
         // Clear stale handle if the blade died on a hit.
         if let Some(c) = carrier.current {
-            if projectiles.get(c).is_err() {
+            if projectile_alive.get(c).is_err() {
                 carrier.current = None;
             }
         }
