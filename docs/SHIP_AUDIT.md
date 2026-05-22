@@ -86,43 +86,28 @@ currently bypass Avian's collision pipeline and need migration.
 
 ## Engine systems that do *not* go through Avian's collision pipeline
 
-Currently the following systems use **custom spatial queries**
-(distance / ray / circle checks against ship positions) rather than
-emitting Avian `CollisionStart` events:
+~~Previously this section listed five systems with custom spatial
+scans.~~ All five have been migrated to Avian-native:
 
-| System | Where | What it does | Avian-native plan |
-|--------|-------|--------------|-------------------|
-| `tick_beams` | ship.rs | Ray-casts from a beam's owner each tick, picks the nearest enemy along the ray within `range + width` | Spawn a thin rectangle sensor collider as part of the beam entity; resize/reposition per tick; handle `CollisionStart` events to apply damage |
-| `tick_damage_zones` | ship.rs | Distance check from a static zone to every ship each tick | Sensor circle collider on the zone entity; collision events apply per-tick damage |
-| `tick_attached_damage_zones` | ship.rs | Same as above but the zone follows an owner | Sensor circle + per-tick position update |
-| `tick_tractors` | ship.rs | Distance check to find nearest enemy in range, applies velocity nudge | Sensor circle collider, push impulses on the targets it overlaps |
-| `tick_point_defense` | ship.rs | Distance check to despawn projectiles + damage ships within radius | Sensor circle, react to projectile + ship overlap events |
-| `tick_sub_entities` (target acquisition) | ship.rs | Each homing sub-entity scans all ships each tick to pick the nearest non-friendly target | The hit detection IS already Avian-driven (collisions go through `handle_sub_entity_collisions`); only target *acquisition* uses spatial queries, which is unavoidable without a query API on Avian colliders |
-| `steer_homing_projectiles` | ship.rs | Same as above for projectiles with `Homing` | Same — hit detection is Avian, target acquisition is a scan |
+| System | Method | Notes |
+|--------|--------|-------|
+| `tick_damage_zones` | `Sensor` + `CollidingEntities` | static circle sensor; `damage_per_sec` × `dt` applied to each entity in the set each tick |
+| `tick_attached_damage_zones` | `Sensor` + `CollidingEntities` (Kinematic) | per-tick `Position` update keeps the sensor stuck to its owner |
+| `tick_beams` | `SpatialQuery::cast_ray` | physics-native ray cast through the polygon colliders; `with_excluded_entities([owner])` so the beam doesn't stop on its own hull |
+| `tick_tractors` | `SpatialQuery::shape_intersections(circle)` | per-tick circle query in Avian's broad/narrow phase; we filter to non-friendly + non-invisible and pick nearest |
+| `tick_point_defense` | `SpatialQuery::shape_intersections(circle)` | hostile projectiles in range → despawn; hostile non-invisible ships in range → per-tick crew damage |
 
-### Migration plan
+The two remaining "spatial scans" that *aren't* Avian-collider-based:
 
-Avian 0.6 supports **`Sensor`** colliders (no impulse imparted on
-contact) and **collision events** are emitted for sensor overlaps.
-The work to convert each of the above to physics-native:
+- **Homing/sub-entity target acquisition** (`steer_homing_projectiles`,
+  `tick_sub_entities`) — iterates `Position` over `Ship` query each
+  tick to find the nearest non-friendly target. Avian doesn't expose
+  a "nearest collider matching component filter X" query that would
+  replace this efficiently. Hit detection IS Avian-driven via
+  `CollisionStart`; this is purely target acquisition.
 
-1. Add `Sensor` + `Collider::circle(r)` or `Collider::rectangle(w, h)`
-   to the entity at spawn.
-2. Add `CollisionEventsEnabled`.
-3. Replace the per-tick spatial scan with a `MessageReader<CollisionStart>`
-   handler that filters for sensor entities and applies the effect.
-4. For *attached* zones (and the beam, which moves with its owner),
-   keep the per-tick `Transform`/`Position` update so the sensor
-   follows the owner.
-5. For *per-tick damage* (zones, beams), use `CollisionStart` +
-   `CollisionEnd` to track "currently inside" set, and tick damage
-   only on entities in the set.
-
-The two scanning operations that *aren't* migratable (target
-acquisition for homing/sub-entities) are documented as expected.
-Avian doesn't expose a generic "what's the nearest collider matching
-filter X" query that would replace them efficiently. They could be
-moved to a quadtree later, but it's not a physics-engine concern.
+These are documented exceptions in the audit. They can move to a
+quadtree later if perf demands it.
 
 ## Documented exceptions to "everything through the physics engine"
 

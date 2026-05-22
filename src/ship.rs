@@ -3866,45 +3866,52 @@ fn tick_shield(
 fn tick_point_defense(
     mut commands: Commands,
     time: Res<Time<Physics>>,
+    spatial: avian2d::prelude::SpatialQuery,
     mut firers: Query<(Entity, &Ship, &Position, &mut PointDefenseActive)>,
-    projectiles: Query<(Entity, &Position, &Projectile)>,
-    // PD damage skips invisible enemies — they're not auto-targetable.
-    mut ships: Query<
-        (Entity, &Ship, &Position, &mut Crew),
-        (Without<PointDefenseActive>, Without<Invisible>),
-    >,
+    projectiles: Query<&Projectile>,
+    ships_invisible: Query<(), With<Invisible>>,
+    ship_data: Query<&Ship>,
+    mut crews: Query<&mut Crew>,
     shields: Query<&ShieldActive>,
 ) {
+    use avian2d::prelude::SpatialQueryFilter;
     let dt = time.delta_secs();
     for (firer_entity, firer, firer_pos, mut beam) in &mut firers {
-        let r2 = beam.range * beam.range;
+        // Avian-native: query everything in the PD radius from the
+        // firer's position. Replaces the per-tick "iterate
+        // projectiles + ships + distance check" scan.
+        let probe = Collider::circle(beam.range);
+        let filter = SpatialQueryFilter::default().with_excluded_entities([firer_entity]);
+        let candidates = spatial.shape_intersections(&probe, firer_pos.0, 0.0, &filter);
 
-        for (proj_entity, proj_pos, proj) in &projectiles {
-            if (proj_pos.0 - firer_pos.0).length_squared() > r2 {
+        for entity in candidates {
+            // Hostile projectiles in range get nuked.
+            if let Ok(proj) = projectiles.get(entity) {
+                if proj.owner != firer_entity {
+                    commands.entity(entity).despawn();
+                }
                 continue;
             }
-            // Don't blow up our own outgoing missiles.
-            if proj.owner == firer_entity {
-                continue;
-            }
-            commands.entity(proj_entity).despawn();
-        }
-
-        if beam.damage_per_tick > 0 {
-            for (ship_entity, ship, ship_pos, mut crew) in &mut ships {
-                if ship.player_slot == firer.player_slot {
+            // Hostile non-invisible ships take per-tick damage.
+            if beam.damage_per_tick > 0 {
+                if ships_invisible.get(entity).is_ok() {
                     continue;
                 }
-                if (ship_pos.0 - firer_pos.0).length_squared() > r2 {
+                let Ok(target_ship) = ship_data.get(entity) else {
+                    continue;
+                };
+                if target_ship.player_slot == firer.player_slot {
                     continue;
                 }
                 let factor = shields
-                    .get(ship_entity)
+                    .get(entity)
                     .map(|s| s.damage_factor)
                     .unwrap_or(1.0);
                 let dmg = ((beam.damage_per_tick as f32 * factor).round() as i32).max(0);
                 if dmg > 0 {
-                    crew.current = (crew.current - dmg).max(0);
+                    if let Ok(mut crew) = crews.get_mut(entity) {
+                        crew.current = (crew.current - dmg).max(0);
+                    }
                 }
             }
         }
@@ -3994,27 +4001,34 @@ fn tick_attached_damage_zones(
     }
 }
 
-/// Cast each beam, damage what it hits, position the sprite so it
-/// visibly connects owner → hit point (or owner → full range when it
-/// misses). Beams whose owner has died despawn cleanly.
+/// Cast each beam through Avian's spatial query, damage the first
+/// non-friendly hit, position the sprite owner → hit point. Beams
+/// whose owner has died despawn cleanly.
+///
+/// The auto-aim target search is a position-based nearest-enemy scan
+/// (filtered by `Without<Invisible>`); the actual hit test is a real
+/// Avian ray cast through the polygon colliders. Beams skip the
+/// firer via Avian's `excluded_entities` filter so the ray doesn't
+/// instantly stop on its own hull.
 fn tick_beams(
     mut commands: Commands,
     time: Res<Time<Physics>>,
+    spatial: avian2d::prelude::SpatialQuery,
     mut beams: Query<(Entity, &mut Beam, &mut Transform, &mut Sprite)>,
     owners: Query<(&Ship, &Position, &Rotation)>,
-    // Beams skip invisible ships during target search (cloaked Ilwrath
-    // can't be hit by an auto-aim laser).
-    mut ships: Query<(Entity, &Ship, &Position, &mut Crew), Without<Invisible>>,
+    ship_pos: Query<(Entity, &Ship, &Position), Without<Invisible>>,
+    mut crews: Query<&mut Crew>,
     shields: Query<&ShieldActive>,
+    ship_class_of: Query<&Ship>,
 ) {
+    use avian2d::prelude::SpatialQueryFilter;
+    use bevy::math::Dir2;
     let dt = time.delta_secs();
     for (beam_entity, mut beam, mut beam_xf, mut beam_sprite) in &mut beams {
-        // Owner gone → beam goes with it.
         let Ok((owner_ship, owner_pos, owner_rot)) = owners.get(beam.owner) else {
             commands.entity(beam_entity).despawn();
             continue;
         };
-        // Rotate local origin and direction into world space.
         let world_origin = owner_pos.0
             + Vec2::new(
                 beam.local_origin.x * owner_rot.cos - beam.local_origin.y * owner_rot.sin,
@@ -4025,11 +4039,14 @@ fn tick_beams(
             beam.local_dir.x * owner_rot.sin + beam.local_dir.y * owner_rot.cos,
         );
 
-        // Auto-aim: swing the beam to point at the nearest enemy in
-        // range. Canonical Arilou auto-target (shparisk.cpp:78).
+        // Auto-aim: pick nearest non-friendly non-invisible ship as
+        // target. Spatial scan against ship positions — this is
+        // *target acquisition*, not the hit test. (Avian doesn't
+        // expose a nearest-collider query that filters by component;
+        // see docs/SHIP_AUDIT.md → "Engine systems".)
         if beam.auto_aim {
-            let mut best: Option<(Entity, Vec2, f32)> = None;
-            for (e, s, p, _) in &ships {
+            let mut best: Option<(Vec2, f32)> = None;
+            for (_, s, p) in &ship_pos {
                 if s.player_slot == owner_ship.player_slot {
                     continue;
                 }
@@ -4037,11 +4054,11 @@ fn tick_beams(
                 if d2 > beam.range * beam.range {
                     continue;
                 }
-                if best.map_or(true, |(_, _, b)| d2 < b) {
-                    best = Some((e, p.0, d2));
+                if best.map_or(true, |(_, b)| d2 < b) {
+                    best = Some((p.0, d2));
                 }
             }
-            if let Some((_, target, _)) = best {
+            if let Some((target, _)) = best {
                 let delta = target - world_origin;
                 if delta.length_squared() > 1e-6 {
                     world_dir = delta.normalize();
@@ -4049,44 +4066,45 @@ fn tick_beams(
             }
         }
 
-        // Cast: find the nearest enemy whose centre is within
-        // `beam.width` of the ray, with ray-parameter t ∈ [0, range].
-        // Cheap projection: t = (p - o) · dir; perp = |(p - o) - t·dir|.
-        let mut hit_t = beam.range;
-        let mut hit_target: Option<Entity> = None;
-        for (e, s, p, _) in &ships {
-            if s.player_slot == owner_ship.player_slot {
-                continue;
-            }
-            let to_ship = p.0 - world_origin;
-            let t = to_ship.dot(world_dir);
-            if t < 0.0 || t > beam.range {
-                continue;
-            }
-            let perp = to_ship - world_dir * t;
-            // Use a generous hit thickness so a beam visibly grazing a
-            // ship registers. The ship's collider radius is 12–34;
-            // anything within `beam.width + 18` reads as "the beam
-            // touched the hull".
-            if perp.length_squared() > (beam.width + 18.0).powi(2) {
-                continue;
-            }
-            if t < hit_t {
-                hit_t = t;
-                hit_target = Some(e);
-            }
-        }
+        // Physics-native hit test: Avian ray cast against every
+        // collider in the world. Exclude the firer so the beam
+        // doesn't bounce off its own hull. Returns the closest hit
+        // along the ray within `beam.range` — exactly what canon
+        // laser behaviour wants.
+        let dir = Dir2::new(world_dir).unwrap_or(Dir2::X);
+        let filter = SpatialQueryFilter::default().with_excluded_entities([beam.owner]);
+        let hit = spatial.cast_ray(
+            world_origin,
+            dir,
+            beam.range,
+            true, // solid: stop on first hit
+            &filter,
+        );
+        let (hit_t, hit_target) = match hit {
+            Some(ref h) => (h.distance, Some(h.entity)),
+            None => (beam.range, None),
+        };
 
-        // Apply damage to the nearest target (shield-aware).
+        // Apply per-tick damage to the hit entity if it's a ship and
+        // not a friendly. (Projectile / sub-entity hits are no-ops:
+        // beams aren't meant to shoot down bullets — that's the
+        // Earthling PD's job. Could be extended if a future ship
+        // wants laser-PD behaviour.)
         if let Some(target) = hit_target {
-            if let Ok((_, _, _, mut crew)) = ships.get_mut(target) {
-                let factor = shields
-                    .get(target)
-                    .map(|s| s.damage_factor)
-                    .unwrap_or(1.0);
-                let dmg = ((beam.damage_per_tick as f32 * factor).round() as i32).max(0);
-                if dmg > 0 {
-                    crew.current = (crew.current - dmg).max(0);
+            if let Ok(target_ship) = ship_class_of.get(target) {
+                let invisible_or_friendly = target_ship.player_slot == owner_ship.player_slot
+                    || ship_pos.get(target).is_err(); // Without<Invisible> filter
+                if !invisible_or_friendly {
+                    if let Ok(mut crew) = crews.get_mut(target) {
+                        let factor = shields
+                            .get(target)
+                            .map(|s| s.damage_factor)
+                            .unwrap_or(1.0);
+                        let dmg = ((beam.damage_per_tick as f32 * factor).round() as i32).max(0);
+                        if dmg > 0 {
+                            crew.current = (crew.current - dmg).max(0);
+                        }
+                    }
                 }
             }
         }
@@ -4116,10 +4134,13 @@ fn tick_beams(
 fn tick_tractors(
     mut commands: Commands,
     time: Res<Time<Physics>>,
+    spatial: avian2d::prelude::SpatialQuery,
     mut tractors: Query<(Entity, &mut TractorBeam, &mut Transform, &mut Sprite)>,
     owners: Query<(&Ship, &Position, &Rotation)>,
-    mut ships: Query<(Entity, &Ship, &Position, &mut LinearVelocity, &Mass), Without<Invisible>>,
+    ships_for_filter: Query<&Ship, Without<Invisible>>,
+    mut ship_state: Query<(&Position, &mut LinearVelocity, &Mass), With<Ship>>,
 ) {
+    use avian2d::prelude::SpatialQueryFilter;
     let dt = time.delta_secs();
     for (tractor_entity, mut tractor, mut tractor_xf, mut sprite) in &mut tractors {
         let Ok((owner_ship, owner_pos, owner_rot)) = owners.get(tractor.owner) else {
@@ -4131,20 +4152,29 @@ fn tick_tractors(
                 tractor.local_origin.x * owner_rot.cos - tractor.local_origin.y * owner_rot.sin,
                 tractor.local_origin.x * owner_rot.sin + tractor.local_origin.y * owner_rot.cos,
             );
-        let r2 = tractor.range * tractor.range;
 
-        // Find nearest non-friendly, non-invisible ship in range.
+        // Find nearest non-friendly, non-invisible ship in range via
+        // Avian's spatial broad/narrow phase. Per-tick circle query —
+        // physics-native equivalent of the old "iterate ships +
+        // distance check" loop, but using Avian's spatial structures.
+        let probe = Collider::circle(tractor.range);
+        let filter = SpatialQueryFilter::default().with_excluded_entities([tractor.owner]);
+        let candidates = spatial.shape_intersections(&probe, world_origin, 0.0, &filter);
+
         let mut best: Option<(Entity, Vec2, f32)> = None;
-        for (e, s, p, _, _) in &ships {
+        for ent in candidates {
+            let Ok(s) = ships_for_filter.get(ent) else {
+                continue;
+            };
             if s.player_slot == owner_ship.player_slot {
                 continue;
             }
-            let d2 = (p.0 - world_origin).length_squared();
-            if d2 > r2 {
+            let Ok((p, _, _)) = ship_state.get(ent) else {
                 continue;
-            }
+            };
+            let d2 = (p.0 - world_origin).length_squared();
             if best.map_or(true, |(_, _, bd)| d2 < bd) {
-                best = Some((e, p.0, d2));
+                best = Some((ent, p.0, d2));
             }
         }
 
@@ -4152,7 +4182,7 @@ fn tick_tractors(
             // Apply the force as a velocity nudge toward the owner.
             // Δv = force_per_tick / target_mass — heavy ships drift
             // less per tick (correct Newtonian behaviour).
-            if let Ok((_, _, _, mut vel, mass)) = ships.get_mut(target_e) {
+            if let Ok((_, mut vel, mass)) = ship_state.get_mut(target_e) {
                 let to_owner = world_origin - target_pos;
                 let len = to_owner.length();
                 if len > 1e-3 {
