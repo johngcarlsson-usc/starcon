@@ -5,6 +5,7 @@ mod input;
 mod netplay;
 mod physics;
 mod ship;
+mod starfield;
 mod timeflow;
 
 use bevy::prelude::*;
@@ -60,6 +61,7 @@ fn main() {
             netplay::NetplayPlugin,
             timeflow::TimeflowPlugin,
             hud::HudPlugin,
+            starfield::StarfieldPlugin,
         ))
         .add_systems(Startup, setup_camera)
         .add_systems(OnEnter(AppState::Loading), ship::load_ship_catalog)
