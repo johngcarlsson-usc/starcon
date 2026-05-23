@@ -1195,11 +1195,17 @@ fn hyper_trigger(
 // ----------------------------------------------------------------
 
 fn tick_ultimate_phases(
-    // `Res<Time>` inside GgrsSchedule resolves to
-    // `Time<GgrsTime>` — delta is always 1/FPS, deterministic
-    // across peers. Outside GgrsSchedule (which this system
-    // shouldn't be in any more) it resolves to Time<Virtual>.
-    time: Res<Time>,
+    // Must use `Time<Real>` because the cinematic pauses
+    // `Time<Virtual>` during DramaticZoomIn (and other paused
+    // phases) — and offline, `Res<Time>` inside GgrsSchedule
+    // still resolves to the paused Virtual time (bevy_ggrs only
+    // swaps it to GgrsTime when actually driving rollback).
+    // If this read delta = 0 during pause, the phase timer
+    // would never advance and the cinematic would freeze.
+    // Wall-clock divergence between peers is acceptable for
+    // cinematic timing — the gameplay state at the moment
+    // unpause resumes is what's consistent.
+    time: Res<Time<Real>>,
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
     mut materials: ResMut<Assets<PortraitMaterial>>,
@@ -4274,7 +4280,10 @@ fn tick_kohrah_blades(
 /// `tick_mycon_orbit`. On phase transition to MyconHurricane the
 /// orbs convert to homing projectiles in `tick_mycon_release`.
 fn tick_mycon_gather(
-    time: Res<Time>,
+    // Time<Real> so the gather animation ticks during the
+    // paused MyconGathering phase — same reason as
+    // tick_ultimate_phases.
+    time: Res<Time<Real>>,
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -4323,7 +4332,9 @@ fn tick_mycon_gather(
 /// `MYCON_ORBIT_R` over the gather phase. The ship's position is
 /// the orbit center.
 fn tick_mycon_orbit(
-    time: Res<Time>,
+    // Time<Real> so the spiraling-in animation keeps moving
+    // during the paused gather beat.
+    time: Res<Time<Real>>,
     state: Res<UltimateState>,
     mut orbs: Query<(&mut MyconOrbit, &mut Transform), Without<crate::ship::Ship>>,
     ships: Query<&Position, With<crate::ship::Ship>>,
