@@ -841,6 +841,7 @@ pub fn spawn_match(
     assets: Res<AssetServer>,
     config: Res<MatchConfig>,
     ship_colliders: Res<crate::collider::ShipColliders>,
+    mut rng: ResMut<crate::rng::GameRng>,
 ) {
     // Compass-point spawns. Up to 4 players — slots 2 and 3 are
     // populated for online / 4-player local; otherwise the loop
@@ -878,7 +879,7 @@ pub fn spawn_match(
         }
     }
 
-    spawn_asteroids(&mut commands, &assets);
+    spawn_asteroids(&mut commands, &assets, &mut rng);
 }
 
 /// Class-picker hotkeys. Two ways in:
@@ -4869,6 +4870,7 @@ fn apply_syreen_drain(
     ship_pos: Query<(Entity, &Ship, &Position), Without<Invisible>>,
     shields: Query<&ShieldActive>,
     mut crews: Query<&mut Crew>,
+    mut rng: ResMut<crate::rng::GameRng>,
 ) {
     for (firer_entity, firer_ship, firer_pos, req) in &requesters {
         let firer_xy = firer_pos.0;
@@ -4887,7 +4889,9 @@ fn apply_syreen_drain(
             // Linear proximity weight 1.0 (touching) → 0.0 (edge).
             let prox = 1.0 - (dist / req.range);
             let base = (req.max_drain as f32 * prox).round() as i32;
-            let jitter = fastrand::i32(0..=req.max_drain);
+            // Determinism-critical: this drain directly modifies
+            // target crew, so peers must agree on the roll.
+            let jitter = rng.i32(0..=req.max_drain);
             let mut dmg = (base + jitter).clamp(0, req.max_drain * 2);
             // Shields halve / cancel as usual.
             let factor = shields
@@ -5392,7 +5396,11 @@ pub struct Asteroid;
 /// Sprinkle a handful of asteroids at random positions across the
 /// arena, avoiding the player-ship spawn corridors. Called once
 /// per match from `spawn_match`.
-pub fn spawn_asteroids(commands: &mut Commands, assets: &AssetServer) {
+pub fn spawn_asteroids(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    rng: &mut crate::rng::GameRng,
+) {
     use std::f32::consts::TAU;
     const N: usize = 8;
     /// Half-side of the arena (matches STAR_AREA_HALF in starfield
@@ -5407,10 +5415,13 @@ pub fn spawn_asteroids(commands: &mut Commands, assets: &AssetServer) {
     /// asteroid so the field doesn't read as 8 identical rocks.
     const ASTEROID_FRAMES: usize = 64;
 
+    // All draws here affect game state (asteroid position +
+    // velocity + collider mass + radius → physics integration
+    // diverges if peers disagree). Use the seeded RNG.
     for _ in 0..N {
         let pos = loop {
-            let x = (fastrand::f32() - 0.5) * HALF * 2.0;
-            let y = (fastrand::f32() - 0.5) * HALF * 2.0;
+            let x = rng.signed_unit() * HALF;
+            let y = rng.signed_unit() * HALF;
             // Avoid the spawn corridor around (±900, 0).
             let near_left = (x - (-900.0)).abs() < KEEP_OUT_X && y.abs() < KEEP_OUT_Y;
             let near_right = (x - 900.0).abs() < KEEP_OUT_X && y.abs() < KEEP_OUT_Y;
@@ -5418,13 +5429,15 @@ pub fn spawn_asteroids(commands: &mut Commands, assets: &AssetServer) {
                 break Vec2::new(x, y);
             }
         };
-        let theta = fastrand::f32() * TAU;
-        let speed = 18.0 + fastrand::f32() * 28.0;
+        let theta = rng.f32() * TAU;
+        let speed = 18.0 + rng.f32() * 28.0;
         let vel = Vec2::new(theta.cos(), theta.sin()) * speed;
-        let radius = 22.0 + fastrand::f32() * 16.0;
+        let radius = 22.0 + rng.f32() * 16.0;
         let visual = radius * 2.2;
-        let frame_idx = 1 + (fastrand::usize(..) % ASTEROID_FRAMES);
+        let frame_idx = 1 + rng.usize_range(0..ASTEROID_FRAMES);
         let sprite_path = format!("asteroids/astero{:02}.png", frame_idx);
+        let mass = 4.0 + rng.f32() * 3.0;
+        let ang_vel = rng.signed_unit() * 0.3;
         commands.spawn((
             Asteroid,
             Sprite {
@@ -5436,14 +5449,14 @@ pub fn spawn_asteroids(commands: &mut Commands, assets: &AssetServer) {
             Transform::from_translation(pos.extend(0.1)),
             RigidBody::Dynamic,
             Collider::circle(radius),
-            Mass(4.0 + fastrand::f32() * 3.0),
+            Mass(mass),
             Position(pos),
             // Restitution gives the collisions some bounce — without
             // it asteroids would just stick on contact.
             Restitution::new(0.7),
             Friction::new(0.0),
             LinearVelocity(vel),
-            AngularVelocity((fastrand::f32() - 0.5) * 0.6),
+            AngularVelocity(ang_vel),
             LinearDamping(0.0),
             AngularDamping(0.0),
             CollisionEventsEnabled,
@@ -5618,6 +5631,7 @@ fn replenish_asteroids(
     cameras: Query<(&Transform, &Projection), With<Camera2d>>,
     windows: Query<&Window>,
     asteroids: Query<(), With<Asteroid>>,
+    mut rng: ResMut<crate::rng::GameRng>,
 ) {
     use std::f32::consts::TAU;
     const TARGET_ASTEROID_COUNT: usize = 8;
@@ -5649,17 +5663,27 @@ fn replenish_asteroids(
         (Vec2::ZERO, 1280.0 * 0.5, 720.0 * 0.5)
     };
 
-    // Try a handful of random positions; prefer the first one that
-    // is (a) outside the spawn corridor, (b) outside the camera's
-    // current view. If we can't find an off-screen pick after a
-    // bunch of attempts, fall back to whatever's valid — better
-    // than skipping the spawn.
-    let pos = (0..16)
-        .map(|_| {
-            let x = (fastrand::f32() - 0.5) * HALF * 2.0;
-            let y = (fastrand::f32() - 0.5) * HALF * 2.0;
-            Vec2::new(x, y)
-        })
+    // Determinism note: this is gameplay-affecting (the spawned
+    // asteroid's pose feeds the physics step), so the seeded
+    // RNG must drive every draw. We also can't bail mid-loop
+    // based on camera position alone, because in online play
+    // each peer has a different camera — using the camera as a
+    // filter would let peers consume different numbers of RNG
+    // draws. Resolution: do the camera-aware scoring locally
+    // (visual hint) but always consume exactly 16 candidate
+    // pairs of draws + 5 fallback draws, so the RNG state
+    // advances identically on every peer.
+    let mut candidates: Vec<Vec2> = Vec::with_capacity(16);
+    for _ in 0..16 {
+        let x = rng.signed_unit() * HALF;
+        let y = rng.signed_unit() * HALF;
+        candidates.push(Vec2::new(x, y));
+    }
+    let fallback_theta = rng.f32() * TAU;
+    let fallback_r = HALF * (0.6 + 0.4 * rng.f32());
+    let pos = candidates
+        .iter()
+        .copied()
         .find(|p| {
             let near_left = (p.x - (-900.0)).abs() < KEEP_OUT_X && p.y.abs() < KEEP_OUT_Y;
             let near_right = (p.x - 900.0).abs() < KEEP_OUT_X && p.y.abs() < KEEP_OUT_Y;
@@ -5668,19 +5692,18 @@ fn replenish_asteroids(
             !near_left && !near_right && off_screen
         })
         .unwrap_or_else(|| {
-            // Fallback: pick any position avoiding spawn corridors.
-            let theta = fastrand::f32() * TAU;
-            let r = HALF * (0.6 + 0.4 * fastrand::f32());
-            cam_xy + Vec2::new(theta.cos(), theta.sin()) * r
+            cam_xy + Vec2::new(fallback_theta.cos(), fallback_theta.sin()) * fallback_r
         });
 
-    let theta = fastrand::f32() * TAU;
-    let speed = 18.0 + fastrand::f32() * 28.0;
+    let theta = rng.f32() * TAU;
+    let speed = 18.0 + rng.f32() * 28.0;
     let vel = Vec2::new(theta.cos(), theta.sin()) * speed;
-    let radius = 22.0 + fastrand::f32() * 16.0;
+    let radius = 22.0 + rng.f32() * 16.0;
     let visual = radius * 2.2;
-    let frame_idx = 1 + (fastrand::usize(..) % ASTEROID_FRAMES);
+    let frame_idx = 1 + rng.usize_range(0..ASTEROID_FRAMES);
     let sprite_path = format!("asteroids/astero{:02}.png", frame_idx);
+    let mass = 4.0 + rng.f32() * 3.0;
+    let ang_vel = rng.signed_unit() * 0.3;
     commands.spawn((
         Asteroid,
         Sprite {
@@ -5692,12 +5715,12 @@ fn replenish_asteroids(
         Transform::from_translation(pos.extend(0.1)),
         RigidBody::Dynamic,
         Collider::circle(radius),
-        Mass(4.0 + fastrand::f32() * 3.0),
+        Mass(mass),
         Position(pos),
         Restitution::new(0.7),
         Friction::new(0.0),
         LinearVelocity(vel),
-        AngularVelocity((fastrand::f32() - 0.5) * 0.6),
+        AngularVelocity(ang_vel),
         LinearDamping(0.0),
         AngularDamping(0.0),
         CollisionEventsEnabled,

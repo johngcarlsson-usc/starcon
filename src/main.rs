@@ -6,6 +6,7 @@ mod input;
 mod menu;
 mod netplay;
 mod physics;
+mod rng;
 mod ship;
 mod mobile_controls;
 mod starfield;
@@ -77,6 +78,7 @@ fn main() {
             mobile_controls::MobileControlsPlugin,
             menu::MenuPlugin,
             ai::AiPlugin,
+            rng::RngPlugin,
         ))
         .init_resource::<ship::PreloadedAssets>()
         .add_systems(Startup, (setup_camera, ship::preload_all_assets))

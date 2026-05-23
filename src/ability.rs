@@ -289,6 +289,7 @@ fn dispatch_primary(
     keys: Res<ButtonInput<KeyCode>>,
     virt: Res<input::VirtualInput>,
     assets: Res<AssetServer>,
+    mut rng: ResMut<crate::rng::GameRng>,
     mut q: Query<(
         Entity,
         &Ship,
@@ -346,6 +347,7 @@ fn dispatch_primary(
             batt: &mut batt,
             crew: &mut crew,
             damage,
+            rng: &mut rng,
         };
         apply_kind(&mut ctx, &abilities.primary.kind);
         cd.0 = abilities.primary.cooldown_s;
@@ -357,6 +359,7 @@ fn dispatch_special(
     keys: Res<ButtonInput<KeyCode>>,
     virt: Res<input::VirtualInput>,
     assets: Res<AssetServer>,
+    mut rng: ResMut<crate::rng::GameRng>,
     mut q: Query<(
         Entity,
         &Ship,
@@ -425,6 +428,7 @@ fn dispatch_special(
             batt: &mut batt,
             crew: &mut crew,
             damage,
+            rng: &mut rng,
         };
         apply_kind(&mut ctx, &abilities.special.kind);
         cd.0 = abilities.special.cooldown_s;
@@ -445,6 +449,10 @@ struct AbilityCtx<'a, 'w, 's> {
     batt: &'a mut Battery,
     crew: &'a mut Crew,
     damage: i32,
+    /// Seeded per-match RNG. Use for any draw whose outcome
+    /// affects game state (shot spread, teleport offset).
+    /// Visual-only jitter can keep using the global fastrand.
+    rng: &'a mut crate::rng::GameRng,
 }
 
 fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
@@ -615,8 +623,11 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
             }
         }
         AbilityKind::TeleportRandom { range } => {
-            let dx = (fastrand::f32() * 2.0 - 1.0) * range;
-            let dy = (fastrand::f32() * 2.0 - 1.0) * range;
+            // Determinism-critical: peers must agree on where
+            // the teleporting ship reappears. Use the seeded
+            // per-match RNG, not the global fastrand.
+            let dx = ctx.rng.signed_unit() * range;
+            let dy = ctx.rng.signed_unit() * range;
             ctx.pos.0 += Vec2::new(dx, dy);
             info!("P{} hyperspace", slot);
         }
@@ -735,7 +746,9 @@ fn spawn_volley(ctx: &mut AbilityCtx, volley: &VolleySpec) {
             barrel.direction.x * ctx.rot.sin + barrel.direction.y * ctx.rot.cos,
         );
         if volley.random_spread_rad > 0.0 {
-            let jitter = (fastrand::f32() * 2.0 - 1.0) * volley.random_spread_rad;
+            // Determinism-critical: shot spread directly
+            // affects projectile trajectories.
+            let jitter = ctx.rng.signed_unit() * volley.random_spread_rad;
             let (s, c) = jitter.sin_cos();
             world_dir = Vec2::new(
                 world_dir.x * c - world_dir.y * s,
