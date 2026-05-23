@@ -618,18 +618,15 @@ impl Plugin for UltimatePlugin {
         .init_resource::<MmrxfUnleashedSprite>()
         // ---- GgrsSchedule: gameplay-affecting cinematic systems ----
         //
-        // Anything that mutates game state (phase transitions,
-        // ship velocity, spawn projectiles, apply damage) must
-        // run in GgrsSchedule so rollback can re-simulate them
-        // deterministically. Time inside GgrsSchedule is auto-
-        // swapped to `Time<GgrsTime>` which advances at a
-        // fixed 1/FPS per frame.
+        // Anything that mutates game state DURING unpaused
+        // phases must run in GgrsSchedule so rollback can
+        // re-simulate it deterministically. We can't put
+        // *paused-phase* systems here, because FixedUpdate (and
+        // thus GgrsSchedule) halts when `Time<Virtual>` is
+        // paused — those go in Update.
         .add_systems(
             bevy_ggrs::GgrsSchedule,
             (
-                abort_cinematic_if_ship_gone,
-                hyper_trigger,
-                tick_ultimate_phases,
                 tick_ultimate_beams,
                 tick_earthling_blast,
                 tick_yehat_battle_fleet,
@@ -639,23 +636,45 @@ impl Plugin for UltimatePlugin {
                 tick_pkunk_clones,
                 tick_slylandro_storm,
                 handle_slylandro_asteroid_hits,
-            )
-                .chain(),
-        )
-        .add_systems(
-            bevy_ggrs::GgrsSchedule,
-            (
-                tick_mycon_gather,
-                tick_mycon_orbit,
                 tick_mycon_release,
                 tick_thraddash_restore,
                 tick_druuge_barrage,
                 tick_kohrah_spawn,
                 tick_kohrah_blades,
+            ),
+        )
+        .add_systems(
+            bevy_ggrs::GgrsSchedule,
+            (
                 tick_thraddash_burn,
                 tick_mmrxf_tangled_laser,
                 tick_mmrxf_split_launcher,
                 tick_mmrxf_split_missiles,
+            ),
+        )
+        // ---- Update: cinematic systems that MUST tick during
+        // Time<Virtual> pause ----
+        //
+        // - tick_ultimate_phases drives phase transitions and
+        //   has to advance the timer during the DramaticZoomIn
+        //   pause (and other paused first-phases) so the
+        //   cinematic actually progresses. If it lived in
+        //   GgrsSchedule it'd freeze on pause.
+        // - hyper_trigger reads INPUT_ULTIMATE and starts the
+        //   cinematic; pre-cinematic the game is unpaused, but
+        //   keeping it in Update avoids ordering oddities.
+        // - abort_cinematic_if_ship_gone cleans up if the ship
+        //   gets despawned mid-cinematic; must run during pause.
+        // - tick_mycon_gather / tick_mycon_orbit animate the
+        //   plasma orbs during the PAUSED MyconGathering beat.
+        .add_systems(
+            Update,
+            (
+                tick_ultimate_phases,
+                hyper_trigger,
+                abort_cinematic_if_ship_gone,
+                tick_mycon_gather,
+                tick_mycon_orbit,
             ),
         )
         // ---- Update: visual-only systems ----
