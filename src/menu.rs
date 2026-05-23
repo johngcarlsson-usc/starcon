@@ -180,14 +180,10 @@ fn handle_menu_buttons(
                 next.set(AppState::InMatch);
             }
             MenuAction::Online => {
-                // Default to 4-slot online — the lobby will trim
-                // back if fewer peers connect (or wait for more).
-                config.slots = vec![
-                    SlotConfig::human(ShipClass::Earcr),
-                    SlotConfig::human(ShipClass::Spael),
-                    SlotConfig::human(ShipClass::Yehte),
-                    SlotConfig::human(ShipClass::Chmav),
-                ];
+                // The lobby setup screen owns the slot config —
+                // it'll mutate `MatchConfig` once the user picks
+                // their humans/AI mix and a matchbox session
+                // connects. Don't pre-populate here.
                 lobby_req.requested = true;
                 next.set(AppState::LobbyOnline);
             }

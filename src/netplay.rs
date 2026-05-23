@@ -86,11 +86,12 @@ impl NonBlockingSocket<PeerId> for GgrsChannelAdapter {
     }
 }
 
-/// Maximum players per match. The lobby waits for exactly
-/// `NUM_PLAYERS` peers (including ourselves) before starting.
-/// 4 is the canonical Super Melee cap; smaller numbers are
-/// supported by setting fewer slots in `MatchConfig.classes`.
-pub const NUM_PLAYERS: usize = 4;
+/// Maximum players per match. The lobby waits for exactly the
+/// number of HUMANS in `LobbyState.target_humans` (any remaining
+/// slots up to `target_humans + target_ai` are filled with
+/// stub-AI ships when the match starts). 4 is the canonical
+/// Super Melee cap.
+pub const MAX_PLAYERS: usize = 4;
 
 /// GGRS frame rate. Matches Bevy's default `FixedUpdate`
 /// schedule (60 Hz) so the network tick aligns with the physics
@@ -105,10 +106,11 @@ pub const FPS: usize = 60;
 /// 33 ms of perceptual lag, which is below human reaction time.
 pub const INPUT_DELAY: usize = 2;
 
-/// Matchbox signaling server URL used to find peers. The
-/// `?next=N` query asks the server to bucket us with N peers
-/// total before connecting us up.
-pub const DEFAULT_ROOM_URL: &str = "wss://match.helsing.studio/starcon?next=4";
+/// Matchbox signaling server URL base. The full URL appended
+/// to this includes the lobby variant + `?next=N` so peers who
+/// picked the same "N humans + M AI" preset land in the same
+/// room.
+pub const SIGNALING_URL: &str = "wss://match.helsing.studio";
 
 /// Set by `menu.rs` when the player picks "Online". Read on
 /// OnEnter(LobbyOnline) to decide whether to open a socket.
@@ -119,26 +121,58 @@ pub struct LobbyRequest {
     pub requested: bool,
 }
 
-/// Live lobby connection state. Owns the matchbox socket while
-/// we're in `AppState::LobbyOnline`; the socket is dropped on
-/// OnExit so the WebRTC channels are released.
-#[derive(Resource, Default)]
+/// Live lobby state. Owns the matchbox socket while we're in
+/// `AppState::LobbyOnline`; the socket is dropped on OnExit so
+/// the WebRTC channels are released.
+///
+/// `target_humans` + `target_ai` are pickers — the user adjusts
+/// them via the setup UI before pressing "Find Match", at which
+/// point the lobby opens a matchbox socket and waits for
+/// `target_humans` peers. AI slots are filled in locally on
+/// every peer when the match starts; since they're driven by
+/// deterministic state-only inputs, no GGRS handles are needed.
+#[derive(Resource)]
 pub struct LobbyState {
     pub status: LobbyStatus,
     /// Last known connected-peer count, including the local
     /// player. Updated by `update_lobby` so the UI can render
-    /// "Waiting for players: 2/4".
+    /// "Waiting for players: 2/3".
     pub connected: usize,
+    /// Number of human slots in this match (1..=4). The lobby
+    /// waits for this many peers (including ourselves).
+    pub target_humans: usize,
+    /// Number of AI slots in this match. Total ship count =
+    /// target_humans + target_ai, capped at MAX_PLAYERS.
+    pub target_ai: usize,
+}
+
+impl Default for LobbyState {
+    fn default() -> Self {
+        Self {
+            status: LobbyStatus::Setup,
+            connected: 0,
+            target_humans: 2,
+            target_ai: 0,
+        }
+    }
+}
+
+impl LobbyState {
+    pub fn total_slots(&self) -> usize {
+        (self.target_humans + self.target_ai).min(MAX_PLAYERS)
+    }
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LobbyStatus {
+    /// Pre-connection: pickers visible, user choosing the
+    /// match size + AI mix.
     #[default]
-    Idle,
+    Setup,
     /// Opening the WebSocket to the signaling server.
     Connecting,
     /// Connected to the signaling server; waiting for the room
-    /// to fill up to NUM_PLAYERS.
+    /// to fill up to `target_humans`.
     WaitingForPeers,
     /// All peers connected; handing off to GGRS. Transitional —
     /// the next tick should bring us into InMatch.
@@ -160,6 +194,31 @@ struct LobbyUi;
 #[derive(Component)]
 struct LobbyStatusText;
 
+/// Marker on the text node that shows "Humans: N" — updated
+/// when the picker buttons mutate `LobbyState.target_humans`.
+#[derive(Component)]
+struct HumansCountText;
+
+/// Marker on the text node that shows "AI: N".
+#[derive(Component)]
+struct AiCountText;
+
+/// Marker on the entire setup-pickers sub-tree (the picker
+/// rows + the "Find Match" button). Hidden when status leaves
+/// Setup so the post-setup status text isn't occluded.
+#[derive(Component)]
+struct LobbySetupPanel;
+
+/// Per-button discriminator for the in-lobby setup controls.
+#[derive(Component, Clone, Copy)]
+enum SetupAction {
+    HumansDec,
+    HumansInc,
+    AiDec,
+    AiInc,
+    FindMatch,
+}
+
 pub struct NetplayPlugin;
 
 impl Plugin for NetplayPlugin {
@@ -170,11 +229,17 @@ impl Plugin for NetplayPlugin {
         app.add_plugins(GgrsPlugin::<Config>::default())
             .init_resource::<LobbyRequest>()
             .init_resource::<LobbyState>()
-            .add_systems(OnEnter(AppState::LobbyOnline), (spawn_lobby_ui, connect_to_matchbox))
+            .add_systems(OnEnter(AppState::LobbyOnline), (reset_lobby, spawn_lobby_ui))
             .add_systems(OnExit(AppState::LobbyOnline), (despawn_lobby_ui, drop_socket))
             .add_systems(
                 Update,
-                (update_lobby, update_lobby_ui, lobby_back_to_menu)
+                (
+                    handle_setup_buttons,
+                    update_lobby,
+                    update_lobby_ui,
+                    update_setup_visibility,
+                    lobby_back_to_menu,
+                )
                     .run_if(in_state(AppState::LobbyOnline)),
             )
             // GGRS calls into the `ReadInputs` schedule once per
@@ -188,7 +253,15 @@ impl Plugin for NetplayPlugin {
     }
 }
 
-fn spawn_lobby_ui(mut commands: Commands) {
+/// On entry to LobbyOnline: blow away any prior connection
+/// state, start fresh in Setup. Status defaults to Setup so
+/// the setup UI is visible.
+fn reset_lobby(mut state: ResMut<LobbyState>) {
+    state.status = LobbyStatus::Setup;
+    state.connected = 0;
+}
+
+fn spawn_lobby_ui(mut commands: Commands, state: Res<LobbyState>) {
     commands
         .spawn((
             LobbyUi,
@@ -212,12 +285,58 @@ fn spawn_lobby_ui(mut commands: Commands) {
                 TextFont::from_font_size(40.0),
                 TextColor(Color::srgb(0.85, 0.95, 1.0)),
             ));
+
+            // --- Setup panel (visible while in Setup status) ---
+            root.spawn((
+                LobbySetupPanel,
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(12.0),
+                    margin: UiRect::vertical(Val::Px(12.0)),
+                    ..default()
+                },
+            ))
+            .with_children(|panel| {
+                spawn_picker_row(
+                    panel,
+                    "Humans",
+                    state.target_humans,
+                    SetupAction::HumansDec,
+                    SetupAction::HumansInc,
+                    PickerKind::Humans,
+                );
+                spawn_picker_row(
+                    panel,
+                    "AI opponents",
+                    state.target_ai,
+                    SetupAction::AiDec,
+                    SetupAction::AiInc,
+                    PickerKind::Ai,
+                );
+                spawn_setup_button(panel, SetupAction::FindMatch, "Find Match");
+                panel.spawn((
+                    Text::new(
+                        "Both players (or all peers) must pick the same combination\n\
+                         to find each other in matchmaking.",
+                    ),
+                    TextFont::from_font_size(13.0),
+                    TextColor(Color::srgba(0.55, 0.62, 0.75, 0.85)),
+                    Node {
+                        margin: UiRect::top(Val::Px(8.0)),
+                        ..default()
+                    },
+                ));
+            });
+
+            // --- Status text (visible once Setup is finished) ---
             root.spawn((
                 LobbyStatusText,
-                Text::new("Connecting..."),
+                Text::new(""),
                 TextFont::from_font_size(20.0),
                 TextColor(Color::srgba(0.80, 0.85, 0.95, 0.95)),
             ));
+
             root.spawn((
                 Text::new("[Esc] back to menu"),
                 TextFont::from_font_size(14.0),
@@ -230,6 +349,89 @@ fn spawn_lobby_ui(mut commands: Commands) {
         });
 }
 
+#[derive(Copy, Clone)]
+enum PickerKind {
+    Humans,
+    Ai,
+}
+
+fn spawn_picker_row(
+    parent: &mut ChildSpawnerCommands,
+    label: &str,
+    initial: usize,
+    dec: SetupAction,
+    inc: SetupAction,
+    kind: PickerKind,
+) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(12.0),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                Text::new(format!("{label}:")),
+                TextFont::from_font_size(20.0),
+                TextColor(Color::srgba(0.85, 0.90, 1.0, 0.95)),
+                Node {
+                    width: Val::Px(160.0),
+                    ..default()
+                },
+            ));
+            spawn_setup_button(row, dec, "-");
+            // The counter cell is wide enough that single-digit
+            // values don't jump around as they change.
+            let mut counter = row.spawn((
+                Text::new(format!("{}", initial)),
+                TextFont::from_font_size(22.0),
+                TextColor(Color::srgba(1.0, 1.0, 1.0, 0.95)),
+                Node {
+                    width: Val::Px(36.0),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+            ));
+            match kind {
+                PickerKind::Humans => {
+                    counter.insert(HumansCountText);
+                }
+                PickerKind::Ai => {
+                    counter.insert(AiCountText);
+                }
+            }
+            spawn_setup_button(row, inc, "+");
+        });
+}
+
+fn spawn_setup_button(parent: &mut ChildSpawnerCommands, action: SetupAction, label: &str) {
+    parent
+        .spawn((
+            Button,
+            action,
+            Node {
+                min_width: Val::Px(48.0),
+                height: Val::Px(40.0),
+                padding: UiRect::horizontal(Val::Px(12.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                border: UiRect::all(Val::Px(2.0)),
+                border_radius: BorderRadius::all(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.15, 0.25, 0.45, 0.85)),
+            BorderColor::all(Color::srgba(0.55, 0.75, 1.0, 0.80)),
+        ))
+        .with_children(|btn| {
+            btn.spawn((
+                Text::new(label.to_string()),
+                TextFont::from_font_size(20.0),
+                TextColor(Color::srgba(1.0, 1.0, 1.0, 0.95)),
+            ));
+        });
+}
+
 fn despawn_lobby_ui(mut commands: Commands, q: Query<Entity, With<LobbyUi>>) {
     for e in &q {
         if let Ok(mut ec) = commands.get_entity(e) {
@@ -238,31 +440,83 @@ fn despawn_lobby_ui(mut commands: Commands, q: Query<Entity, With<LobbyUi>>) {
     }
 }
 
-/// On entry to LobbyOnline: open a matchbox WebRTC socket to the
-/// signaling server. The socket is stored as a resource so
-/// `update_lobby` can poll its peer list each tick.
-///
-/// `MatchboxSocket::from(WebRtcSocketBuilder)` defers the actual
-/// connection — the socket is "Connecting" until the first
-/// `update_peers()` call returns a peer event. No async/await,
-/// no spawned task; Bevy's Update tick drives the polling.
-fn connect_to_matchbox(
+/// Handle clicks on the setup-screen pickers + "Find Match"
+/// button. The pickers mutate `LobbyState.target_humans` /
+/// `target_ai` with sensible bounds; Find Match opens the
+/// matchbox socket on the variant-specific room URL.
+fn handle_setup_buttons(
     mut commands: Commands,
     mut state: ResMut<LobbyState>,
-    request: Res<LobbyRequest>,
+    interactions: Query<(&Interaction, &SetupAction), Changed<Interaction>>,
 ) {
-    if !request.requested {
-        state.status = LobbyStatus::Idle;
+    for (interaction, action) in &interactions {
+        if !matches!(interaction, Interaction::Pressed) {
+            continue;
+        }
+        // Picker bounds: at least 1 human, total ≤ MAX_PLAYERS,
+        // AI ≥ 0. Adjustments respect both axes.
+        match action {
+            SetupAction::HumansDec => {
+                if state.target_humans > 1 {
+                    state.target_humans -= 1;
+                }
+            }
+            SetupAction::HumansInc => {
+                if state.target_humans + state.target_ai < MAX_PLAYERS {
+                    state.target_humans += 1;
+                }
+            }
+            SetupAction::AiDec => {
+                if state.target_ai > 0 {
+                    state.target_ai -= 1;
+                }
+            }
+            SetupAction::AiInc => {
+                if state.target_humans + state.target_ai < MAX_PLAYERS {
+                    state.target_ai += 1;
+                }
+            }
+            SetupAction::FindMatch => {
+                // Room URL encodes BOTH human + AI counts so
+                // peers who picked the same combination land in
+                // the same matchbox bucket. `?next=N` is the
+                // human count — matchbox waits for N peers in
+                // the room before connecting them.
+                let url = format!(
+                    "{}/starcon-h{}-a{}?next={}",
+                    SIGNALING_URL, state.target_humans, state.target_ai, state.target_humans
+                );
+                info!("netplay: opening matchbox socket → {}", url);
+                let socket = MatchboxSocket::new_unreliable(url);
+                commands.insert_resource(socket);
+                state.status = LobbyStatus::Connecting;
+                state.connected = 0;
+            }
+        }
+    }
+}
+
+/// Show / hide the setup picker panel based on lobby status.
+/// In Setup we show pickers; once Find Match has been pressed
+/// (Connecting / Waiting / Ready / Failed) we hide them so the
+/// status text takes center stage.
+fn update_setup_visibility(
+    state: Res<LobbyState>,
+    mut panels: Query<&mut Visibility, With<LobbySetupPanel>>,
+) {
+    if !state.is_changed() {
         return;
     }
-    info!("netplay: opening matchbox socket → {}", DEFAULT_ROOM_URL);
-    // `new_unreliable` is the right channel for GGRS — rollback
-    // netcode already handles its own retransmits, so we want
-    // raw UDP-over-WebRTC without the ordered/reliable wrapper.
-    let socket = MatchboxSocket::new_unreliable(DEFAULT_ROOM_URL);
-    commands.insert_resource(socket);
-    state.status = LobbyStatus::Connecting;
-    state.connected = 0;
+    let target = if matches!(state.status, LobbyStatus::Setup | LobbyStatus::Failed(_)) {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut panels {
+        if *v != target {
+            *v = target;
+        }
+    }
 }
 
 /// Drop the matchbox socket when we leave the lobby — either
@@ -270,28 +524,27 @@ fn connect_to_matchbox(
 /// to the main menu. Removes the WebRTC channels cleanly.
 fn drop_socket(mut commands: Commands, mut state: ResMut<LobbyState>) {
     commands.remove_resource::<MatchboxSocket>();
-    state.status = LobbyStatus::Idle;
+    state.status = LobbyStatus::Setup;
     state.connected = 0;
 }
 
 /// Each tick while in LobbyOnline:
-///   - Drive the matchbox socket forward by calling
-///     `update_peers()`. Returns the list of new/lost peer
-///     events but we mostly care about the connected-peer count.
-///   - Update `LobbyState.connected` and `status`.
-///   - When the peer count reaches `NUM_PLAYERS`, mark
-///     SessionReady and transition to InMatch.
-///
-/// TODO: when SessionReady fires, hand the socket off to a GGRS
-/// `SessionBuilder` and stash the resulting `Session<Config>` as
-/// a resource. The InMatch systems then read inputs from that
-/// session instead of the keyboard for remote slots.
+///   - In Setup status: no-op (waiting for the user to press
+///     Find Match). `handle_setup_buttons` owns that path.
+///   - Otherwise: drive the matchbox socket, count peers,
+///     and once we've reached `target_humans` build the GGRS
+///     session + apply the (humans + AI) slot config to
+///     `MatchConfig` so `spawn_match` knows what to spawn.
 fn update_lobby(
     mut commands: Commands,
     socket: Option<ResMut<MatchboxSocket>>,
     mut state: ResMut<LobbyState>,
+    mut config: ResMut<crate::ship::MatchConfig>,
     mut next: ResMut<NextState<AppState>>,
 ) {
+    if matches!(state.status, LobbyStatus::Setup) {
+        return;
+    }
     let Some(mut socket) = socket else {
         return;
     };
@@ -302,9 +555,10 @@ fn update_lobby(
     let total = remote_count + 1; // +1 for the local player
     state.connected = total;
 
+    let humans = state.target_humans;
     state.status = match state.status {
         LobbyStatus::Failed(msg) => LobbyStatus::Failed(msg),
-        _ if total >= NUM_PLAYERS => LobbyStatus::SessionReady,
+        _ if total >= humans => LobbyStatus::SessionReady,
         _ if total >= 1 => LobbyStatus::WaitingForPeers,
         _ => LobbyStatus::Connecting,
     };
@@ -314,13 +568,11 @@ fn update_lobby(
     }
 
     // Build a deterministic player list — sorted by PeerId so
-    // every machine assigns the same handle (0..=N-1) to the
-    // same physical player. Can't use `socket.players()` because
-    // its return type is `PlayerType` from ggrs 0.11 and our
-    // bevy_ggrs needs the ggrs 0.12 type.
+    // every machine assigns the same handle (0..=humans-1) to
+    // the same physical player. Can't use `socket.players()`
+    // because its return type is the ggrs 0.11 `PlayerType` and
+    // our bevy_ggrs needs the 0.12 type.
     let Some(our_id) = socket.id() else {
-        // Signaling handshake hasn't finished assigning our id
-        // yet; wait another tick.
         return;
     };
     let mut peer_ids: Vec<PeerId> = socket
@@ -338,12 +590,12 @@ fn update_lobby(
             }
         })
         .collect();
-    if players.len() < NUM_PLAYERS {
-        // Race with update_peers() — try again next tick.
+    if players.len() < humans {
         return;
     }
+
     // GGRS 0.12 made the builder methods fallible.
-    let mut builder = match SessionBuilder::<Config>::new().with_num_players(NUM_PLAYERS) {
+    let mut builder = match SessionBuilder::<Config>::new().with_num_players(humans) {
         Ok(b) => b,
         Err(e) => {
             warn!("netplay: bad num_players config: {e:?}");
@@ -390,11 +642,49 @@ fn update_lobby(
             return;
         }
     };
+
+    // Apply the chosen humans/AI mix to MatchConfig so
+    // `spawn_match` knows what to spawn. Human slots take the
+    // lowest indices (so handles 0..humans map to slots
+    // 0..humans), then AI slots fill the rest.
+    use crate::ship::{PlayerKind, ShipClass, SlotConfig};
+    let ai_count = state.target_ai.min(MAX_PLAYERS.saturating_sub(humans));
+    let class_palette = [
+        ShipClass::Earcr,
+        ShipClass::Spael,
+        ShipClass::Yehte,
+        ShipClass::Chmav,
+    ];
+    let mut slots = Vec::with_capacity(humans + ai_count);
+    for i in 0..humans {
+        slots.push(SlotConfig {
+            class: class_palette[i.min(3)],
+            kind: PlayerKind::Remote,
+        });
+    }
+    // Local player overrides their own slot kind to Human so
+    // `apply_player_input` reads the kbd for their slot. (The
+    // shared GGRS input pipeline isn't wired into the gameplay
+    // dispatch yet — see netplay.rs module docs — so for now
+    // the local kbd is what actually drives the local slot,
+    // and remote slots stay still. The infrastructure is in
+    // place for the GgrsSchedule migration.)
+    if let Some(slot) = slots.get_mut(local_handle) {
+        slot.kind = PlayerKind::Human;
+    }
+    for i in 0..ai_count {
+        slots.push(SlotConfig {
+            class: class_palette[(humans + i).min(3)],
+            kind: PlayerKind::Ai,
+        });
+    }
+    config.slots = slots;
+
     commands.insert_resource(Session::P2P(session));
     commands.insert_resource(LocalPlayers(vec![local_handle]));
     info!(
-        "netplay: GGRS session started — {} players, local handle = {}",
-        NUM_PLAYERS, local_handle
+        "netplay: GGRS session started — {} humans + {} AI, local handle = {}",
+        humans, ai_count, local_handle
     );
     next.set(AppState::InMatch);
 }
@@ -423,29 +713,57 @@ fn read_local_inputs(
     commands.insert_resource(LocalInputs::<Config>(map));
 }
 
-/// Render the current lobby status into the status-text node.
-/// Pulled out from `update_lobby` so the text update is
-/// idempotent w.r.t. state transitions (i.e. the text always
-/// shows the freshest status, even on the same-frame transition
-/// from WaitingForPeers to SessionReady).
+/// Render the current lobby status + picker counts into their
+/// respective text nodes. Pulled out from `update_lobby` so the
+/// text update is idempotent w.r.t. state transitions.
 fn update_lobby_ui(
     state: Res<LobbyState>,
-    mut q: Query<&mut Text, With<LobbyStatusText>>,
+    mut status_q: Query<
+        &mut Text,
+        (
+            With<LobbyStatusText>,
+            Without<HumansCountText>,
+            Without<AiCountText>,
+        ),
+    >,
+    mut humans_q: Query<
+        &mut Text,
+        (
+            With<HumansCountText>,
+            Without<LobbyStatusText>,
+            Without<AiCountText>,
+        ),
+    >,
+    mut ai_q: Query<
+        &mut Text,
+        (
+            With<AiCountText>,
+            Without<LobbyStatusText>,
+            Without<HumansCountText>,
+        ),
+    >,
 ) {
     if !state.is_changed() {
         return;
     }
-    for mut text in &mut q {
+    for mut text in &mut humans_q {
+        text.0 = format!("{}", state.target_humans);
+    }
+    for mut text in &mut ai_q {
+        text.0 = format!("{}", state.target_ai);
+    }
+    let humans = state.target_humans;
+    for mut text in &mut status_q {
         text.0 = match state.status {
-            LobbyStatus::Idle => "Idle.".to_string(),
+            LobbyStatus::Setup => String::new(),
             LobbyStatus::Connecting => "Connecting to signaling server...".to_string(),
             LobbyStatus::WaitingForPeers => format!(
                 "Waiting for players: {}/{}",
-                state.connected, NUM_PLAYERS
+                state.connected, humans
             ),
             LobbyStatus::SessionReady => format!(
-                "All {} players connected — starting match.",
-                NUM_PLAYERS
+                "All {} humans connected — starting match.",
+                humans
             ),
             LobbyStatus::Failed(msg) => format!("Connection failed: {}", msg),
         };
