@@ -1411,6 +1411,7 @@ fn tick_ultimate_phases(
     }
 
     if state.phase_timer_s >= phase_total {
+        let prev_phase = state.phase;
         state.phase_timer_s = 0.0;
         state.phase = match (state.phase, state.variant) {
             // Shared entry: variant decides what comes next.
@@ -1490,6 +1491,10 @@ fn tick_ultimate_phases(
                 return;
             }
         };
+        info!(
+            "phase transition: {:?} → {:?} (variant {:?})",
+            prev_phase, state.phase, state.variant
+        );
     }
 }
 
@@ -1499,6 +1504,11 @@ fn exit_cinematic(
     virt: &mut Time<Virtual>,
     zoom_state: &mut ZoomState,
 ) {
+    let exiting_from = state.phase;
+    info!(
+        "exit_cinematic: variant={:?} phase={:?} was_paused={}",
+        state.variant, exiting_from, state.was_paused
+    );
     if state.was_paused {
         virt.unpause();
         state.was_paused = false;
@@ -4217,8 +4227,18 @@ fn tick_kohrah_spawn(
     if state.phase_timer_s > 0.02 {
         return;
     }
-    let Some(p1) = state.player_entity else { return };
-    let Ok(pos) = ships.get(p1) else { return };
+    let Some(p1) = state.player_entity else {
+        info!("Kohr-Ah spawn: no player_entity, skipping");
+        return;
+    };
+    let Ok(pos) = ships.get(p1) else {
+        info!("Kohr-Ah spawn: ships.get({p1:?}) failed, skipping");
+        return;
+    };
+    info!(
+        "Kohr-Ah: spawning {} blades at t={:.3}s",
+        KOHRAH_BLADE_COUNT, state.phase_timer_s
+    );
     let world = pos.0;
     let speed = 80.0 * crate::ship::SC2_VEL_SCALE;
     for i in 0..KOHRAH_BLADE_COUNT {
