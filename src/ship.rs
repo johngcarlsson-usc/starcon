@@ -257,7 +257,10 @@ pub enum AngularControl {
 pub struct AngularControlOverride(pub Option<AngularControl>);
 
 /// Marker + per-instance data for an in-match ship entity.
+/// `auto_add_rollback` hook tags every spawned ship for inclusion
+/// in the rollback snapshot pipeline.
 #[derive(Component, Debug)]
+#[component(on_add = auto_add_rollback)]
 pub struct Ship {
     pub stats: ShipStats,
     pub player_slot: usize,
@@ -513,8 +516,32 @@ pub struct PointDefenseActive {
     pub damage_per_tick: i32,
 }
 
+/// Bevy component on-add hook: tag the new entity with
+/// `bevy_ggrs::Rollback` so its state is included in rollback
+/// snapshots. Used by every gameplay-relevant marker component
+/// (Projectile, DamageZone, SubEntity, ...) — beats remembering
+/// to add the marker at every spawn site.
+///
+/// Idempotent: if the entity already has `Rollback` (e.g.
+/// because two of these markers were inserted together), don't
+/// re-insert.
+fn auto_add_rollback(
+    mut world: bevy::ecs::world::DeferredWorld,
+    ctx: bevy::ecs::lifecycle::HookContext,
+) {
+    if world.get::<bevy_ggrs::Rollback>(ctx.entity).is_some() {
+        return;
+    }
+    world.commands().entity(ctx.entity).insert(bevy_ggrs::Rollback);
+}
+
 /// In-flight projectile. Owner is tracked so we can ignore self-hits.
+/// On-add hook auto-tags the entity with `bevy_ggrs::Rollback` so
+/// the projectile's state participates in rollback snapshots
+/// without having to remember to add the marker at every spawn
+/// site.
 #[derive(Component, Debug)]
+#[component(on_add = auto_add_rollback)]
 pub struct Projectile {
     pub owner: Entity,
     pub damage: i32,
@@ -548,6 +575,7 @@ pub struct Homing {
 /// "no friendly fire exemption" (Glory Device kills the firer too).
 /// `lifetime` decrements every tick; on expiry the zone despawns.
 #[derive(Component, Debug)]
+#[component(on_add = auto_add_rollback)]
 pub struct DamageZone {
     pub radius: f32,
     pub damage_per_sec: f32,
@@ -3304,6 +3332,7 @@ fn update_overlay_sprites(
 /// component alone. Living off the existing Avian collision events;
 /// `handle_sub_entity_collisions` dispatches the right effect per AI.
 #[derive(Component, Debug)]
+#[component(on_add = auto_add_rollback)]
 pub struct SubEntity {
     /// Which ship spawned this — used for friendly-fire filtering and
     /// for `DriftAndCollect` to know who's allowed to pick it up.
@@ -5392,6 +5421,7 @@ fn tick_kohma_passive_blades(
 /// VSmallAsteroid is similar) — they're physical inertia for
 /// projectiles and ships to interact with.
 #[derive(Component, Debug)]
+#[component(on_add = auto_add_rollback)]
 pub struct Asteroid;
 
 /// Sprinkle a handful of asteroids at random positions across the
