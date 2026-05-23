@@ -17,7 +17,7 @@ use bevy::prelude::*;
 
 use crate::input::{
     PlayerInput, VirtualInput, INPUT_FIRE, INPUT_LEFT, INPUT_RIGHT, INPUT_SPECIAL,
-    INPUT_THRUST,
+    INPUT_THRUST, INPUT_ULTIMATE,
 };
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,8 +46,8 @@ impl TouchAction {
             TouchAction::Thrust => Some(INPUT_THRUST),
             TouchAction::Fire => Some(INPUT_FIRE),
             TouchAction::Special => Some(INPUT_SPECIAL),
-            TouchAction::Ultimate
-            | TouchAction::CyclePrev
+            TouchAction::Ultimate => Some(INPUT_ULTIMATE),
+            TouchAction::CyclePrev
             | TouchAction::CycleNext
             | TouchAction::ToggleButtons => None,
         }

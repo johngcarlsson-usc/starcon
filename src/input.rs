@@ -9,6 +9,11 @@ pub const INPUT_RIGHT: u8 = 1 << 1;
 pub const INPUT_THRUST: u8 = 1 << 2;
 pub const INPUT_FIRE: u8 = 1 << 3;
 pub const INPUT_SPECIAL: u8 = 1 << 4;
+/// Ultimate cinematic trigger. Set by SPACE on keyboard or the
+/// on-screen ULT button. Routes through PlayerInput like the
+/// other bits so it can travel over the network — a remote
+/// player firing their ultimate triggers it on every peer.
+pub const INPUT_ULTIMATE: u8 = 1 << 5;
 
 #[repr(C)]
 #[derive(
@@ -112,6 +117,7 @@ fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
             (KeyCode::ArrowUp, INPUT_THRUST),
             (KeyCode::KeyZ, INPUT_FIRE),
             (KeyCode::KeyX, INPUT_SPECIAL),
+            (KeyCode::Space, INPUT_ULTIMATE),
         ],
         1 => &[
             (KeyCode::KeyA, INPUT_LEFT),

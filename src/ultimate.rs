@@ -713,7 +713,6 @@ const HYPER_BEAM_LEN: f32 = 380.0;
 /// crew ships die in a couple frames of contact, and since the
 /// Unleashing phase is only ~1.6 s the total damage is bounded.
 const HYPER_DAMAGE_PER_SEC: f32 = 600.0;
-const PORTRAIT_KEY: KeyCode = KeyCode::Space;
 
 // -- Earthling jump-to-light-speed --
 const EARTH_CHARGE_S: f32 = 0.55;
@@ -909,8 +908,7 @@ const BLADE_MESH_HANDLE: Handle<Mesh> = uuid_handle!("ec3a8f1e-7e8b-4f1b-9b3c-43
 // ----------------------------------------------------------------
 
 fn hyper_trigger(
-    keys: Res<ButtonInput<KeyCode>>,
-    touch_virt: Res<crate::input::VirtualInput>,
+    slot_inputs: Res<crate::input::SlotInputs>,
     mut state: ResMut<UltimateState>,
     cameras: Query<(&Transform, &Projection), With<Camera2d>>,
     ships: Query<(Entity, &Ship, &ShipClass, &Transform), Without<Camera2d>>,
@@ -928,11 +926,14 @@ fn hyper_trigger(
     if state.phase != UltimatePhase::Idle {
         return;
     }
-    if !keys.just_pressed(PORTRAIT_KEY) && !touch_virt.ultimate_just_pressed {
-        return;
-    }
-    let Some((entity, ship, class, ship_xf)) =
-        ships.iter().find(|(_, s, _, _)| s.player_slot == 0)
+    // Pick the first ship whose slot pressed the ult button
+    // this frame. Order is canonical (slot 0 first), so if
+    // somehow two slots tap simultaneously, slot 0 wins. The
+    // ult bit travels through SlotInputs so remote players
+    // trigger their own slot's ult via the network.
+    let Some((entity, ship, class, ship_xf)) = ships.iter().find(|(_, s, _, _)| {
+        slot_inputs.just_pressed(s.player_slot, crate::input::INPUT_ULTIMATE)
+    })
     else {
         return;
     };
