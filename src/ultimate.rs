@@ -638,7 +638,6 @@ impl Plugin for UltimatePlugin {
             (
                 tick_ultimate_beams,
                 tick_earthling_blast,
-                tick_yehat_battle_fleet,
                 tick_spathi_barrage,
                 tick_chenjesu_tempest,
                 tick_shofixti_nova,
@@ -695,6 +694,12 @@ impl Plugin for UltimatePlugin {
                 // are rolled-back entities and their post-
                 // impulse trajectories simulate in physics.
                 tick_slylandro_storm,
+                // tick_yehat_battle_fleet spawns the three
+                // orbiting fighters on entry to the PAUSED
+                // YehatSummoning phase. Same pause-survival
+                // bug as above: needs to live in Update or
+                // the fighters never spawn.
+                tick_yehat_battle_fleet,
             ),
         )
         // ---- Update: visual-only systems ----
@@ -2624,7 +2629,10 @@ fn tick_blast_trails(
 /// during the `YehatBattle` phase, and auto-fire missiles at the
 /// nearest enemy every YEHAT_FIGHTER_FIRE_INTERVAL_S seconds.
 fn tick_yehat_battle_fleet(
-    time: Res<Time>,
+    // Time<Real> so the orbit keeps spinning during the
+    // PAUSED YehatSummoning phase. Same reason as
+    // tick_ultimate_phases / tick_mycon_orbit.
+    time: Res<Time<Real>>,
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -3391,11 +3399,14 @@ fn tick_asteroid_ghosts(
 /// for the rest of its glow timer, potentially hitting the same
 /// target multiple times.
 fn handle_slylandro_asteroid_hits(
+    mut commands: Commands,
     mut reader: MessageReader<CollisionStart>,
-    mut launched: Query<&mut SlylandroLaunched>,
+    launched: Query<&SlylandroLaunched>,
+    positions: Query<&Position>,
     ships: Query<&crate::ship::Ship>,
     shields: Query<&crate::ship::ShieldActive>,
     mut crews: Query<&mut crate::ship::Crew>,
+    assets: Res<AssetServer>,
 ) {
     for event in reader.read() {
         let (asteroid, ship_e) = if launched.get(event.collider1).is_ok() {
@@ -3422,15 +3433,26 @@ fn handle_slylandro_asteroid_hits(
             .map(|s| s.damage_factor)
             .unwrap_or(1.0);
         let dmg = ((damage_amt as f32 * factor).round() as i32).max(0);
-        if dmg > 0 {
-            if let Ok(mut crew) = crews.get_mut(ship_e) {
-                crew.current = (crew.current - dmg).max(0);
-            }
-            // Flash the asteroid white so the player can see
-            // which rocks landed crew damage this frame.
-            if let Ok(mut launch) = launched.get_mut(asteroid) {
-                launch.hit_flash_remaining_s = SLYP_HIT_FLASH_S;
-            }
+        if dmg <= 0 {
+            continue;
+        }
+        if let Ok(mut crew) = crews.get_mut(ship_e) {
+            crew.current = (crew.current - dmg).max(0);
+        }
+        // Asteroid explodes on contact: kaboom at its current
+        // world position + despawn. The `replenish_asteroids`
+        // tick auto-spawns a new (non-attacking) rock off-screen
+        // shortly after — keeps the field populated.
+        if let Ok(ast_pos) = positions.get(asteroid) {
+            crate::ship::spawn_asteroid_explosion(
+                &mut commands,
+                &assets,
+                ast_pos.0,
+                24.0,
+            );
+        }
+        if let Ok(mut ec) = commands.get_entity(asteroid) {
+            ec.try_despawn();
         }
     }
 }
