@@ -5,7 +5,7 @@ This folder is a paste-ready Replit config for running a public
 GitHub Pages is static-only and can't host the WebSocket
 signaling server itself; this Repl provides the missing piece.
 
-## One-time setup (~10 minutes)
+## One-time setup
 
 1. On https://replit.com, **Create Repl** → choose **Blank Repl**
    (template doesn't matter; we override it via config).
@@ -17,45 +17,52 @@ signaling server itself; this Repl provides the missing piece.
    - `replit.nix`
    - `main.sh`
 
-3. Click **Run** in Replit. The first run will take ~5 minutes
-   while it downloads + compiles `matchbox_server`. Subsequent
-   runs start in seconds (cached in your Repl's persistent
-   volume).
+3. **In the workspace**, click **Run**. First run takes ~5 min
+   to compile `matchbox_server` into `./bin/`; subsequent runs
+   start in seconds. Verify it prints
+   `Starting matchbox_server on 0.0.0.0:3536` and the Webview
+   shows a URL.
 
-4. Once it's running, the Replit webview shows
-   `Matchbox Signaling Server: 0.0.0.0:3536` and the Webview
-   tab gives you a URL like
-   `https://your-repl-name.your-username.repl.co`.
-
-5. **Keep the Repl Always-On** (you have $20/month Pro, so
-   this is included): in your Repl, click the Repl name in the
-   top-left → **Always On** → toggle on. Otherwise the Repl
-   will sleep after ~5 minutes of inactivity and your friend
-   won't be able to connect.
+4. **Deploy as Reserved VM** (the only deployment type that
+   keeps WebSockets alive — Autoscale's session-affinity
+   gotchas break matchbox):
+   - Click **Deploy** (top-right).
+   - Pick **Reserved VM**, smallest tier.
+   - Hit **Deploy**. The build step (`cargo install`) takes
+     ~5 minutes (no port-open health-check during build).
+   - Once deployed you'll get a URL like
+     `https://your-deploy-name.replit.app`.
 
 ## Using it in the game
 
 Both you and your friend visit the game URL with the signaling
-server appended:
+server appended (`wss://`, not `https://`):
 
 ```
-https://johngcarlsson-usc.github.io/starcon/?signal=wss://your-repl-name.your-username.repl.co
+https://johngcarlsson-usc.github.io/starcon/?signal=wss://your-deploy-name.replit.app
 ```
 
-(Note the `wss://` — TLS-secured WebSocket, NOT `https://` —
-matchbox uses raw WebSockets through Replit's TLS proxy.)
-
-Both click "Online", set the same humans/AI counts, click
+Both click "Online", set the **same humans/AI counts**, click
 "Find Match". The lobby will show "Waiting for players: 1/2"
 on each peer until both connect, then drop into the match.
 
 ## Troubleshooting
 
-- **"Waiting for players: 1/2" forever**: check that both peers
-  used the exact same `?signal=...` URL. Different signaling
-  servers don't share rooms.
-- **"Connection failed: ..."**: check the Repl is running.
-  Replit might have put it to sleep — toggle Always-On.
-- **Replit URL format isn't `repl.co`**: newer Repls might give
-  you a `.replit.dev` or similar URL. Use whatever URL is shown
-  in the Webview tab; just replace `https://` with `wss://`.
+- **"Waiting for players: 1/2" forever, both peers**: usually
+  Autoscale routing. Each WebSocket connection lands on a
+  different stateless instance, so matchbox's in-memory waiting
+  room never sees both peers. Fix: redeploy as Reserved VM.
+- **"Waiting for players: 1/2" on one peer only**: the peers
+  picked different humans/AI mixes in the lobby setup. The
+  room URL encodes the combo (`h2-a0` vs `h2-a1`) so they
+  end up in different matchbox rooms. Pick the same combo
+  on both ends.
+- **Deployment dies during build**: usually means the Reserved
+  VM tier you picked has too little RAM for the Rust compile.
+  Try a larger tier, or pre-compile in the workspace first
+  (`./bin/matchbox_server` should exist before deploying;
+  the snapshot will include it).
+- **`https://...replit.app/` returns 500 / Internal Server Error**:
+  matchbox_server isn't running. Check the deployment logs;
+  the binary might not have started, or it might still be
+  compiling if the build step was skipped.

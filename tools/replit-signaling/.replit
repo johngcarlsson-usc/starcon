@@ -1,8 +1,4 @@
 # Replit config for running matchbox_server.
-#
-# `entrypoint` + `run` are what Replit invokes when you hit
-# Run; we shell out to main.sh which handles the
-# install-on-first-run + binary launch.
 
 entrypoint = "main.sh"
 run = ["sh", "main.sh"]
@@ -11,19 +7,28 @@ run = ["sh", "main.sh"]
 channel = "stable-24_05"
 
 [deployment]
-# Use a Reserved VM (always-on) deployment, NOT Autoscale.
-# Autoscale (cloudrun) scales to zero between requests, which
-# kills persistent WebSocket connections — peers would have to
-# pay a cold-start every reconnect. Reserved VM stays up.
-#
-# Pick "Reserved VM" in the Replit Deploy UI when promoting
-# this Repl; the `deploymentTarget` line below is just a hint
-# to the workspace.
-run = ["sh", "main.sh"]
+# Reserved VM (always-on) — Autoscale would break WebSockets
+# (no session affinity = peers land on different instances
+# and never see each other).
 deploymentTarget = "vm"
 
-# Bind to the default matchbox port. Replit's Webview tab will
-# show the public URL once the process is listening.
+# `build` runs ONCE when the deployment is created, with no
+# port-open timeout. We `cargo install` matchbox_server here
+# so the deployment's `run` step is just "launch the
+# already-compiled binary" and the port opens immediately.
+# Without this, Replit's deployment health-check kills the
+# process partway through the ~5 min compile.
+#
+# `--root .` puts the binary in `./bin/matchbox_server` so
+# Replit's deployment snapshot picks it up.
+build = ["sh", "-c", "cargo install --locked --root . matchbox_server@0.14.0"]
+
+# `run` launches the pre-built binary. Bind to whatever port
+# Replit assigns via $PORT (falls back to 3536 for local dev).
+run = ["sh", "-c", "exec ./bin/matchbox_server 0.0.0.0:${PORT:-3536}"]
+
+# Local dev port hint — only used inside the workspace, not
+# the deployment.
 [[ports]]
 localPort = 3536
 externalPort = 80
