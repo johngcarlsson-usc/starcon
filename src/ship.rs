@@ -117,26 +117,74 @@ pub struct ShipCatalog {
     pub ships: HashMap<String, ShipStats>,
 }
 
+/// Who controls a given match slot. Drives input dispatch and
+/// the lobby/menu flow:
+///   - `Human`: a local keyboard player (uses `keymap(slot)` —
+///     so for a 2P couch match P1 uses arrows + Z/X and P2 uses
+///     WASD + G/H).
+///   - `Ai`: stub AI. `tick_ai_pilots` flies the ship at the
+///     nearest enemy and force-fires primary on every cooldown.
+///   - `Remote`: online player whose inputs arrive via GGRS.
+///     Currently unused until the rollback session lands; the
+///     menu still uses `Human` for every online slot for now,
+///     so this enum reserves the path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayerKind {
+    Human,
+    Ai,
+    Remote,
+}
+
+/// One slot in a match: which ship to fly + who's flying it.
+#[derive(Clone, Copy, Debug)]
+pub struct SlotConfig {
+    pub class: ShipClass,
+    pub kind: PlayerKind,
+}
+
+impl SlotConfig {
+    pub fn human(class: ShipClass) -> Self {
+        Self { class, kind: PlayerKind::Human }
+    }
+    pub fn ai(class: ShipClass) -> Self {
+        Self { class, kind: PlayerKind::Ai }
+    }
+}
+
 /// What `spawn_match` should use the next time the scene rebuilds.
 /// Mutated by the class-picker keys; read in `spawn_match`. The
-/// `classes` vector is the per-slot class list: index 0 is P1,
-/// index 1 is P2, and so on. Length 2..=4 — local hotseat plays
-/// the first two, online matches up to four.
+/// `slots` vector is the per-slot config: index 0 is P1, index 1
+/// is P2, and so on. Length 2..=4 — local hotseat plays the
+/// first two; online matches up to four; mix with AI slots for
+/// solo play.
 #[derive(Resource, Debug, Clone)]
 pub struct MatchConfig {
-    pub classes: Vec<ShipClass>,
+    pub slots: Vec<SlotConfig>,
 }
 
 impl MatchConfig {
-    /// Convenience for the 2-player default. Use this anywhere
-    /// that wants the legacy "P1 + P2" shape.
+    /// Convenience for the 2-player human default. Use this
+    /// anywhere that wants the legacy "P1 + P2" shape.
     pub fn local_two(p1: ShipClass, p2: ShipClass) -> Self {
         Self {
-            classes: vec![p1, p2],
+            slots: vec![SlotConfig::human(p1), SlotConfig::human(p2)],
         }
     }
     pub fn slot_count(&self) -> usize {
-        self.classes.len()
+        self.slots.len()
+    }
+    /// Compatibility shim: returns the class list for callers
+    /// that don't care about who controls each slot.
+    pub fn classes(&self) -> impl Iterator<Item = ShipClass> + '_ {
+        self.slots.iter().map(|s| s.class)
+    }
+    /// Get a mutable handle to slot N's class. Returns None if
+    /// the slot doesn't exist in this config.
+    pub fn class_mut(&mut self, slot: usize) -> Option<&mut ShipClass> {
+        self.slots.get_mut(slot).map(|s| &mut s.class)
+    }
+    pub fn kind(&self, slot: usize) -> Option<PlayerKind> {
+        self.slots.get(slot).map(|s| s.kind)
     }
 }
 
@@ -808,18 +856,26 @@ pub fn spawn_match(
         (Vec2::new(0.0, -900.0), 0.0),        // S, facing N
         (Vec2::new(0.0, 900.0), PI),          // N, facing S
     ];
-    for (slot, class) in config.classes.iter().enumerate().take(4) {
+    for (slot, slot_cfg) in config.slots.iter().enumerate().take(4) {
         let (pos, rot) = spawn_table[slot];
-        spawn_class(
+        let Some(entity) = spawn_class(
             &mut commands,
             &catalog,
             &assets,
-            *class,
+            slot_cfg.class,
             pos,
             rot,
             slot,
             &ship_colliders,
-        );
+        ) else {
+            continue;
+        };
+        // Tag AI slots so `apply_player_input` skips them and
+        // `tick_ai_pilots` drives them instead, plus
+        // `dispatch_primary` force-fires their guns.
+        if slot_cfg.kind == PlayerKind::Ai {
+            commands.entity(entity).insert(crate::ai::AiControlled);
+        }
     }
 
     spawn_asteroids(&mut commands, &assets);
@@ -889,7 +945,7 @@ fn class_picker_input(
         if keys.just_pressed(*key) {
             let idx = bank_offset + i;
             if let (Some(class), Some(slot)) =
-                (ALL_CLASSES.get(idx).copied(), config.classes.get_mut(0))
+                (ALL_CLASSES.get(idx).copied(), config.class_mut(0))
             {
                 if *slot != class {
                     *slot = class;
@@ -903,7 +959,7 @@ fn class_picker_input(
         if keys.just_pressed(*key) {
             let idx = bank_offset + i;
             if let (Some(class), Some(slot)) =
-                (ALL_CLASSES.get(idx).copied(), config.classes.get_mut(1))
+                (ALL_CLASSES.get(idx).copied(), config.class_mut(1))
             {
                 if *slot != class {
                     *slot = class;
@@ -923,7 +979,7 @@ fn class_picker_input(
         keys.just_pressed(KeyCode::Tab) && shift || virt.cycle_prev_just_pressed;
     if cycle_next || cycle_prev {
         let dir: i32 = if cycle_prev { -1 } else { 1 };
-        if let Some(slot) = config.classes.get_mut(0) {
+        if let Some(slot) = config.class_mut(0) {
             *slot = cycle_class(*slot, dir);
             info!("P1 → {:?}", *slot);
             changed = true;
@@ -931,7 +987,7 @@ fn class_picker_input(
     }
     if keys.just_pressed(KeyCode::Backquote) {
         let dir: i32 = if shift { -1 } else { 1 };
-        if let Some(slot) = config.classes.get_mut(1) {
+        if let Some(slot) = config.class_mut(1) {
             *slot = cycle_class(*slot, dir);
             info!("P2 → {:?}", *slot);
             changed = true;
@@ -2434,6 +2490,7 @@ fn apply_player_input(
         Option<&InertialessDrive>,
         Option<&crate::ultimate::HyperActive>,
         Option<&crate::ultimate::PostUltimateCoasting>,
+        Option<&crate::ai::AiControlled>,
     )>,
 ) {
     for (
@@ -2450,6 +2507,7 @@ fn apply_player_input(
         inertialess,
         hyper,
         coasting,
+        ai,
     ) in &mut q
     {
         // Ultimate cinematic: force-locked spin; skip player ang_vel
@@ -2457,6 +2515,14 @@ fn apply_player_input(
         if hyper.is_some() {
             torque.0 = 0.0;
             thrust.0 = Vec2::ZERO;
+            continue;
+        }
+        // AI-driven ship — `tick_ai_pilots` (running .after this
+        // system) overwrites thrust + angular velocity, so don't
+        // bother computing player input for this entity. Reading
+        // the local keymap for an AI slot would also leak its
+        // owner's actual key presses into the AI ship.
+        if ai.is_some() {
             continue;
         }
 

@@ -1,4 +1,5 @@
 mod ability;
+mod ai;
 mod collider;
 mod hud;
 mod input;
@@ -75,6 +76,7 @@ fn main() {
             ultimate::UltimatePlugin,
             mobile_controls::MobileControlsPlugin,
             menu::MenuPlugin,
+            ai::AiPlugin,
         ))
         .init_resource::<ship::PreloadedAssets>()
         .add_systems(Startup, (setup_camera, ship::preload_all_assets))

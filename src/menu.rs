@@ -15,7 +15,7 @@
 
 use bevy::prelude::*;
 
-use crate::ship::{MatchConfig, ShipClass};
+use crate::ship::{MatchConfig, ShipClass, SlotConfig};
 use crate::AppState;
 
 pub struct MenuPlugin;
@@ -41,7 +41,9 @@ struct MenuRoot;
 #[derive(Component, Clone, Copy)]
 enum MenuAction {
     LocalTwo,
+    LocalThree,
     LocalFour,
+    SoloVsAi,
     Online,
 }
 
@@ -81,7 +83,9 @@ fn spawn_menu(mut commands: Commands) {
             ));
 
             spawn_button(root, MenuAction::LocalTwo, "Local 2-Player");
+            spawn_button(root, MenuAction::LocalThree, "Local 3-Player (hotseat)");
             spawn_button(root, MenuAction::LocalFour, "Local 4-Player (hotseat)");
+            spawn_button(root, MenuAction::SoloVsAi, "Solo vs 3 AI");
             spawn_button(root, MenuAction::Online, "Online (2-4 players)");
 
             root.spawn((
@@ -145,23 +149,44 @@ fn handle_menu_buttons(
                 *config = MatchConfig::local_two(ShipClass::Earcr, ShipClass::Spael);
                 next.set(AppState::InMatch);
             }
+            MenuAction::LocalThree => {
+                config.slots = vec![
+                    SlotConfig::human(ShipClass::Earcr),
+                    SlotConfig::human(ShipClass::Spael),
+                    SlotConfig::human(ShipClass::Yehte),
+                ];
+                next.set(AppState::InMatch);
+            }
             MenuAction::LocalFour => {
-                config.classes = vec![
-                    ShipClass::Earcr,
-                    ShipClass::Spael,
-                    ShipClass::Yehte,
-                    ShipClass::Chmav,
+                config.slots = vec![
+                    SlotConfig::human(ShipClass::Earcr),
+                    SlotConfig::human(ShipClass::Spael),
+                    SlotConfig::human(ShipClass::Yehte),
+                    SlotConfig::human(ShipClass::Chmav),
+                ];
+                next.set(AppState::InMatch);
+            }
+            MenuAction::SoloVsAi => {
+                // P1 local + three AI opponents. Picked classes
+                // give visual variety — Earcr (cruiser),
+                // Druma (cannon kickback), Pkufu (lightning),
+                // Kohma (saw blade).
+                config.slots = vec![
+                    SlotConfig::human(ShipClass::Earcr),
+                    SlotConfig::ai(ShipClass::Druma),
+                    SlotConfig::ai(ShipClass::Pkufu),
+                    SlotConfig::ai(ShipClass::Kohma),
                 ];
                 next.set(AppState::InMatch);
             }
             MenuAction::Online => {
                 // Default to 4-slot online — the lobby will trim
                 // back if fewer peers connect (or wait for more).
-                config.classes = vec![
-                    ShipClass::Earcr,
-                    ShipClass::Spael,
-                    ShipClass::Yehte,
-                    ShipClass::Chmav,
+                config.slots = vec![
+                    SlotConfig::human(ShipClass::Earcr),
+                    SlotConfig::human(ShipClass::Spael),
+                    SlotConfig::human(ShipClass::Yehte),
+                    SlotConfig::human(ShipClass::Chmav),
                 ];
                 lobby_req.requested = true;
                 next.set(AppState::LobbyOnline);
