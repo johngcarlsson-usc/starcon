@@ -11,10 +11,16 @@ run = ["sh", "main.sh"]
 channel = "stable-24_05"
 
 [deployment]
-# If you promote this to a Reserved VM / Autoscale deployment
-# the same script handles it.
+# Use a Reserved VM (always-on) deployment, NOT Autoscale.
+# Autoscale (cloudrun) scales to zero between requests, which
+# kills persistent WebSocket connections — peers would have to
+# pay a cold-start every reconnect. Reserved VM stays up.
+#
+# Pick "Reserved VM" in the Replit Deploy UI when promoting
+# this Repl; the `deploymentTarget` line below is just a hint
+# to the workspace.
 run = ["sh", "main.sh"]
-deploymentTarget = "cloudrun"
+deploymentTarget = "vm"
 
 # Bind to the default matchbox port. Replit's Webview tab will
 # show the public URL once the process is listening.
