@@ -280,7 +280,10 @@ pub struct AbilityPlugin;
 
 impl Plugin for AbilityPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, (dispatch_primary, dispatch_special));
+        app.add_systems(
+            bevy_ggrs::GgrsSchedule,
+            (dispatch_primary, dispatch_special),
+        );
     }
 }
 

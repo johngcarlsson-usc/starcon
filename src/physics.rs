@@ -1,13 +1,22 @@
-//! Physics integration. Owned by Avian 2D (XPBD); we just configure it for
-//! space combat: no gravity and a toroidal arena wrap that runs after each
-//! physics step. Tick rate comes from Bevy's `FixedUpdate` (60 Hz default)
-//! which Avian drives its `PhysicsSchedule` off of — we don't pin it
-//! ourselves. `Time<Physics>` is owned by Avian's plugin; gameplay timers
-//! read it (not Bevy's wall-clock `Time`) so global slow-mo / fast-forward
-//! also scales weapon cooldowns, projectile lifetimes, etc.
+//! Physics integration. Owned by Avian 2D (XPBD).
+//!
+//! The Avian `PhysicsSchedule` is bolted onto `GgrsSchedule`
+//! instead of `FixedUpdate`. This makes physics state part of
+//! the rollback window: when a peer's input prediction misses,
+//! bevy_ggrs rewinds + replays from the last confirmed frame,
+//! and physics integrates the corrected trajectory.
+//!
+//! For LOCAL play (no `Session<Config>` resource), bevy_ggrs
+//! doesn't run `GgrsSchedule` itself, so we add an
+//! `offline_tick` system in `FixedUpdate` that just calls
+//! `world.run_schedule(GgrsSchedule)` directly. Same code
+//! path; same tick rate. Online and offline produce the same
+//! gameplay simulation — online just has GGRS sitting on top
+//! correcting mispredictions.
 
 use avian2d::prelude::*;
 use bevy::prelude::*;
+use bevy_ggrs::GgrsSchedule;
 
 /// Arena wraps at ±this value on each axis. Matches the SC2 Super Melee feel
 /// — small enough that combat stays close, large enough that you can run.
@@ -20,7 +29,7 @@ pub struct PhysicsPlugin;
 
 impl Plugin for PhysicsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(PhysicsPlugins::default())
+        app.add_plugins(PhysicsPlugins::new(GgrsSchedule))
             .insert_resource(Gravity(Vec2::ZERO))
             // Avian's default `transform_to_position: true` reads
             // `Transform` back into `Position+Rotation` each step. We
@@ -38,8 +47,26 @@ impl Plugin for PhysicsPlugin {
             .add_systems(
                 PhysicsSchedule,
                 wrap_arena.in_set(PhysicsStepSystems::Last),
-            );
+            )
+            // Offline driver: when no `Session<Config>` resource
+            // exists (local play), bevy_ggrs won't run
+            // `GgrsSchedule` for us. Drive it ourselves from
+            // FixedUpdate so the same gameplay code runs at the
+            // same tick rate either way.
+            .add_systems(FixedUpdate, offline_tick);
     }
+}
+
+/// Run `GgrsSchedule` once per FixedUpdate when no GGRS session
+/// is active. bevy_ggrs handles this when a Session exists;
+/// without one, the schedule would never run and physics +
+/// gameplay would freeze.
+fn offline_tick(world: &mut World) {
+    use bevy_ggrs::Session;
+    if world.contains_resource::<Session<crate::netplay::Config>>() {
+        return;
+    }
+    world.run_schedule(GgrsSchedule);
 }
 
 /// Wrap any rigid body that crosses the arena edge to the opposite side.

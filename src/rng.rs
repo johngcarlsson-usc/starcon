@@ -54,8 +54,9 @@ pub struct MatchSeed(pub u64);
 /// Wraps `fastrand::Rng` for the same generator the rest of the
 /// codebase already used in its non-deterministic form. Same
 /// distribution, same speed — just owned by a Bevy resource so
-/// peers see the same draws in the same order.
-#[derive(Resource)]
+/// peers see the same draws in the same order. Clone enables
+/// bevy_ggrs to snapshot/restore the stream position on rollback.
+#[derive(Resource, Clone)]
 pub struct GameRng(pub fastrand::Rng);
 
 impl Default for GameRng {

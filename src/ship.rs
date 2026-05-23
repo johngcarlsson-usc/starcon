@@ -363,7 +363,7 @@ impl ShipClass {
 
 /// Live, mutable crew count for a ship. Decoupled from `ShipStats` (which
 /// is static class data) so respawns and replays can reset cleanly.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Crew {
     pub current: i32,
     pub max: i32,
@@ -373,7 +373,7 @@ pub struct Crew {
 /// specials (`SpecialDrain`); regenerates via `RechargeTimer` per the
 /// ship's `.ini` `RechargeAmount` + `RechargeRate`. Like `Crew`, this
 /// is *runtime* state, not a class stat.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Battery {
     pub current: i32,
     pub max: i32,
@@ -395,11 +395,11 @@ pub struct RechargeTimer {
 }
 
 /// Time (in seconds) until the ship's primary weapon can fire again.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Debug, Default, Clone, Copy)]
 pub struct WeaponCooldown(pub f32);
 
 /// Time (in seconds) until the ship's special ability can be used again.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Debug, Default, Clone, Copy)]
 pub struct SpecialCooldown(pub f32);
 
 /// Physics parameters derived from the ship's `.ini` stats once at spawn,
@@ -746,7 +746,7 @@ impl Plugin for ShipPlugin {
         // groups (the order across groups is unconstrained, but each
         // system inside this plugin is independent so that's fine).
         app.add_systems(
-            FixedUpdate,
+            bevy_ggrs::GgrsSchedule,
             (
                 process_mode_toggle_requests,
                 tick_ship_modes,
@@ -773,15 +773,15 @@ impl Plugin for ShipPlugin {
         // Pkunk aggressive-clone AI lives in its own add_systems
         // so we can apply `.after(apply_player_input)` without
         // spilling the 21-element tuple limit on the main
-        // FixedUpdate set. The .after dependency is what lets it
-        // override the leader's player input on the clones.
+        // gameplay-schedule set. The .after dependency is what
+        // lets it override the leader's player input on the clones.
         app.add_systems(
-            FixedUpdate,
+            bevy_ggrs::GgrsSchedule,
             crate::ultimate::tick_pkunk_aggressive_clones
                 .after(apply_player_input),
         );
         app.add_systems(
-            FixedUpdate,
+            bevy_ggrs::GgrsSchedule,
             (
                 tick_invisible,
                 tick_damage_to_battery,
@@ -1190,6 +1190,10 @@ fn spawn_ship(
         CollisionEventsEnabled,
     );
     let mut entity = commands.spawn((gameplay, visual, physics));
+    // Rollback marker: bevy_ggrs only snapshots / restores
+    // entities tagged with this. Ships are the primary gameplay
+    // entity, so they're always tagged.
+    entity.insert(bevy_ggrs::Rollback);
     // Attach the data-driven ability manifest. Every class has one
     // today; the dispatcher in `src/ability.rs` reads it and produces
     // the right ECS spawns.
@@ -5437,6 +5441,7 @@ pub fn spawn_asteroids(
         let ang_vel = rng.signed_unit() * 0.3;
         commands.spawn((
             Asteroid,
+            bevy_ggrs::Rollback,
             Sprite {
                 image: assets.load(sprite_path),
                 color: Color::WHITE,
@@ -5703,6 +5708,7 @@ fn replenish_asteroids(
     let ang_vel = rng.signed_unit() * 0.3;
     commands.spawn((
         Asteroid,
+        bevy_ggrs::Rollback,
         Sprite {
             image: assets.load(sprite_path),
             color: Color::WHITE,

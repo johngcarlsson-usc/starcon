@@ -671,7 +671,7 @@ impl Plugin for UltimatePlugin {
         )
         .init_resource::<MmrxfUnleashedSprite>()
         .add_systems(
-            FixedUpdate,
+            bevy_ggrs::GgrsSchedule,
             (
                 tick_druuge_barrage,
                 tick_kohrah_spawn,
@@ -680,7 +680,7 @@ impl Plugin for UltimatePlugin {
             ),
         )
         .add_systems(
-            FixedUpdate,
+            bevy_ggrs::GgrsSchedule,
             (
                 tick_mmrxf_tangled_laser,
                 tick_mmrxf_split_launcher,

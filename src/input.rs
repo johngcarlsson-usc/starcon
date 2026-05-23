@@ -233,8 +233,12 @@ impl Plugin for InputPlugin {
             // BEFORE any gameplay system runs. We put it in
             // FixedUpdate (not Update) so the input snapshot
             // aligns with the physics tick that consumes it.
+            // Gather slot inputs at the start of every gameplay
+            // tick. Lives in `GgrsSchedule` so it gets re-run on
+            // every rollback frame with the (predicted) inputs
+            // for that frame.
             .add_systems(
-                FixedUpdate,
+                bevy_ggrs::GgrsSchedule,
                 gather_slot_inputs.in_set(SlotInputProducerSet),
             );
     }

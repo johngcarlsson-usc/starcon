@@ -91,10 +91,12 @@
 //! peers; the public test server at `match.helsing.studio` is
 //! intermittently up but fine for development.
 
+use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::prelude::*;
 use bevy_ggrs::ggrs::{Message as GgrsMessage, NonBlockingSocket, PlayerType, SessionBuilder};
 use bevy_ggrs::{
-    GgrsPlugin, GgrsSchedule, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs, Session,
+    GgrsPlugin, GgrsSchedule, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs, RollbackApp,
+    Session,
 };
 use bevy_matchbox::matchbox_socket::WebRtcChannel;
 use bevy_matchbox::prelude::*;
@@ -277,6 +279,28 @@ impl Plugin for NetplayPlugin {
         // collection scaffolding. Idle when no `Session<Config>`
         // resource exists, so it costs nothing for local play.
         app.add_plugins(GgrsPlugin::<Config>::default())
+            // ---- Rollback components ----
+            //
+            // Every component that mutates during gameplay needs
+            // to be registered so bevy_ggrs can snapshot it before
+            // the predicted frames and restore it on rollback.
+            // Avian's physics state (Position / Rotation /
+            // LinearVelocity / AngularVelocity) is Copy, as are
+            // our cooldown/stat components.
+            .rollback_component_with_copy::<Position>()
+            .rollback_component_with_copy::<Rotation>()
+            .rollback_component_with_copy::<LinearVelocity>()
+            .rollback_component_with_copy::<AngularVelocity>()
+            .rollback_component_with_copy::<crate::ship::Crew>()
+            .rollback_component_with_copy::<crate::ship::Battery>()
+            .rollback_component_with_copy::<crate::ship::WeaponCooldown>()
+            .rollback_component_with_copy::<crate::ship::SpecialCooldown>()
+            // ---- Rollback resources ----
+            //
+            // GameRng owns the per-match deterministic stream;
+            // it MUST be snapshot/restored on rollback or peers
+            // will diverge after the first re-simulation.
+            .rollback_resource_with_clone::<crate::rng::GameRng>()
             .init_resource::<LobbyRequest>()
             .init_resource::<LobbyState>()
             .add_systems(OnEnter(AppState::LobbyOnline), (reset_lobby, spawn_lobby_ui))

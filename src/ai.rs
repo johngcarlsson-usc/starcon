@@ -39,7 +39,7 @@ impl Plugin for AiPlugin {
         // because the apply system bails on AI-tagged ships, so
         // there's no write conflict in either order.
         app.add_systems(
-            FixedUpdate,
+            bevy_ggrs::GgrsSchedule,
             tick_ai_pilots.run_if(in_state(crate::AppState::InMatch)),
         );
     }
