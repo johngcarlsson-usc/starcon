@@ -61,29 +61,47 @@
 //!         crystal-shatter shards). Visual-only sites stay on
 //!         global fastrand per the policy in `crate::rng`.
 //!
-//! What you can do right now: a remote player turning,
-//! thrusting, firing primary / special / ult will all
-//! propagate to their slot and be visible on every peer's
-//! screen. This is a lockstep-ish hybrid — every machine
-//! simulates the same gameplay in `FixedUpdate` from the same
-//! inputs + seed.
+//!   - [x] Physics + gameplay moved out of `FixedUpdate` into
+//!         `GgrsSchedule`. Avian via `PhysicsPlugins::new(
+//!         GgrsSchedule)`; ability dispatch, AI, ship tick,
+//!         ultimate gameplay systems all migrated. Offline
+//!         fallback (`physics::offline_tick`) drives
+//!         GgrsSchedule from FixedUpdate when no Session is
+//!         active, so local play still ticks.
+//!   - [x] Rollback registrations: Position, Rotation,
+//!         LinearVelocity, AngularVelocity, Crew, Battery,
+//!         WeaponCooldown, SpecialCooldown all registered as
+//!         rollback components; GameRng registered as rollback
+//!         resource. `auto_add_rollback` on_add hooks on Ship /
+//!         Projectile / DamageZone / SubEntity / Asteroid so
+//!         every spawn site is automatically included in
+//!         snapshots.
+//!   - [x] Time audit: every gameplay-affecting cinematic
+//!         system switched from `Res<Time<Real>>` to
+//!         `Res<Time>`, which resolves to `Time<GgrsTime>`
+//!         inside GgrsSchedule — deterministic 1/FPS delta on
+//!         every peer.
 //!
-//! Still TODO for true rollback (so dropped frames /
-//! input-prediction errors don't accumulate divergence):
-//!   - [ ] Migrate gameplay systems out of `FixedUpdate` and
-//!         into `GgrsSchedule` so GGRS can drive rollback. This
-//!         includes physics tick (currently Avian's
-//!         `PhysicsSchedule` in FixedUpdate) — non-trivial,
-//!         requires interleaving with Avian.
-//!   - [ ] Register `Rollback` markers on every component that
-//!         mutates during gameplay (Position, Rotation, Crew,
-//!         Battery, all projectile state, etc.) so bevy_ggrs
-//!         can snapshot/restore on rollback.
-//!   - [ ] `Time<Real>` audit in gameplay systems: cinematic
-//!         visual systems can keep using `Time<Real>` (they
-//!         intentionally run while `Time<Virtual>` is paused),
-//!         but anything that mutates game state needs
-//!         `Time<Physics>` / `Time<Fixed>`.
+//! What you can do right now: an online 2-4-player match
+//! (with optional AI slots) connects via matchbox WebRTC,
+//! starts a real GGRS P2P session, and runs the full game
+//! simulation deterministically in rollback. Remote players'
+//! ships, projectiles, asteroids, and ultimates all simulate
+//! identically on every peer; input mispredictions trigger
+//! GGRS rollback and re-simulate from the corrected frame.
+//!
+//! Known caveats / next polish:
+//!   - INPUT_DELAY = 2 frames means local feel is ~33 ms
+//!     behind raw input. Reduce to 0 (predict aggressively,
+//!     rollback often) for fighting-game-style snap; raise to
+//!     5-10 for laggy connections.
+//!   - Float determinism across architectures (x86 vs ARM vs
+//!     wasm) hasn't been verified. Cross-architecture play may
+//!     desync from accumulated FP differences. Same-arch
+//!     play (e.g. all browsers on x86) should be fine.
+//!   - Cinematic-cutscene phases pause `Time<Virtual>` which
+//!     freezes Avian physics; GGRS still ticks its frame
+//!     counter so the pause length is deterministic.
 //!
 //! On WASM (the primary deployment target), WebRTC peer
 //! connections work out of the box. On native, you'll need a
