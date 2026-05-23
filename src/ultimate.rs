@@ -2677,6 +2677,7 @@ fn tick_spathi_barrage(
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
     assets: Res<AssetServer>,
+    mut rng: ResMut<crate::rng::GameRng>,
     ships: Query<&Position, With<Ship>>,
 ) {
     if state.variant != UltimateVariant::Spathi
@@ -2697,9 +2698,9 @@ fn tick_spathi_barrage(
 
     for i in 0..SPATHI_MISSILE_COUNT {
         let theta = (i as f32) * std::f32::consts::TAU / SPATHI_MISSILE_COUNT as f32;
-        // Random sub-arc jitter so the swarm doesn't read as a
-        // perfect geometric ring.
-        let jitter = (fastrand::f32() - 0.5) * 0.2;
+        // Determinism-critical: each missile's launch direction
+        // feeds homing physics for the duration of its life.
+        let jitter = rng.signed_unit() * 0.1;
         let dir = Vec2::new((theta + jitter).cos(), (theta + jitter).sin());
         let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
         commands.spawn((
@@ -2747,6 +2748,7 @@ fn tick_chenjesu_tempest(
     time: Res<Time<Real>>,
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
+    mut rng: ResMut<crate::rng::GameRng>,
     ships: Query<&Position, With<Ship>>,
 ) {
     if state.variant != UltimateVariant::Chenjesu
@@ -2765,20 +2767,27 @@ fn tick_chenjesu_tempest(
 
     let world = ship_pos.0;
     let speed = 80.0 * crate::ship::SC2_VEL_SCALE;
-    let theta_offset = fastrand::f32() * std::f32::consts::TAU;
+    // All draws are gameplay-critical (drive projectile
+    // trajectories / colliders / spin).
+    let theta_offset = rng.f32() * std::f32::consts::TAU;
     for i in 0..CHEBR_RING_SIZE {
         let theta = theta_offset
             + (i as f32) * std::f32::consts::TAU / CHEBR_RING_SIZE as f32;
         let dir = Vec2::new(theta.cos(), theta.sin());
         let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
-        let speed_mult = 0.7 + fastrand::f32() * 0.6;
+        let speed_mult = 0.7 + rng.f32() * 0.6;
         let mut verts = [Vec2::ZERO; 3];
         for (j, v) in verts.iter_mut().enumerate() {
             let base_a = j as f32 * std::f32::consts::TAU / 3.0;
-            let a = base_a + (fastrand::f32() - 0.5) * 0.6;
-            let r = 4.0 + fastrand::f32() * 5.0;
+            let a = base_a + rng.signed_unit() * 0.30;
+            let r = 4.0 + rng.f32() * 5.0;
             *v = Vec2::new(a.cos() * r, a.sin() * r);
         }
+        // Colour draws stay on the seeded RNG too so the
+        // stream advances the same number of slots per shard.
+        let cr = 0.7 + rng.f32() * 0.3;
+        let cg = 0.8 + rng.f32() * 0.2;
+        let ang_v = rng.signed_unit() * 6.0;
         commands.spawn((
             crate::ship::Projectile {
                 owner: p1,
@@ -2786,11 +2795,7 @@ fn tick_chenjesu_tempest(
                 lifetime: 2.4,
             },
             Sprite {
-                color: Color::srgb(
-                    0.7 + fastrand::f32() * 0.3,
-                    0.8 + fastrand::f32() * 0.2,
-                    1.0,
-                ),
+                color: Color::srgb(cr, cg, 1.0),
                 custom_size: Some(Vec2::splat(10.0)),
                 ..default()
             },
@@ -2802,7 +2807,7 @@ fn tick_chenjesu_tempest(
             Position(world + dir * 24.0),
             Rotation::radians(init_angle),
             LinearVelocity(dir * speed * speed_mult),
-            AngularVelocity((fastrand::f32() - 0.5) * 12.0),
+            AngularVelocity(ang_v),
             LinearDamping(0.0),
             AngularDamping(0.0),
             CollisionEventsEnabled,
@@ -3027,6 +3032,7 @@ fn detect_portrait_aspect(
 fn tick_slylandro_storm(
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
+    mut rng: ResMut<crate::rng::GameRng>,
     ships: Query<(Entity, &crate::ship::Ship, &Position, &LinearVelocity)>,
     mut asteroids: Query<
         (
@@ -3094,15 +3100,26 @@ fn tick_slylandro_storm(
     let (target_pos, target_vel) =
         target_state.unwrap_or((Vec2::ZERO, Vec2::ZERO));
 
+    // Determinism-critical: iterate asteroids in a stable
+    // order so the RNG stream consumed in the loop body
+    // assigns the same draws to the same asteroids on every
+    // peer. Bevy `Query` iteration order is not stable across
+    // machines; sort by Entity index.
+    let mut entries: Vec<(Entity, _, _, _, _)> = asteroids.iter_mut().collect();
+    entries.sort_by_key(|(e, _, _, _, _)| e.index());
+
     let mut count = 0;
-    for (_asteroid, mut vel, _ang, pos, marker) in &mut asteroids {
+    for (_asteroid, mut vel, _ang, pos, marker) in entries {
         if marker.is_none() {
             // Asteroid wasn't armed during charging — skip.
             continue;
         }
         // Per-asteroid random speed across the launch range.
+        // Determinism-critical: this drives the impulse that
+        // moves the asteroid, and a wrong direction means peers
+        // disagree about who got hit.
         let speed = SLYP_LAUNCH_SPEED_MIN
-            + fastrand::f32() * (SLYP_LAUNCH_SPEED_MAX - SLYP_LAUNCH_SPEED_MIN);
+            + rng.f32() * (SLYP_LAUNCH_SPEED_MAX - SLYP_LAUNCH_SPEED_MIN);
         // Predictive aim: solve the quadratic for the time τ at
         // which a projectile launched from `pos.0` at `speed` will
         // intercept a target at `target_pos` moving with
@@ -3124,8 +3141,7 @@ fn tick_slylandro_storm(
         };
         // Apply a small random jitter around the intercept aim so
         // the swarm doesn't read as 8 lines converging to a point.
-        let jitter =
-            (fastrand::f32() - 0.5) * 2.0 * SLYP_AIM_JITTER_RAD;
+        let jitter = rng.signed_unit() * SLYP_AIM_JITTER_RAD;
         let (cj, sj) = (jitter.cos(), jitter.sin());
         let dir = Vec2::new(
             intercept_dir.x * cj - intercept_dir.y * sj,
@@ -4007,6 +4023,7 @@ pub fn tick_mmrxf_split_missiles(
     time: Res<Time<Physics>>,
     mut commands: Commands,
     assets: Res<AssetServer>,
+    mut rng: ResMut<crate::rng::GameRng>,
     mut parents: Query<(
         Entity,
         &mut MmrxfSplitMissile,
@@ -4015,7 +4032,13 @@ pub fn tick_mmrxf_split_missiles(
     )>,
 ) {
     let dt = time.delta_secs();
-    for (e, mut split, pos, vel) in &mut parents {
+    // Determinism-critical: stable iteration order so the same
+    // parent missile splits with the same child speeds on
+    // every peer. Bevy Query iteration isn't cross-machine
+    // stable — sort by Entity index.
+    let mut entries: Vec<_> = parents.iter_mut().collect();
+    entries.sort_by_key(|(e, _, _, _)| e.index());
+    for (e, mut split, pos, vel) in entries {
         split.timer_s += dt;
         if split.timer_s < split.split_at_s {
             continue;
@@ -4030,7 +4053,9 @@ pub fn tick_mmrxf_split_missiles(
         for i in 0..count {
             let theta = (i as f32) * std::f32::consts::TAU / count as f32;
             let dir = Vec2::new(theta.cos(), theta.sin());
-            let speed_jitter = 0.7 + fastrand::f32() * 0.5;
+            // Determinism-critical: child speed drives where
+            // they end up under homing curves.
+            let speed_jitter = 0.7 + rng.f32() * 0.5;
             let child_vel = dir * base_speed * speed_jitter;
             let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
             commands.spawn((
@@ -4144,6 +4169,7 @@ fn tick_kohrah_spawn(
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
     assets: Res<AssetServer>,
+    mut rng: ResMut<crate::rng::GameRng>,
     ships: Query<&Position, With<crate::ship::Ship>>,
 ) {
     if state.variant != UltimateVariant::KohrAh
@@ -4160,9 +4186,8 @@ fn tick_kohrah_spawn(
     let speed = 80.0 * crate::ship::SC2_VEL_SCALE;
     for i in 0..KOHRAH_BLADE_COUNT {
         let theta = (i as f32) * std::f32::consts::TAU / KOHRAH_BLADE_COUNT as f32;
-        // Tiny per-blade jitter — keeps the ring from reading as
-        // a perfect geometric stencil.
-        let theta = theta + (fastrand::f32() - 0.5) * 0.10;
+        // Determinism-critical: blade trajectories.
+        let theta = theta + rng.signed_unit() * 0.05;
         let dir = Vec2::new(theta.cos(), theta.sin());
         let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
         commands.spawn((

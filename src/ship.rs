@@ -3481,6 +3481,7 @@ fn tick_chebr_crystal(
     keys: Res<ButtonInput<KeyCode>>,
     virt: Res<input::VirtualInput>,
     assets: Res<AssetServer>,
+    mut rng: ResMut<crate::rng::GameRng>,
     projectiles: Query<&Position, With<Projectile>>,
     mut ships: Query<
         (
@@ -3586,38 +3587,42 @@ fn tick_chebr_crystal(
                     let burst_at = crystal_pos.0;
                     // Stochastic chaotic shatter: 14-22 shards at
                     // random angles, random speeds, random small
-                    // triangular polygon colliders. More visually
-                    // satisfying than the canonical 8 uniform shards;
-                    // can be reverted by replacing this block with
-                    // the 8 × π/4 uniform pattern.
-                    let n_shards = 14 + (fastrand::u32(..8) as usize);
+                    // triangular polygon colliders. ALL draws use
+                    // the seeded `GameRng` — every value here
+                    // ends up on a projectile's velocity or
+                    // collider, so peers must agree.
+                    let n_shards = 14 + rng.usize_range(0..8);
                     for _ in 0..n_shards {
-                        let theta = fastrand::f32() * std::f32::consts::TAU;
-                        let speed_mult = 0.6 + fastrand::f32() * 1.4; // 0.6× to 2.0×
+                        let theta = rng.f32() * std::f32::consts::TAU;
+                        let speed_mult = 0.6 + rng.f32() * 1.4; // 0.6× to 2.0×
                         let dir = Vec2::new(theta.cos(), theta.sin());
                         let shard_vel = dir * weapon_velocity * speed_mult;
                         let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
-                        let init_spin = (fastrand::f32() - 0.5) * 20.0;
-                        let size = 4.0 + fastrand::f32() * 6.0;
+                        let init_spin = rng.signed_unit() * 10.0;
+                        let size = 4.0 + rng.f32() * 6.0;
                         // Spread each shard slightly along its own
                         // velocity direction so they don't all
                         // spawn at one point and immediately stack.
-                        let spawn_pos = burst_at + dir * (8.0 + fastrand::f32() * 12.0);
+                        let spawn_pos = burst_at + dir * (8.0 + rng.f32() * 12.0);
+                        // Colour is visual-only — but we keep it
+                        // on `GameRng` anyway so the RNG stream
+                        // advances the same number of draws per
+                        // shard. Otherwise we'd have to track
+                        // colour separately and risk drift.
                         let shard_color = Color::srgb(
-                            0.7 + fastrand::f32() * 0.3,
-                            0.75 + fastrand::f32() * 0.25,
-                            0.9 + fastrand::f32() * 0.1,
+                            0.7 + rng.f32() * 0.3,
+                            0.75 + rng.f32() * 0.25,
+                            0.9 + rng.f32() * 0.1,
                         );
                         // Random triangular polygon collider for that
                         // "jagged crystal shard" feel. Three vertices
                         // around a circle with jittered radius and
-                        // angle — Avian's `Collider::triangle` takes
-                        // them directly.
+                        // angle.
                         let mut verts = [Vec2::ZERO; 3];
                         for (i, v) in verts.iter_mut().enumerate() {
                             let base_a = i as f32 * std::f32::consts::TAU / 3.0;
-                            let a = base_a + (fastrand::f32() - 0.5) * 0.7;
-                            let r = size * (0.6 + fastrand::f32() * 0.5);
+                            let a = base_a + rng.signed_unit() * 0.35;
+                            let r = size * (0.6 + rng.f32() * 0.5);
                             *v = Vec2::new(a.cos() * r, a.sin() * r);
                         }
                         let collider = Collider::triangle(verts[0], verts[1], verts[2]);

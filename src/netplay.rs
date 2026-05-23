@@ -540,6 +540,7 @@ fn update_lobby(
     socket: Option<ResMut<MatchboxSocket>>,
     mut state: ResMut<LobbyState>,
     mut config: ResMut<crate::ship::MatchConfig>,
+    mut seed: ResMut<crate::rng::MatchSeed>,
     mut next: ResMut<NextState<AppState>>,
 ) {
     if matches!(state.status, LobbyStatus::Setup) {
@@ -581,8 +582,8 @@ fn update_lobby(
         .collect();
     peer_ids.sort();
     let players: Vec<PlayerType<PeerId>> = peer_ids
-        .into_iter()
-        .map(|id| {
+        .iter()
+        .map(|&id| {
             if id == our_id {
                 PlayerType::Local
             } else {
@@ -680,11 +681,23 @@ fn update_lobby(
     }
     config.slots = slots;
 
+    // Derive a shared per-match seed from the sorted PeerId
+    // list. Both peers see the same sort order so they hash
+    // to the same seed; the seed is mixed into `GameRng` on
+    // OnEnter(InMatch) so all peers consume the same RNG
+    // stream.
+    {
+        use std::hash::{BuildHasher, Hash, Hasher};
+        let mut hasher = bevy::platform::hash::FixedHasher::default().build_hasher();
+        peer_ids.hash(&mut hasher);
+        seed.0 = hasher.finish();
+    }
+
     commands.insert_resource(Session::P2P(session));
     commands.insert_resource(LocalPlayers(vec![local_handle]));
     info!(
-        "netplay: GGRS session started — {} humans + {} AI, local handle = {}",
-        humans, ai_count, local_handle
+        "netplay: GGRS session started — {} humans + {} AI, local handle = {}, seed = {:#x}",
+        humans, ai_count, local_handle, seed.0
     );
     next.set(AppState::InMatch);
 }
