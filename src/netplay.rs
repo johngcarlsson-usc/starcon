@@ -181,7 +181,28 @@ pub const INPUT_DELAY: usize = 2;
 /// to this includes the lobby variant + `?next=N` so peers who
 /// picked the same "N humans + M AI" preset land in the same
 /// room.
-pub const SIGNALING_URL: &str = "wss://match.helsing.studio";
+///
+/// **You must run your own matchbox server** for online play.
+/// The public test servers at `match.helsing.studio` /
+/// `matchbox.helsing.gg` are origin-restricted to Johan
+/// Helsing's own demos and reject our requests with
+/// `x-deny-reason: host_not_allowed`.
+///
+/// Quick local setup (both peers on same LAN):
+///   1. `cargo install matchbox_server`
+///   2. `matchbox_server` (listens on `0.0.0.0:3536` by default)
+///   3. Pass `?signal=ws://YOUR_IP:3536` in the game URL so
+///      both browsers use your server: e.g.
+///      `https://...starcon/?signal=ws://192.168.1.50:3536`
+///
+/// For internet play, expose your local server with a tunnel:
+///   - `cloudflared tunnel --url http://localhost:3536` → wss URL
+///   - or `ngrok http 3536` → wss URL
+///   Then both peers use that URL: `?signal=wss://abc.ngrok.io`.
+///
+/// The default below points to a placeholder; the lobby will
+/// fail to connect unless `?signal=` overrides it.
+pub const SIGNALING_URL: &str = "ws://localhost:3536";
 
 /// Set by `menu.rs` when the player picks "Online". Read on
 /// OnEnter(LobbyOnline) to decide whether to open a socket.
@@ -190,6 +211,57 @@ pub const SIGNALING_URL: &str = "wss://match.helsing.studio";
 #[derive(Resource, Default)]
 pub struct LobbyRequest {
     pub requested: bool,
+}
+
+/// Optional override for the matchbox signaling server URL.
+/// Populated from the browser URL's `?signal=...` query
+/// parameter at startup (WASM only); on native it stays None
+/// and the default `SIGNALING_URL` is used.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct SignalingOverride(pub Option<String>);
+
+#[cfg(target_arch = "wasm32")]
+fn pick_signaling_url(over: &SignalingOverride) -> String {
+    if let Some(url) = &over.0 {
+        return url.clone();
+    }
+    SIGNALING_URL.to_string()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn pick_signaling_url(over: &SignalingOverride) -> String {
+    if let Some(url) = &over.0 {
+        return url.clone();
+    }
+    SIGNALING_URL.to_string()
+}
+
+/// One-shot Startup system that reads the browser URL on WASM
+/// and stuffs any `?signal=...` value into `SignalingOverride`.
+/// On native it's a no-op (no browser URL to read).
+#[cfg(target_arch = "wasm32")]
+fn capture_signal_override(mut over: ResMut<SignalingOverride>) {
+    let Some(window) = web_sys::window() else { return };
+    let Ok(location) = window.location().search() else { return };
+    let q = location.trim_start_matches('?');
+    for pair in q.split('&') {
+        if let Some(rest) = pair.strip_prefix("signal=") {
+            // URL-decode minimally — the chars we care about
+            // (wss://, ws://, : / .) all survive verbatim.
+            let decoded = js_sys::decode_uri_component(rest)
+                .map(|v| v.as_string().unwrap_or_else(|| rest.to_string()))
+                .unwrap_or_else(|_| rest.to_string());
+            info!("netplay: signaling override from URL: {}", decoded);
+            over.0 = Some(decoded);
+            return;
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn capture_signal_override(_over: ResMut<SignalingOverride>) {
+    // On native, the override can be set via env or CLI later;
+    // for now no-op so the default URL is used.
 }
 
 /// Live lobby state. Owns the matchbox socket while we're in
@@ -339,6 +411,8 @@ impl Plugin for NetplayPlugin {
             .rollback_resource_with_clone::<crate::rng::GameRng>()
             .init_resource::<LobbyRequest>()
             .init_resource::<LobbyState>()
+            .init_resource::<SignalingOverride>()
+            .add_systems(Startup, capture_signal_override)
             .add_systems(OnEnter(AppState::LobbyOnline), (reset_lobby, spawn_lobby_ui))
             .add_systems(OnExit(AppState::LobbyOnline), (despawn_lobby_ui, drop_socket))
             .add_systems(
@@ -435,8 +509,9 @@ fn spawn_lobby_ui(mut commands: Commands, state: Res<LobbyState>) {
                 spawn_setup_button(panel, SetupAction::FindMatch, "Find Match");
                 panel.spawn((
                     Text::new(
-                        "Both players (or all peers) must pick the same combination\n\
-                         to find each other in matchmaking.",
+                        "Both peers must pick the same combination AND use the\n\
+                         same signaling server (default: ws://localhost:3536).\n\
+                         Override via ?signal=ws://your.server in the URL.",
                     ),
                     TextFont::from_font_size(13.0),
                     TextColor(Color::srgba(0.55, 0.62, 0.75, 0.85)),
@@ -565,6 +640,7 @@ fn despawn_lobby_ui(mut commands: Commands, q: Query<Entity, With<LobbyUi>>) {
 fn handle_setup_buttons(
     mut commands: Commands,
     mut state: ResMut<LobbyState>,
+    signal_override: Res<SignalingOverride>,
     interactions: Query<(&Interaction, &SetupAction), Changed<Interaction>>,
 ) {
     for (interaction, action) in &interactions {
@@ -599,10 +675,15 @@ fn handle_setup_buttons(
                 // peers who picked the same combination land in
                 // the same matchbox bucket. `?next=N` is the
                 // human count — matchbox waits for N peers in
-                // the room before connecting them.
+                // the room before connecting them. The base URL
+                // comes from the runtime `SignalingOverride`
+                // (populated from the browser URL's `?signal=`
+                // query param on WASM) or falls back to the
+                // compiled-in `SIGNALING_URL`.
+                let base = pick_signaling_url(&signal_override);
                 let url = format!(
                     "{}/starcon-h{}-a{}?next={}",
-                    SIGNALING_URL, state.target_humans, state.target_ai, state.target_humans
+                    base, state.target_humans, state.target_ai, state.target_humans
                 );
                 info!("netplay: opening matchbox socket → {}", url);
                 let socket = MatchboxSocket::new_unreliable(url);

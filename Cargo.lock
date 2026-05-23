@@ -6149,9 +6149,11 @@ dependencies = [
  "fastrand",
  "ggrs 0.12.0",
  "image",
+ "js-sys",
  "rust-ini",
  "serde",
  "serde_json",
+ "web-sys",
 ]
 
 [[package]]

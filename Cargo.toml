@@ -68,6 +68,13 @@ name = "extract_dat"
 path = "tools/extract_dat.rs"
 required-features = ["tools"]
 
+# Browser-only deps used by netplay.rs to read the `?signal=`
+# query param from the URL bar so users can point at their own
+# matchbox server without recompiling.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+js-sys = "0.3"
+
 [profile.dev]
 opt-level = 1
 
