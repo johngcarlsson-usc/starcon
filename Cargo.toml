@@ -33,7 +33,12 @@ bevy = { version = "0.18", default-features = false, features = [
 ] }
 bevy_ggrs = "0.21"
 bevy_matchbox = { version = "0.14", features = ["ggrs"] }
-ggrs = "0.11"
+ggrs = "0.12"
+# Needed by the GgrsChannelAdapter in netplay.rs: matchbox_socket
+# 0.14 ships a ggrs-0.11 NonBlockingSocket impl on WebRtcChannel,
+# but bevy_ggrs 0.21 needs the ggrs-0.12 trait. We re-do the
+# serde<->packet bridge ourselves over matchbox's raw bytes.
+bincode = { version = "2", features = ["serde"] }
 # 2D physics. `parallel` is disabled so physics runs single-threaded — needed
 # for cross-machine determinism under GGRS rollback (M4).
 avian2d = { version = "0.6", default-features = false, features = ["2d", "f32", "parry-f32"] }

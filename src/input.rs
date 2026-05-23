@@ -11,7 +11,18 @@ pub const INPUT_FIRE: u8 = 1 << 3;
 pub const INPUT_SPECIAL: u8 = 1 << 4;
 
 #[repr(C)]
-#[derive(Copy, Clone, PartialEq, Eq, Pod, Zeroable, Default, Debug)]
+#[derive(
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Pod,
+    Zeroable,
+    Default,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct PlayerInput {
     pub buttons: u8,
 }
