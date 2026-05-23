@@ -615,46 +615,73 @@ impl Plugin for UltimatePlugin {
         .init_resource::<UltimateState>()
         .init_resource::<UltimateMeshes>()
         .add_systems(Startup, build_ultimate_meshes)
-        // Bevy's tuple Bundle impl tops out at ~16 systems per
-        // chain. Split the cinematic pipeline into two phases —
-        // the second strictly follows the first (chain across the
-        // two add_systems calls is implicit because Update runs
-        // them in registration order within the same schedule).
+        .init_resource::<MmrxfUnleashedSprite>()
+        // ---- GgrsSchedule: gameplay-affecting cinematic systems ----
+        //
+        // Anything that mutates game state (phase transitions,
+        // ship velocity, spawn projectiles, apply damage) must
+        // run in GgrsSchedule so rollback can re-simulate them
+        // deterministically. Time inside GgrsSchedule is auto-
+        // swapped to `Time<GgrsTime>` which advances at a
+        // fixed 1/FPS per frame.
         .add_systems(
-            Update,
+            bevy_ggrs::GgrsSchedule,
             (
                 abort_cinematic_if_ship_gone,
-                detect_portrait_aspect,
                 hyper_trigger,
                 tick_ultimate_phases,
-                drive_camera_during_ultimate,
-                drive_ship_rotation_during_ultimate,
                 tick_ultimate_beams,
-                tick_beam_trails,
-                tick_lightspeed_glow,
                 tick_earthling_blast,
-                tick_blast_trails,
                 tick_yehat_battle_fleet,
-            )
-                .chain(),
-        )
-        .add_systems(
-            Update,
-            (
                 tick_spathi_barrage,
                 tick_chenjesu_tempest,
                 tick_shofixti_nova,
                 tick_pkunk_clones,
-                tick_pkunk_clone_visual,
-                tick_pkunk_auras,
                 tick_slylandro_storm,
-                tick_slylandro_glow,
-                tick_asteroid_ghosts,
                 handle_slylandro_asteroid_hits,
-                spawn_arilou_stinger_on_unleash,
-                tick_arilou_stinger,
             )
                 .chain(),
+        )
+        .add_systems(
+            bevy_ggrs::GgrsSchedule,
+            (
+                tick_mycon_gather,
+                tick_mycon_orbit,
+                tick_mycon_release,
+                tick_thraddash_restore,
+                tick_druuge_barrage,
+                tick_kohrah_spawn,
+                tick_kohrah_blades,
+                tick_thraddash_burn,
+                tick_mmrxf_tangled_laser,
+                tick_mmrxf_split_launcher,
+                tick_mmrxf_split_missiles,
+            ),
+        )
+        // ---- Update: visual-only systems ----
+        //
+        // Cinematic eye-candy that just animates sprites /
+        // cameras / materials. These read `Time<Real>` so they
+        // tick smoothly at render-frame rate (even while
+        // gameplay is paused via Time<Virtual>); their effects
+        // don't feed back into game state, so peers showing
+        // slightly different visuals don't desync.
+        .add_systems(
+            Update,
+            (
+                detect_portrait_aspect,
+                drive_camera_during_ultimate,
+                drive_ship_rotation_during_ultimate,
+                tick_beam_trails,
+                tick_lightspeed_glow,
+                tick_blast_trails,
+                tick_pkunk_clone_visual,
+                tick_pkunk_auras,
+                tick_slylandro_glow,
+                tick_asteroid_ghosts,
+                spawn_arilou_stinger_on_unleash,
+                tick_arilou_stinger,
+            ),
         )
         .add_systems(
             Update,
@@ -663,28 +690,6 @@ impl Plugin for UltimatePlugin {
                 tick_mmrxf_laser_segments,
                 tick_mmrxf_needs_restore,
                 strip_white_background_once,
-                tick_mycon_gather,
-                tick_mycon_orbit,
-                tick_mycon_release,
-                tick_thraddash_restore,
-            ),
-        )
-        .init_resource::<MmrxfUnleashedSprite>()
-        .add_systems(
-            bevy_ggrs::GgrsSchedule,
-            (
-                tick_druuge_barrage,
-                tick_kohrah_spawn,
-                tick_kohrah_blades,
-                tick_thraddash_burn,
-            ),
-        )
-        .add_systems(
-            bevy_ggrs::GgrsSchedule,
-            (
-                tick_mmrxf_tangled_laser,
-                tick_mmrxf_split_launcher,
-                tick_mmrxf_split_missiles,
             ),
         );
     }
@@ -1190,7 +1195,11 @@ fn hyper_trigger(
 // ----------------------------------------------------------------
 
 fn tick_ultimate_phases(
-    time: Res<Time<Real>>,
+    // `Res<Time>` inside GgrsSchedule resolves to
+    // `Time<GgrsTime>` — delta is always 1/FPS, deterministic
+    // across peers. Outside GgrsSchedule (which this system
+    // shouldn't be in any more) it resolves to Time<Virtual>.
+    time: Res<Time>,
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
     mut materials: ResMut<Assets<PortraitMaterial>>,
@@ -1950,7 +1959,7 @@ fn drive_ship_rotation_during_ultimate(
 // ----------------------------------------------------------------
 
 fn tick_ultimate_beams(
-    time: Res<Time<Real>>,
+    time: Res<Time>,
     mut state: ResMut<UltimateState>,
     spatial: SpatialQuery,
     ships: Query<(&Position, &Rotation), With<Ship>>,
@@ -2361,7 +2370,7 @@ fn tick_lightspeed_glow(
 /// contact damage to anything overlapping it each tick, and spawns
 /// a jagged streak trail behind itself.
 fn tick_earthling_blast(
-    time: Res<Time<Real>>,
+    time: Res<Time>,
     mut state: ResMut<UltimateState>,
     spatial: SpatialQuery,
     ships: Query<(&Position, &Rotation), With<Ship>>,
@@ -2535,7 +2544,7 @@ fn tick_blast_trails(
 /// during the `YehatBattle` phase, and auto-fire missiles at the
 /// nearest enemy every YEHAT_FIGHTER_FIRE_INTERVAL_S seconds.
 fn tick_yehat_battle_fleet(
-    time: Res<Time<Real>>,
+    time: Res<Time>,
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -2746,7 +2755,7 @@ fn tick_spathi_barrage(
 /// accumulator crosses CHEBR_RING_INTERVAL_S, emit a ring of
 /// CHEBR_RING_SIZE crystal shards radiating outward.
 fn tick_chenjesu_tempest(
-    time: Res<Time<Real>>,
+    time: Res<Time>,
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
     mut rng: ResMut<crate::rng::GameRng>,
@@ -2876,7 +2885,7 @@ fn tick_shofixti_nova(
 /// needed here — they just fly with the same controls until the
 /// timer runs out.
 fn tick_pkunk_clones(
-    time: Res<Time<Real>>,
+    time: Res<Time>,
     state: Res<UltimateState>,
     mut commands: Commands,
     mut clones: Query<(Entity, &mut PkunkClone)>,
@@ -4265,7 +4274,7 @@ fn tick_kohrah_blades(
 /// `tick_mycon_orbit`. On phase transition to MyconHurricane the
 /// orbs convert to homing projectiles in `tick_mycon_release`.
 fn tick_mycon_gather(
-    time: Res<Time<Real>>,
+    time: Res<Time>,
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -4314,7 +4323,7 @@ fn tick_mycon_gather(
 /// `MYCON_ORBIT_R` over the gather phase. The ship's position is
 /// the orbit center.
 fn tick_mycon_orbit(
-    time: Res<Time<Real>>,
+    time: Res<Time>,
     state: Res<UltimateState>,
     mut orbs: Query<(&mut MyconOrbit, &mut Transform), Without<crate::ship::Ship>>,
     ships: Query<&Position, With<crate::ship::Ship>>,
