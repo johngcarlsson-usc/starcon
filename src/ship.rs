@@ -822,6 +822,7 @@ impl Plugin for ShipPlugin {
                 tick_mycon_plasma,
                 spawn_chmmr_satellites,
                 tick_chmmr_satellites,
+                tick_zap_flashes,
                 tick_asteroid_explosions,
                 replenish_asteroids,
             ),
@@ -4062,6 +4063,7 @@ fn handle_projectile_hits(
     damage_to_batt: Query<&DamageToBattery>,
     asteroids_q: Query<&Position, With<Asteroid>>,
     ships: Query<&Ship>,
+    mut satellites: Query<(&mut ChmmrSatellite, &Position)>,
     mut crews: Query<&mut Crew>,
     mut batteries: Query<&mut Battery>,
     mut velocities: Query<&mut LinearVelocity>,
@@ -4119,6 +4121,32 @@ fn handle_projectile_hits(
             spawn_asteroid_explosion(&mut commands, &assets, pos.0, 24.0);
             commands.entity(other_entity).despawn();
             commands.entity(proj_entity).despawn();
+            continue;
+        }
+
+        // Chmmr Avatar satellite hit by projectile: chip its
+        // armour by the projectile's damage, despawn the satellite
+        // if armour reaches 0 (+ kaboom for the satisfying pop).
+        // Friendly-fire filter: skip if the projectile's owner is
+        // the satellite's owner-avatar (Chmav's own uberlaser
+        // can't clip its own satellites).
+        if let Ok((mut sat, sat_pos)) = satellites.get_mut(other_entity) {
+            if proj.owner == sat.owner {
+                continue;
+            }
+            // Treat shield's damage_factor uniformly (most ships
+            // don't have one; defaults to 1.0).
+            let factor = shields
+                .get(other_entity)
+                .map(|s| s.damage_factor)
+                .unwrap_or(1.0);
+            let dmg = ((proj.damage as f32 * factor).round() as i32).max(0);
+            sat.armour = (sat.armour - dmg).max(0);
+            commands.entity(proj_entity).despawn();
+            if sat.armour <= 0 {
+                spawn_asteroid_explosion(&mut commands, &assets, sat_pos.0, 18.0);
+                commands.entity(other_entity).despawn();
+            }
             continue;
         }
 
@@ -5102,11 +5130,23 @@ pub struct NeedsChmmrSatellites;
 /// driven each tick relative to the owner; on hit it loses armour;
 /// on owner death the satellite despawns.
 #[derive(Component, Debug)]
+#[component(on_add = auto_add_rollback)]
 pub struct ChmmrSatellite {
     pub owner: Entity,
     pub angle_offset: f32,
     pub recharge_remaining_s: f32,
     pub armour: i32,
+}
+
+/// Short-lived sprite line drawn from a satellite to its zap
+/// target. Pure visual; the damage is applied directly in
+/// `tick_chmmr_satellites` (no persistent Beam — the orbit
+/// would drag the visual off-target). Faded out by
+/// `tick_zap_flashes`.
+#[derive(Component, Debug)]
+pub struct ZapFlash {
+    pub remaining_s: f32,
+    pub total_s: f32,
 }
 
 fn spawn_chmmr_satellites(
@@ -5128,15 +5168,52 @@ fn spawn_chmmr_satellites(
                     armour: 10,
                 },
                 Sprite {
-                    image: assets.load("ships/chmav/sprites/shot_a01.png"),
-                    color: Color::srgba(0.6, 0.95, 1.0, 1.0),
-                    custom_size: Some(Vec2::splat(18.0)),
+                    // chmav's satellite frames are `shot_b01..shot_b64`
+                    // (64 rotation frames at 50×50). For the simple
+                    // case we pin to frame 1 — the satellite itself
+                    // doesn't rotate (Transform's own rotation handles
+                    // any orientation we want).
+                    image: assets.load("ships/chmav/sprites/shot_b01.png"),
+                    color: Color::srgba(0.85, 0.95, 1.0, 1.0),
+                    custom_size: Some(Vec2::splat(24.0)),
                     ..default()
                 },
                 Transform::from_translation(pos.extend(0.25)),
+                // Physics body + circle collider so opponents'
+                // projectiles can hit and chip the satellite's
+                // armour. Sensor so it doesn't push other entities
+                // around — it's a hit target, not an obstacle.
+                RigidBody::Kinematic,
+                Collider::circle(10.0),
+                Sensor,
+                Position(pos),
+                CollisionEventsEnabled,
             ));
         }
         commands.entity(ship_entity).remove::<NeedsChmmrSatellites>();
+    }
+}
+
+/// Fade ZapFlash sprites toward alpha 0 over their lifetime,
+/// then despawn. Visual-only; called each tick in the main
+/// gameplay schedule.
+fn tick_zap_flashes(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut q: Query<(Entity, &mut ZapFlash, &mut Sprite)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut flash, mut sprite) in &mut q {
+        flash.remaining_s -= dt;
+        if flash.remaining_s <= 0.0 {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
+            continue;
+        }
+        let frac = (flash.remaining_s / flash.total_s).clamp(0.0, 1.0);
+        let lin = sprite.color.to_linear();
+        sprite.color = Color::srgba(lin.red, lin.green, lin.blue, frac);
     }
 }
 
@@ -5149,21 +5226,34 @@ fn spawn_chmmr_satellites(
 fn tick_chmmr_satellites(
     mut commands: Commands,
     time: Res<Time<Physics>>,
-    mut sats: Query<(Entity, &mut ChmmrSatellite, &mut Transform)>,
-    owners: Query<(&Ship, &Position, &Rotation)>,
-    ship_pos: Query<(Entity, &Ship, &Position), Without<Invisible>>,
+    mut sats: Query<(Entity, &mut ChmmrSatellite, &mut Transform, &mut Position)>,
+    owners: Query<(&Ship, &Position), Without<ChmmrSatellite>>,
+    ship_pos: Query<(Entity, &Ship, &Position), (Without<Invisible>, Without<ChmmrSatellite>)>,
+    shields: Query<&ShieldActive>,
+    mut crews: Query<&mut Crew>,
 ) {
     let dt = time.delta_secs();
-    const ORBITAL_RATE: f32 = 0.5; // rad/s
+    /// Orbit angular velocity (rad/s).
+    const ORBITAL_RATE: f32 = 0.6;
+    /// Distance from the Avatar's center to a satellite's center.
+    const ORBIT_RADIUS: f32 = 100.0;
+    /// Auto-zap range (world units). Canon: 4 * 40 = 160 wu, but
+    /// SC2_RANGE_SCALE makes that play right at our arena scale.
     const ZAP_RANGE: f32 = 4.0 * SC2_RANGE_SCALE;
+    /// Crew damage per zap.
     const ZAP_DAMAGE: i32 = 1;
-    const ZAP_DURATION_S: f32 = 50.0 / 20.0; // canonical Frames=50
+    /// Visual flash lifetime (seconds). Short so it doesn't lag
+    /// behind the satellite as it orbits.
+    const ZAP_FLASH_S: f32 = 0.15;
+    /// Cooldown between successive zaps (canon: 250 SC2 frames).
     const ZAP_RECHARGE_S: f32 = 250.0 / 20.0;
 
-    for (sat_entity, mut sat, mut xf) in &mut sats {
+    for (sat_entity, mut sat, mut xf, mut sat_pos) in &mut sats {
         // Owner death → satellite dies.
-        let Ok((owner_ship, owner_pos, _owner_rot)) = owners.get(sat.owner) else {
-            commands.entity(sat_entity).try_despawn();
+        let Ok((owner_ship, owner_pos)) = owners.get(sat.owner) else {
+            if let Ok(mut ec) = commands.get_entity(sat_entity) {
+                ec.try_despawn();
+            }
             continue;
         };
 
@@ -5172,10 +5262,15 @@ fn tick_chmmr_satellites(
         if sat.angle_offset > std::f32::consts::TAU {
             sat.angle_offset -= std::f32::consts::TAU;
         }
-        let offset = Vec2::new(sat.angle_offset.cos(), sat.angle_offset.sin()) * 100.0;
+        let offset =
+            Vec2::new(sat.angle_offset.cos(), sat.angle_offset.sin()) * ORBIT_RADIUS;
         let world = owner_pos.0 + offset;
         xf.translation.x = world.x;
         xf.translation.y = world.y;
+        // Also write the Avian Position so the collider tracks
+        // the visual — without this, the satellite's hit volume
+        // would stay at its spawn point and never move.
+        sat_pos.0 = world;
 
         // Cool down.
         if sat.recharge_remaining_s > 0.0 {
@@ -5183,8 +5278,8 @@ fn tick_chmmr_satellites(
             continue;
         }
 
-        // Find nearest non-friendly non-invisible ship within range.
-        let mut best: Option<(Entity, f32)> = None;
+        // Find nearest non-friendly non-invisible ship in range.
+        let mut best: Option<(Entity, Vec2, f32)> = None;
         for (e, s, p) in &ship_pos {
             if s.player_slot == owner_ship.player_slot {
                 continue;
@@ -5193,32 +5288,52 @@ fn tick_chmmr_satellites(
             if d2 > ZAP_RANGE * ZAP_RANGE {
                 continue;
             }
-            if best.map_or(true, |(_, b)| d2 < b) {
-                best = Some((e, d2));
+            if best.map_or(true, |(_, _, b)| d2 < b) {
+                best = Some((e, p.0, d2));
             }
         }
-        if let Some((target_entity, _)) = best {
-            // Build a short beam from satellite to target. Reuses
-            // the existing Beam component; tick_beams handles the
-            // visual + damage.
-            let dummy_rot = Rotation::radians(0.0);
-            spawn_beam(
-                &mut commands,
-                sat.owner,       // attribute damage to the Avatar
-                world,
-                &dummy_rot,
-                Vec2::ZERO,
-                Vec2::Y,         // direction overwritten by auto_aim
-                ZAP_RANGE,
-                ZAP_DAMAGE,
-                Color::srgb(0.6, 0.95, 1.0),
-                true,            // auto_aim — locks onto target each tick
-                ZAP_DURATION_S,
-                1.0,
-            );
-            sat.recharge_remaining_s = ZAP_RECHARGE_S;
-            let _ = target_entity;
+        let Some((target_entity, target_pos, _)) = best else {
+            continue;
+        };
+
+        // Apply damage directly (skip the persistent-Beam path
+        // because a Beam follows its owner-ship, not the
+        // satellite — the orbit would drag the beam off-target
+        // over its 2.5 s canonical duration). Shield multiplier
+        // matches every other damage-application site.
+        let factor = shields
+            .get(target_entity)
+            .map(|s| s.damage_factor)
+            .unwrap_or(1.0);
+        let dmg = ((ZAP_DAMAGE as f32 * factor).round() as i32).max(0);
+        if dmg > 0 {
+            if let Ok(mut crew) = crews.get_mut(target_entity) {
+                crew.current = (crew.current - dmg).max(0);
+            }
         }
+
+        // Visual zap line from satellite to target. Sprite is a
+        // thin rectangle aligned along the (target - sat) vector;
+        // `tick_zap_flashes` fades it out and despawns it.
+        let delta = target_pos - world;
+        let len = delta.length().max(1.0);
+        let mid = (world + target_pos) * 0.5;
+        let angle = delta.y.atan2(delta.x) - std::f32::consts::FRAC_PI_2;
+        let color = Color::srgba(0.7, 0.95, 1.0, 1.0);
+        commands.spawn((
+            ZapFlash {
+                remaining_s: ZAP_FLASH_S,
+                total_s: ZAP_FLASH_S,
+            },
+            Sprite::from_color(color, Vec2::new(3.0, len)),
+            Transform {
+                translation: mid.extend(0.30),
+                rotation: Quat::from_rotation_z(angle),
+                scale: Vec3::ONE,
+            },
+        ));
+
+        sat.recharge_remaining_s = ZAP_RECHARGE_S;
     }
 }
 
