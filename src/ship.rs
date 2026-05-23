@@ -118,19 +118,31 @@ pub struct ShipCatalog {
 }
 
 /// What `spawn_match` should use the next time the scene rebuilds.
-/// Mutated by the class-picker keys; read in `spawn_match`.
-#[derive(Resource, Debug, Clone, Copy)]
+/// Mutated by the class-picker keys; read in `spawn_match`. The
+/// `classes` vector is the per-slot class list: index 0 is P1,
+/// index 1 is P2, and so on. Length 2..=4 — local hotseat plays
+/// the first two, online matches up to four.
+#[derive(Resource, Debug, Clone)]
 pub struct MatchConfig {
-    pub p1_class: ShipClass,
-    pub p2_class: ShipClass,
+    pub classes: Vec<ShipClass>,
+}
+
+impl MatchConfig {
+    /// Convenience for the 2-player default. Use this anywhere
+    /// that wants the legacy "P1 + P2" shape.
+    pub fn local_two(p1: ShipClass, p2: ShipClass) -> Self {
+        Self {
+            classes: vec![p1, p2],
+        }
+    }
+    pub fn slot_count(&self) -> usize {
+        self.classes.len()
+    }
 }
 
 impl Default for MatchConfig {
     fn default() -> Self {
-        Self {
-            p1_class: ShipClass::Earcr,
-            p2_class: ShipClass::Spael,
-        }
+        Self::local_two(ShipClass::Earcr, ShipClass::Spael)
     }
 }
 
@@ -782,30 +794,33 @@ pub fn spawn_match(
     config: Res<MatchConfig>,
     ship_colliders: Res<crate::collider::ShipColliders>,
 ) {
-    // Rotation convention: 0 rad = ship facing +Y (up); positive
-    // rotation is CCW. To face right (+X) we want -π/2 (CW 90°), and
-    // to face left (-X) we want +π/2. P1 sits on the left and faces
-    // right at the enemy; P2 sits on the right and faces left.
-    spawn_class(
-        &mut commands,
-        &catalog,
-        &assets,
-        config.p1_class,
-        Vec2::new(-900.0, 0.0),
-        -std::f32::consts::FRAC_PI_2,
-        0,
-        &ship_colliders,
-    );
-    spawn_class(
-        &mut commands,
-        &catalog,
-        &assets,
-        config.p2_class,
-        Vec2::new(900.0, 0.0),
-        std::f32::consts::FRAC_PI_2,
-        1,
-        &ship_colliders,
-    );
+    // Compass-point spawns. Up to 4 players — slots 2 and 3 are
+    // populated for online / 4-player local; otherwise the loop
+    // just emits the first 2.
+    //
+    // Rotation convention: 0 rad = sprite facing +Y (up), positive
+    // = CCW. -π/2 → +X (right), +π/2 → -X (left), 0 → +Y,
+    // π → -Y. All four ships face the arena centre.
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let spawn_table: [(Vec2, f32); 4] = [
+        (Vec2::new(-900.0, 0.0), -FRAC_PI_2), // W, facing E
+        (Vec2::new(900.0, 0.0), FRAC_PI_2),   // E, facing W
+        (Vec2::new(0.0, -900.0), 0.0),        // S, facing N
+        (Vec2::new(0.0, 900.0), PI),          // N, facing S
+    ];
+    for (slot, class) in config.classes.iter().enumerate().take(4) {
+        let (pos, rot) = spawn_table[slot];
+        spawn_class(
+            &mut commands,
+            &catalog,
+            &assets,
+            *class,
+            pos,
+            rot,
+            slot,
+            &ship_colliders,
+        );
+    }
 
     spawn_asteroids(&mut commands, &assets);
 }
@@ -866,13 +881,19 @@ fn class_picker_input(
 
     let mut changed = false;
 
+    // Picker keys only mutate slots that already exist in
+    // `config.classes`. P1 digits → slot 0; P2 F-keys → slot 1.
+    // Slots 2+ are configured via the lobby UI for online play,
+    // not from these hotkeys.
     for (i, key) in P1_DIGITS.iter().enumerate() {
         if keys.just_pressed(*key) {
             let idx = bank_offset + i;
-            if let Some(class) = ALL_CLASSES.get(idx).copied() {
-                if config.p1_class != class {
-                    config.p1_class = class;
-                    info!("P1 → {:?}", config.p1_class);
+            if let (Some(class), Some(slot)) =
+                (ALL_CLASSES.get(idx).copied(), config.classes.get_mut(0))
+            {
+                if *slot != class {
+                    *slot = class;
+                    info!("P1 → {:?}", class);
                     changed = true;
                 }
             }
@@ -881,10 +902,12 @@ fn class_picker_input(
     for (i, key) in P2_FKEYS.iter().enumerate() {
         if keys.just_pressed(*key) {
             let idx = bank_offset + i;
-            if let Some(class) = ALL_CLASSES.get(idx).copied() {
-                if config.p2_class != class {
-                    config.p2_class = class;
-                    info!("P2 → {:?}", config.p2_class);
+            if let (Some(class), Some(slot)) =
+                (ALL_CLASSES.get(idx).copied(), config.classes.get_mut(1))
+            {
+                if *slot != class {
+                    *slot = class;
+                    info!("P2 → {:?}", class);
                     changed = true;
                 }
             }
@@ -900,15 +923,19 @@ fn class_picker_input(
         keys.just_pressed(KeyCode::Tab) && shift || virt.cycle_prev_just_pressed;
     if cycle_next || cycle_prev {
         let dir: i32 = if cycle_prev { -1 } else { 1 };
-        config.p1_class = cycle_class(config.p1_class, dir);
-        info!("P1 → {:?}", config.p1_class);
-        changed = true;
+        if let Some(slot) = config.classes.get_mut(0) {
+            *slot = cycle_class(*slot, dir);
+            info!("P1 → {:?}", *slot);
+            changed = true;
+        }
     }
     if keys.just_pressed(KeyCode::Backquote) {
         let dir: i32 = if shift { -1 } else { 1 };
-        config.p2_class = cycle_class(config.p2_class, dir);
-        info!("P2 → {:?}", config.p2_class);
-        changed = true;
+        if let Some(slot) = config.classes.get_mut(1) {
+            *slot = cycle_class(*slot, dir);
+            info!("P2 → {:?}", *slot);
+            changed = true;
+        }
     }
 
     // Trigger a fresh spawn so the change takes effect immediately —

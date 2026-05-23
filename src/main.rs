@@ -2,6 +2,7 @@ mod ability;
 mod collider;
 mod hud;
 mod input;
+mod menu;
 mod netplay;
 mod physics;
 mod ship;
@@ -16,7 +17,14 @@ use bevy::prelude::*;
 pub enum AppState {
     #[default]
     Loading,
+    /// Title screen + match-setup buttons (Local 2P / Local 4P /
+    /// Online). Pick one to populate `MatchConfig` and transition
+    /// into either `LobbyOnline` (matchmaking) or `InMatch` (local).
     MainMenu,
+    /// Online lobby: connect to the matchbox signaling server,
+    /// wait for peers, and transition to InMatch once the GGRS
+    /// session is ready.
+    LobbyOnline,
     /// Tears down the previous round's entities before re-entering
     /// InMatch. One-frame transient state — used by the rematch flow.
     Resetting,
@@ -66,6 +74,7 @@ fn main() {
             starfield::StarfieldPlugin,
             ultimate::UltimatePlugin,
             mobile_controls::MobileControlsPlugin,
+            menu::MenuPlugin,
         ))
         .init_resource::<ship::PreloadedAssets>()
         .add_systems(Startup, (setup_camera, ship::preload_all_assets))
@@ -76,7 +85,7 @@ fn main() {
         .add_systems(
             Update,
             (
-                advance_to_match.run_if(in_state(AppState::Loading)),
+                advance_loading_to_menu.run_if(in_state(AppState::Loading)),
                 resume_from_reset.run_if(in_state(AppState::Resetting)),
                 request_rematch.run_if(in_state(AppState::InMatch)),
             ),
@@ -88,14 +97,15 @@ fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
 
-// M1: skip the main menu and drop straight into a one-ship test scene
-// so we can see physics + input + sprite rotation working.
-fn advance_to_match(
+/// Once the ship catalog has loaded, move from `Loading` to
+/// `MainMenu`. The menu plugin owns the next transition (to
+/// either `InMatch` for local play or `LobbyOnline` for online).
+fn advance_loading_to_menu(
     catalog: Option<Res<ship::ShipCatalog>>,
     mut next: ResMut<NextState<AppState>>,
 ) {
     if catalog.is_some() {
-        next.set(AppState::InMatch);
+        next.set(AppState::MainMenu);
     }
 }
 

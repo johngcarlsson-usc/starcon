@@ -43,6 +43,9 @@ pub struct VirtualInput {
 }
 
 fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
+    // Local hotseat keymaps. Online play uses network inputs for
+    // slots that aren't the local player — these tables only
+    // matter when more than one human is at the same keyboard.
     match slot {
         0 => &[
             (KeyCode::ArrowLeft, INPUT_LEFT),
@@ -51,12 +54,26 @@ fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
             (KeyCode::KeyZ, INPUT_FIRE),
             (KeyCode::KeyX, INPUT_SPECIAL),
         ],
-        _ => &[
+        1 => &[
             (KeyCode::KeyA, INPUT_LEFT),
             (KeyCode::KeyD, INPUT_RIGHT),
             (KeyCode::KeyW, INPUT_THRUST),
             (KeyCode::KeyG, INPUT_FIRE),
             (KeyCode::KeyH, INPUT_SPECIAL),
+        ],
+        2 => &[
+            (KeyCode::KeyJ, INPUT_LEFT),
+            (KeyCode::KeyL, INPUT_RIGHT),
+            (KeyCode::KeyI, INPUT_THRUST),
+            (KeyCode::KeyN, INPUT_FIRE),
+            (KeyCode::KeyM, INPUT_SPECIAL),
+        ],
+        _ => &[
+            (KeyCode::Numpad4, INPUT_LEFT),
+            (KeyCode::Numpad6, INPUT_RIGHT),
+            (KeyCode::Numpad8, INPUT_THRUST),
+            (KeyCode::Numpad0, INPUT_FIRE),
+            (KeyCode::NumpadEnter, INPUT_SPECIAL),
         ],
     }
 }

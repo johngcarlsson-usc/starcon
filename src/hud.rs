@@ -46,11 +46,13 @@ pub enum MatchPhase {
     PostMatch,
 }
 
+/// Per-slot match scores. Index = player_slot (0..=3). The
+/// length is fixed at 4 even when fewer players are in the
+/// match — unused slots just stay at 0.
 #[derive(Resource, Default)]
 pub struct MatchOutcome {
     pub winner: Option<usize>,
-    pub p1_wins: u32,
-    pub p2_wins: u32,
+    pub wins: [u32; 4],
 }
 
 pub struct HudPlugin;
@@ -59,7 +61,13 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MatchOutcome>()
             .init_resource::<MatchPhase>()
-            .add_systems(Startup, setup_hud)
+            // The HUD is rebuilt every time we enter a match so
+            // the per-slot panel count tracks the current
+            // `MatchConfig.slot_count()` — going from 2-player
+            // local to a 4-player online match without restarting
+            // the app needs to add two more panels.
+            .add_systems(OnEnter(crate::AppState::InMatch), setup_hud)
+            .add_systems(OnExit(crate::AppState::InMatch), despawn_hud)
             .add_systems(
                 Update,
                 (
@@ -68,7 +76,8 @@ impl Plugin for HudPlugin {
                     destroy_zero_crew_ships,
                     detect_winner,
                     update_status_banner,
-                ),
+                )
+                    .run_if(in_state(crate::AppState::InMatch)),
             );
     }
 }
@@ -80,39 +89,53 @@ const BAR_BG: Color = Color::srgb(0.12, 0.14, 0.18);
 const CREW_COLOR: Color = Color::srgb(0.35, 0.95, 0.50);
 const BATT_COLOR: Color = Color::srgb(0.45, 0.75, 1.00);
 
-fn setup_hud(mut commands: Commands) {
-    // Right-edge column holding both player panels stacked vertically.
+/// Marker on the root HUD nodes so OnExit can despawn them in
+/// one recursive pass without having to remember each child id.
+#[derive(Component)]
+struct HudNode;
+
+fn setup_hud(mut commands: Commands, config: Res<crate::ship::MatchConfig>) {
+    // Right-edge column with one panel per active slot stacked
+    // vertically. Slot count comes from `MatchConfig` — the
+    // current match's player count.
+    let n = config.slot_count().clamp(2, 4);
     commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(0.0),
-            right: Val::Px(0.0),
-            bottom: Val::Px(0.0),
-            width: Val::Px(220.0),
-            flex_direction: FlexDirection::Column,
-            justify_content: JustifyContent::SpaceBetween,
-            padding: UiRect::all(Val::Px(12.0)),
-            row_gap: Val::Px(12.0),
-            ..default()
-        })
+        .spawn((
+            HudNode,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                width: Val::Px(220.0),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::SpaceBetween,
+                padding: UiRect::all(Val::Px(12.0)),
+                row_gap: Val::Px(12.0),
+                ..default()
+            },
+        ))
         .with_children(|column| {
-            for slot in [0usize, 1usize] {
+            for slot in 0..n {
                 spawn_player_panel(column, slot);
             }
         });
 
     // Centred banner overlay used between rounds.
     commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(0.0),
-            left: Val::Px(0.0),
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            ..default()
-        })
+        .spawn((
+            HudNode,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+        ))
         .with_children(|root| {
             root.spawn((
                 Text::new(""),
@@ -123,11 +146,20 @@ fn setup_hud(mut commands: Commands) {
         });
 }
 
+fn despawn_hud(mut commands: Commands, q: Query<Entity, With<HudNode>>) {
+    for e in &q {
+        if let Ok(mut ec) = commands.get_entity(e) {
+            ec.try_despawn();
+        }
+    }
+}
+
 fn spawn_player_panel(parent: &mut ChildSpawnerCommands, slot: usize) {
-    let player_label = if slot == 0 {
-        Color::srgb(0.6, 0.9, 1.0)
-    } else {
-        Color::srgb(1.0, 0.7, 0.6)
+    let player_label = match slot {
+        0 => Color::srgb(0.6, 0.9, 1.0), // cyan
+        1 => Color::srgb(1.0, 0.7, 0.6), // orange
+        2 => Color::srgb(0.6, 1.0, 0.7), // green
+        _ => Color::srgb(1.0, 0.6, 1.0), // magenta
     };
 
     parent
@@ -316,50 +348,54 @@ fn destroy_zero_crew_ships(
 
 fn detect_winner(
     ships: Query<&Ship>,
+    config: Res<crate::ship::MatchConfig>,
     mut outcome: ResMut<MatchOutcome>,
     mut phase: ResMut<MatchPhase>,
 ) {
     if *phase == MatchPhase::PostMatch {
         return;
     }
-    let mut have_p1 = false;
-    let mut have_p2 = false;
+    // Track which slots still have a living ship.
+    let active_slots = config.slot_count().min(4);
+    let mut alive = [false; 4];
     for ship in &ships {
-        match ship.player_slot {
-            0 => have_p1 = true,
-            1 => have_p2 = true,
-            _ => {}
+        if ship.player_slot < 4 {
+            alive[ship.player_slot] = true;
         }
     }
-    let winner = if have_p1 && !have_p2 {
-        Some(0usize)
-    } else if have_p2 && !have_p1 {
-        Some(1usize)
-    } else {
-        None
-    };
+    let live_count = alive[..active_slots].iter().filter(|a| **a).count();
+    // Match ends when at most one slot has a ship left. Sole
+    // survivor wins; double-KO (zero alive) is a draw.
+    if live_count > 1 {
+        return;
+    }
+    let winner = alive[..active_slots].iter().position(|a| *a);
+    outcome.winner = winner;
     if let Some(w) = winner {
-        outcome.winner = Some(w);
-        if w == 0 {
-            outcome.p1_wins += 1;
-        } else {
-            outcome.p2_wins += 1;
-        }
-        *phase = MatchPhase::PostMatch;
+        outcome.wins[w] = outcome.wins[w].saturating_add(1);
         info!(
-            "WINNER: Player {} (score {}-{})",
+            "WINNER: Player {} (scores {:?})",
             w + 1,
-            outcome.p1_wins,
-            outcome.p2_wins
+            &outcome.wins[..active_slots]
         );
+    } else {
+        info!("DRAW (scores {:?})", &outcome.wins[..active_slots]);
     }
+    *phase = MatchPhase::PostMatch;
 }
 
 fn update_status_banner(
     phase: Res<MatchPhase>,
     outcome: Res<MatchOutcome>,
+    config: Res<crate::ship::MatchConfig>,
     mut q: Query<&mut Text, With<StatusBanner>>,
 ) {
+    let n = config.slot_count().min(4);
+    let score_str = outcome.wins[..n]
+        .iter()
+        .map(|w| w.to_string())
+        .collect::<Vec<_>>()
+        .join("-");
     for mut text in &mut q {
         text.0 = match *phase {
             // Hide the running score during play — it sat in the
@@ -367,15 +403,8 @@ fn update_status_banner(
             // post-match banner still shows the winner + score.
             MatchPhase::Live => String::new(),
             MatchPhase::PostMatch => match outcome.winner {
-                Some(0) => format!(
-                    "P1 WINS  ({}-{})\n[R] rematch",
-                    outcome.p1_wins, outcome.p2_wins
-                ),
-                Some(1) => format!(
-                    "P2 WINS  ({}-{})\n[R] rematch",
-                    outcome.p1_wins, outcome.p2_wins
-                ),
-                _ => "DRAW\n[R] rematch".to_string(),
+                Some(w) => format!("P{} WINS  ({})\n[R] rematch", w + 1, score_str),
+                None => format!("DRAW  ({})\n[R] rematch", score_str),
             },
         };
     }
