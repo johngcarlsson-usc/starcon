@@ -1,0 +1,23 @@
+# Replit config for running matchbox_server.
+#
+# `entrypoint` + `run` are what Replit invokes when you hit
+# Run; we shell out to main.sh which handles the
+# install-on-first-run + binary launch.
+
+entrypoint = "main.sh"
+run = ["sh", "main.sh"]
+
+[nix]
+channel = "stable-24_05"
+
+[deployment]
+# If you promote this to a Reserved VM / Autoscale deployment
+# the same script handles it.
+run = ["sh", "main.sh"]
+deploymentTarget = "cloudrun"
+
+# Bind to the default matchbox port. Replit's Webview tab will
+# show the public URL once the process is listening.
+[[ports]]
+localPort = 3536
+externalPort = 80
