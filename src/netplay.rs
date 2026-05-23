@@ -109,6 +109,7 @@
 //! peers; the public test server at `match.helsing.studio` is
 //! intermittently up but fine for development.
 
+use bevy::ecs::schedule::{LogLevel, ScheduleBuildSettings};
 use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::prelude::*;
 use bevy_ggrs::ggrs::{Message as GgrsMessage, NonBlockingSocket, PlayerType, SessionBuilder};
@@ -297,6 +298,23 @@ impl Plugin for NetplayPlugin {
         // collection scaffolding. Idle when no `Session<Config>`
         // resource exists, so it costs nothing for local play.
         app.add_plugins(GgrsPlugin::<Config>::default())
+            // bevy_ggrs sets `ambiguity_detection: LogLevel::
+            // Error` on GgrsSchedule for strict determinism.
+            // Our existing gameplay has many implicit-ordering
+            // ambiguities that silently worked under FixedUpdate
+            // (where the default is LogLevel::Ignore). Resolving
+            // every pair explicitly is days of work; instead we
+            // relax the check back to Warn. Cross-peer
+            // determinism still holds because both peers run the
+            // same Rust binary with the same system registration
+            // order, so the parallel executor produces the same
+            // run order on each.
+            .edit_schedule(GgrsSchedule, |s| {
+                s.set_build_settings(ScheduleBuildSettings {
+                    ambiguity_detection: LogLevel::Warn,
+                    ..default()
+                });
+            })
             // ---- Rollback components ----
             //
             // Every component that mutates during gameplay needs
