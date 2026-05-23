@@ -172,6 +172,20 @@ pub struct UltimateState {
     /// Mycon orb spawn-time snapshot (paused-time elapsed) for
     /// the swirl-in animation.
     pub mycon_orb_t0: f32,
+    /// Chmmr volley sub-stage: 0 = Bump, 1 = Set, 2 = Spike,
+    /// 3 = Laser. Driven by `tick_chmmr_ultimate` in Update.
+    pub chmmr_stage: u8,
+    /// World positions each of the three Chmmr satellites zips
+    /// to during `ChmmrCharging`. Index 0 = bumper (next to
+    /// opponent), 1 = setter (5-o'clock behind Chmmr), 2 =
+    /// spiker (directly in front of Chmmr, far out).
+    pub chmmr_sat_targets: [Vec2; 3],
+    /// Opponent ship snapshotted at cinematic entry — kept so
+    /// every volley stage knows which ship to impulse.
+    pub chmmr_opponent: Option<Entity>,
+    /// Time accumulator within the current Chmmr volley sub-stage
+    /// (resets to 0 each time `chmmr_stage` advances).
+    pub chmmr_stage_timer_s: f32,
 }
 
 /// Marker on the Mmrnmhrm ship during MmrxfUnleashing. Normal
@@ -379,6 +393,13 @@ pub enum UltimateVariant {
     /// becomes a lethal damage zone — the player flies through
     /// the arena painting kill streaks.
     Thraddash,
+    /// Chmmr: bump-set-spike-laser. The three orbiting satellites
+    /// snap into a volleyball formation; sat 1 zips to the
+    /// opponent and slams them at sat 2, sat 2 sets them toward
+    /// sat 3, sat 3 spikes them into the Chmmr's face where the
+    /// Avatar finishes with a sustained laser. Every contact
+    /// flashes the screen white and chips crew.
+    Chmmr,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -492,6 +513,19 @@ pub enum UltimatePhase {
     /// Unpaused. Speed cap quintuples, exhaust trail becomes a
     /// lethal damage zone for the duration. Player keeps control.
     ThraddashBurning,
+    // ---- Chmmr bump-set-spike ----
+    /// Paused. The three satellites snap from their normal orbit
+    /// to the volleyball formation:
+    ///   sat 0 → at the opponent's current position
+    ///   sat 1 → 5-o'clock of the Chmmr in its local frame
+    ///   sat 2 → directly in front of the Chmmr, far out
+    ChmmrCharging,
+    /// Unpaused. Sub-stage machine in `UltimateState.chmmr_stage`
+    /// drives Bump → Set → Spike → Laser: each contact slams an
+    /// impulse on the opponent toward the next sat (or the
+    /// Chmmr's face for the final), flashes the screen, and
+    /// chips crew.
+    ChmmrVolley,
 }
 
 /// Marker on the ship while the cinematic is active.
@@ -700,6 +734,11 @@ impl Plugin for UltimatePlugin {
                 // bug as above: needs to live in Update or
                 // the fighters never spawn.
                 tick_yehat_battle_fleet,
+                // Chmmr bump-set-spike: positions satellites in
+                // ChmmrCharging (paused) + drives the volley
+                // sub-stages in ChmmrVolley.
+                tick_chmmr_ultimate,
+                tick_chmmr_flashes,
             ),
         )
         // ---- Update: visual-only systems ----
@@ -893,6 +932,37 @@ const THRADDASH_FLAME_RADIUS: f32 = 38.0;
 /// Interval between flame puff emissions.
 const THRADDASH_FLAME_INTERVAL_S: f32 = 0.04;
 
+// -- Chmmr "bump-set-spike-laser" --
+const CHMMR_CHARGE_S: f32 = 0.6;
+const CHMMR_VOLLEY_S: f32 = 4.0;
+/// How fast a satellite zips to its volley position during
+/// ChmmrCharging (wu/s).
+const CHMMR_SAT_ZIP_SPEED: f32 = 2400.0;
+/// Distance offset from Chmmr to satellites 1 (setter, 5 o'clock
+/// behind Chmmr in its local frame) and 2 (spiker, dead ahead).
+const CHMMR_SETTER_DIST: f32 = 240.0;
+const CHMMR_SPIKER_DIST: f32 = 380.0;
+/// Initial pause inside ChmmrVolley before the bump fires (so
+/// the satellites visibly settle in place for a beat).
+const CHMMR_BUMP_DELAY_S: f32 = 0.20;
+/// How close the opponent has to get to the next sat before the
+/// next stage triggers. Also the max distance the bumper sat
+/// will be from the opponent when stage 0 fires.
+const CHMMR_HIT_PROXIMITY: f32 = 80.0;
+/// Speed the opponent's velocity is overwritten to on each
+/// volley contact. Pinball-fast.
+const CHMMR_IMPULSE_SPEED: f32 = 1800.0;
+/// Crew damage per volley contact (× 3 hits + sustained laser).
+const CHMMR_HIT_DAMAGE: i32 = 2;
+/// Per-stage timeout so the volley can't stall forever if the
+/// opponent fails to reach the next sat (e.g. they got blocked
+/// by an asteroid).
+const CHMMR_STAGE_TIMEOUT_S: f32 = 0.9;
+/// Full-screen white flash lifetime on each contact.
+const CHMMR_FLASH_S: f32 = 0.28;
+/// Sustained laser duration during stage 3.
+const CHMMR_LASER_S: f32 = 1.0;
+
 fn portrait_path(variant: UltimateVariant) -> &'static str {
     match variant {
         UltimateVariant::Earthling => "ultimate/portrait_earcr.png",
@@ -903,6 +973,7 @@ fn portrait_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Pkunk => "ultimate/portrait_pkufu.png",
         UltimateVariant::Slylandro => "ultimate/portrait_slypr.png",
         UltimateVariant::Mmrnmhrm => "ultimate/portrait_mmrxf.png",
+        UltimateVariant::Chmmr => "ultimate/portrait_chmav.png",
         _ => "ultimate/portrait_arisk.png",
     }
 }
@@ -921,6 +992,7 @@ fn voice_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Pkunk => "ultimate/pkufu_voi.wav",
         UltimateVariant::Slylandro => "ultimate/slypr_voi.wav",
         UltimateVariant::Mmrnmhrm => "ultimate/mmrxf_voi.wav",
+        UltimateVariant::Chmmr => "ultimate/chmav_voi.wav",
         _ => "ultimate/arisk_voi.wav",
     }
 }
@@ -939,6 +1011,7 @@ fn variant_for_class(class: ShipClass) -> UltimateVariant {
         ShipClass::Kohma => UltimateVariant::KohrAh,
         ShipClass::Mycpo => UltimateVariant::Mycon,
         ShipClass::Thrto => UltimateVariant::Thraddash,
+        ShipClass::Chmav => UltimateVariant::Chmmr,
         _ => UltimateVariant::Arilou,
     }
 }
@@ -1210,6 +1283,7 @@ fn hyper_trigger(
         | UltimateVariant::KohrAh
         | UltimateVariant::Mycon
         | UltimateVariant::Thraddash
+        | UltimateVariant::Chmmr
         | UltimateVariant::None => {}
     }
 
@@ -1365,6 +1439,11 @@ fn tick_ultimate_phases(
                 let p = (state.phase_timer_s / THRADDASH_BURN_S).clamp(0.0, 1.0);
                 (THRADDASH_BURN_S, 1.0 - p, false, 0.0, false)
             }
+            UltimatePhase::ChmmrCharging => (CHMMR_CHARGE_S, 1.0, false, 0.0, true),
+            UltimatePhase::ChmmrVolley => {
+                let p = (state.phase_timer_s / CHMMR_VOLLEY_S).clamp(0.0, 1.0);
+                (CHMMR_VOLLEY_S, 1.0 - p, false, 0.0, false)
+            }
             UltimatePhase::Idle => unreachable!(),
         };
 
@@ -1490,6 +1569,10 @@ fn tick_ultimate_phases(
                 UltimatePhase::ThraddashIgniting
             }
             (UltimatePhase::ThraddashIgniting, _) => UltimatePhase::ThraddashBurning,
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Chmmr) => {
+                UltimatePhase::ChmmrCharging
+            }
+            (UltimatePhase::ChmmrCharging, _) => UltimatePhase::ChmmrVolley,
             // Final phases: exit.
             (UltimatePhase::ArilouUnleashing, _)
             | (UltimatePhase::EarthlingBlasting, _)
@@ -1503,7 +1586,8 @@ fn tick_ultimate_phases(
             | (UltimatePhase::DruugeBarrage, _)
             | (UltimatePhase::KohrAhSlaughter, _)
             | (UltimatePhase::MyconHurricane, _)
-            | (UltimatePhase::ThraddashBurning, _) => {
+            | (UltimatePhase::ThraddashBurning, _)
+            | (UltimatePhase::ChmmrVolley, _) => {
                 exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
                 return;
             }
@@ -1596,6 +1680,10 @@ fn exit_cinematic(
     state.mmrxf_laser_cooldown_s = 0.0;
     state.mmrxf_missile_cooldown_s = 0.0;
     state.druuge_shots_fired = 0;
+    state.chmmr_stage = 0;
+    state.chmmr_opponent = None;
+    state.chmmr_stage_timer_s = 0.0;
+    state.chmmr_sat_targets = [Vec2::ZERO; 3];
     state.thraddash_flame_timer_s = 0.0;
     // Restore the Thraddash ship's speed_max if we had bumped it.
     // The ship may already be despawned (rematch reset); ignore.
@@ -1824,7 +1912,19 @@ fn drive_camera_during_ultimate(
         UltimatePhase::DruugeCharging
         | UltimatePhase::KohrAhSharpening
         | UltimatePhase::MyconGathering
-        | UltimatePhase::ThraddashIgniting => (1.0, HYPER_CAM_SCALE),
+        | UltimatePhase::ThraddashIgniting
+        | UltimatePhase::ChmmrCharging => (1.0, HYPER_CAM_SCALE),
+        UltimatePhase::ChmmrVolley => {
+            // Pull back fast so the whole bump-set-spike geometry
+            // fits in-frame; the impulse travel is wide.
+            let p = (state.phase_timer_s / 0.35).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - p).powi(3);
+            let zoom_far = state.orig_cam_scale.max(1.5);
+            (
+                1.0 - eased,
+                HYPER_CAM_SCALE * (1.0 - eased) + zoom_far * eased,
+            )
+        }
         UltimatePhase::DruugeBarrage
         | UltimatePhase::KohrAhSlaughter
         | UltimatePhase::MyconHurricane
@@ -4602,5 +4702,352 @@ fn tick_thraddash_restore(
     let Some(p1) = state.player_entity else { return };
     if let Ok(mut derived) = ships.get_mut(p1) {
         derived.speed_max = orig;
+    }
+}
+
+// ----------------------------------------------------------------
+// Chmmr — bump-set-spike-laser ultimate
+// ----------------------------------------------------------------
+
+/// Full-screen white flash spawned on each volley contact. Fades
+/// out alpha → 0 over `total_s` and self-despawns. Drawn as a
+/// UI Node so it sits over the gameplay layer regardless of
+/// camera scale.
+#[derive(Component, Debug)]
+pub struct ChmmrFlash {
+    pub remaining_s: f32,
+    pub total_s: f32,
+}
+
+/// On entry to ChmmrCharging: pick the opponent, snapshot the
+/// three satellite volley positions. During Charging: lerp each
+/// satellite from its current world pose toward its target
+/// volley position. During Volley: run the bump-set-spike-laser
+/// sub-stage machine.
+///
+/// Lives in Update (not GgrsSchedule) because ChmmrCharging is
+/// PAUSED — same pause-survival pattern as `tick_ultimate_phases`.
+pub fn tick_chmmr_ultimate(
+    time: Res<Time<Real>>,
+    mut commands: Commands,
+    mut state: ResMut<UltimateState>,
+    assets: Res<AssetServer>,
+    ships: Query<(Entity, &crate::ship::Ship, &Position)>,
+    chmmr_rot: Query<&Rotation, With<crate::ship::Ship>>,
+    mut sats: Query<(&crate::ship::ChmmrSatellite, &mut Transform, &mut Position), Without<crate::ship::Ship>>,
+    mut vels: Query<&mut LinearVelocity>,
+    shields: Query<&crate::ship::ShieldActive>,
+    mut crews: Query<&mut crate::ship::Crew>,
+) {
+    if state.variant != UltimateVariant::Chmmr {
+        return;
+    }
+    if !matches!(
+        state.phase,
+        UltimatePhase::ChmmrCharging | UltimatePhase::ChmmrVolley
+    ) {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok((_, _, chmmr_pos)) = ships.get(p1) else { return };
+    let chmmr_world = chmmr_pos.0;
+    let Ok(chmmr_rotation) = chmmr_rot.get(p1) else { return };
+    let forward = Vec2::new(-chmmr_rotation.sin, chmmr_rotation.cos);
+    let right = Vec2::new(chmmr_rotation.cos, chmmr_rotation.sin);
+
+    // On first tick: pick opponent + compute target positions.
+    // Snapshotted opponent stays fixed — bumper sat goes to the
+    // opponent's CURRENT position so it can intercept even a
+    // moving target by the time it arrives.
+    if state.chmmr_opponent.is_none() {
+        let firer_slot = ships
+            .get(p1)
+            .map(|(_, s, _)| s.player_slot)
+            .unwrap_or(0);
+        let mut best: Option<(Entity, Vec2, f32)> = None;
+        for (e, s, p) in &ships {
+            if e == p1 || s.player_slot == firer_slot {
+                continue;
+            }
+            let d2 = (p.0 - chmmr_world).length_squared();
+            if best.map_or(true, |(_, _, b)| d2 < b) {
+                best = Some((e, p.0, d2));
+            }
+        }
+        let Some((opp_entity, opp_pos, _)) = best else {
+            // No enemy — bail out cleanly; tick_ultimate_phases
+            // will advance us out shortly.
+            return;
+        };
+        state.chmmr_opponent = Some(opp_entity);
+        state.chmmr_stage = 0;
+        state.chmmr_stage_timer_s = 0.0;
+        // Sat 0 (bumper) → at opponent. Sat 1 (setter) → 5 o'clock
+        // in Chmmr's local frame. Sat 2 (spiker) → forward + far.
+        //
+        // 5 o'clock unit vector in local frame (x = right,
+        // y = forward): angle 150° clockwise from forward
+        // ≈ (sin 150°, cos 150°) = (0.5, -0.866).
+        let setter_local = right * 0.5 - forward * 0.866;
+        state.chmmr_sat_targets[0] = opp_pos;
+        state.chmmr_sat_targets[1] = chmmr_world + setter_local * CHMMR_SETTER_DIST;
+        state.chmmr_sat_targets[2] = chmmr_world + forward * CHMMR_SPIKER_DIST;
+    }
+
+    let dt = time.delta_secs();
+
+    // ---- Phase: Charging — lerp satellites to their targets. ----
+    if state.phase == UltimatePhase::ChmmrCharging {
+        for (sat, mut sat_xf, mut sat_pos) in &mut sats {
+            // Only puppeteer the Chmmr's own satellites.
+            if sat.owner != p1 {
+                continue;
+            }
+            // Pick which sat this is by reading its angle_offset's
+            // bucket — sat 0/1/2 spawn at angles 0, 2π/3, 4π/3.
+            // We treat the i'th sat in iteration order as i'th
+            // target. The tick_chmmr_satellites orbit code has
+            // already mutated angle_offset, so use the spawn-
+            // grouping bucket instead:
+            //   sat 0 if angle_offset ≈ 0
+            //   sat 1 if angle_offset ≈ 2π/3
+            //   sat 2 if angle_offset ≈ 4π/3
+            //
+            // But the orbit has moved them — instead of fragile
+            // angle-bucketing, just pick the CLOSEST volley target
+            // to each sat. With three sats and three distinct
+            // targets, the assignment converges.
+            let cur = sat_pos.0;
+            let mut best: Option<(usize, f32)> = None;
+            for (i, tgt) in state.chmmr_sat_targets.iter().enumerate() {
+                let d2 = (cur - *tgt).length_squared();
+                if best.map_or(true, |(_, b)| d2 < b) {
+                    best = Some((i, d2));
+                }
+            }
+            let Some((target_idx, _)) = best else { continue };
+            let target = state.chmmr_sat_targets[target_idx];
+            let delta = target - cur;
+            let dist = delta.length();
+            let step = (CHMMR_SAT_ZIP_SPEED * dt).min(dist);
+            let new_pos = if dist > 1e-3 {
+                cur + delta / dist * step
+            } else {
+                target
+            };
+            sat_xf.translation.x = new_pos.x;
+            sat_xf.translation.y = new_pos.y;
+            sat_pos.0 = new_pos;
+        }
+        return;
+    }
+
+    // ---- Phase: Volley — bump/set/spike/laser sub-stages. ----
+    state.chmmr_stage_timer_s += dt;
+    // Keep satellites pinned to their assigned volley targets so
+    // they don't drift (orbit code is in GgrsSchedule and may
+    // try to update them too).
+    for (sat, mut sat_xf, mut sat_pos) in &mut sats {
+        if sat.owner != p1 {
+            continue;
+        }
+        let cur = sat_pos.0;
+        let mut best: Option<(usize, f32)> = None;
+        for (i, tgt) in state.chmmr_sat_targets.iter().enumerate() {
+            let d2 = (cur - *tgt).length_squared();
+            if best.map_or(true, |(_, b)| d2 < b) {
+                best = Some((i, d2));
+            }
+        }
+        if let Some((idx, _)) = best {
+            let target = state.chmmr_sat_targets[idx];
+            sat_xf.translation.x = target.x;
+            sat_xf.translation.y = target.y;
+            sat_pos.0 = target;
+        }
+    }
+
+    let Some(opp) = state.chmmr_opponent else { return };
+    let Ok((_, _, opp_pos)) = ships.get(opp) else {
+        // Opponent gone — let tick_ultimate_phases time us out.
+        return;
+    };
+    let opp_world = opp_pos.0;
+
+    // Helper closures — done as fn calls below since closures
+    // borrow `state` and we need to mutate other things too.
+    let stage = state.chmmr_stage;
+    let timer = state.chmmr_stage_timer_s;
+    match stage {
+        0 => {
+            // BUMP: wait a beat for the satellites to settle,
+            // then sat 0 (positioned at opponent) slams the
+            // opponent toward sat 1 (the setter).
+            if timer >= CHMMR_BUMP_DELAY_S {
+                let from = state.chmmr_sat_targets[0];
+                let to = state.chmmr_sat_targets[1];
+                fire_chmmr_hit(
+                    &mut commands,
+                    &assets,
+                    opp,
+                    opp_world,
+                    from,
+                    to,
+                    &mut vels,
+                    &shields,
+                    &mut crews,
+                );
+                state.chmmr_stage = 1;
+                state.chmmr_stage_timer_s = 0.0;
+            }
+        }
+        1 => {
+            // SET: wait until opponent is near sat 1, or
+            // timeout, then slam toward sat 2.
+            let near_sat1 =
+                (opp_world - state.chmmr_sat_targets[1]).length() < CHMMR_HIT_PROXIMITY;
+            if near_sat1 || timer >= CHMMR_STAGE_TIMEOUT_S {
+                let from = state.chmmr_sat_targets[1];
+                let to = state.chmmr_sat_targets[2];
+                fire_chmmr_hit(
+                    &mut commands,
+                    &assets,
+                    opp,
+                    opp_world,
+                    from,
+                    to,
+                    &mut vels,
+                    &shields,
+                    &mut crews,
+                );
+                state.chmmr_stage = 2;
+                state.chmmr_stage_timer_s = 0.0;
+            }
+        }
+        2 => {
+            // SPIKE: wait until opponent reaches sat 2, slam
+            // them toward the Chmmr.
+            let near_sat2 =
+                (opp_world - state.chmmr_sat_targets[2]).length() < CHMMR_HIT_PROXIMITY;
+            if near_sat2 || timer >= CHMMR_STAGE_TIMEOUT_S {
+                let from = state.chmmr_sat_targets[2];
+                let to = chmmr_world;
+                fire_chmmr_hit(
+                    &mut commands,
+                    &assets,
+                    opp,
+                    opp_world,
+                    from,
+                    to,
+                    &mut vels,
+                    &shields,
+                    &mut crews,
+                );
+                state.chmmr_stage = 3;
+                state.chmmr_stage_timer_s = 0.0;
+            }
+        }
+        3 => {
+            // LASER: opponent is now flying at Chmmr's face. Apply
+            // continuous damage. Optional visual: a wider zap
+            // line from chmmr to opponent each tick.
+            // Dial damage by dt so it's frame-rate-independent.
+            let dmg_per_tick = (8.0 * dt).round() as i32;
+            if dmg_per_tick > 0 {
+                if let Ok(mut crew) = crews.get_mut(opp) {
+                    crew.current = (crew.current - dmg_per_tick).max(0);
+                }
+            }
+            // Persistent thick beam: just spawn a thin ZapFlash
+            // each tick from chmmr to opponent for the visual.
+            let delta = opp_world - chmmr_world;
+            let len = delta.length().max(1.0);
+            let mid = (chmmr_world + opp_world) * 0.5;
+            let angle = delta.y.atan2(delta.x) - std::f32::consts::FRAC_PI_2;
+            let color = Color::srgba(1.0, 1.0, 1.0, 1.0);
+            commands.spawn((
+                crate::ship::ZapFlash {
+                    remaining_s: 0.05,
+                    total_s: 0.05,
+                },
+                Sprite::from_color(color, Vec2::new(8.0, len)),
+                Transform {
+                    translation: mid.extend(0.32),
+                    rotation: Quat::from_rotation_z(angle),
+                    scale: Vec3::ONE,
+                },
+            ));
+            // Phase ends naturally when phase_timer_s ≥ CHMMR_VOLLEY_S
+            // (tick_ultimate_phases advances + calls exit_cinematic).
+        }
+        _ => {}
+    }
+}
+
+/// Slam the opponent's velocity to `IMPULSE_SPEED` aimed at
+/// `to_pos`, deal damage, and spawn the screen-filling flash.
+#[allow(clippy::too_many_arguments)]
+fn fire_chmmr_hit(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    opp: Entity,
+    opp_pos: Vec2,
+    _from_pos: Vec2,
+    to_pos: Vec2,
+    vels: &mut Query<&mut LinearVelocity>,
+    shields: &Query<&crate::ship::ShieldActive>,
+    crews: &mut Query<&mut crate::ship::Crew>,
+) {
+    let _ = assets;
+    let dir = (to_pos - opp_pos).normalize_or_zero();
+    if let Ok(mut vel) = vels.get_mut(opp) {
+        vel.0 = dir * CHMMR_IMPULSE_SPEED;
+    }
+    // Damage (shield-multiplied).
+    let factor = shields.get(opp).map(|s| s.damage_factor).unwrap_or(1.0);
+    let dmg = ((CHMMR_HIT_DAMAGE as f32 * factor).round() as i32).max(0);
+    if dmg > 0 {
+        if let Ok(mut crew) = crews.get_mut(opp) {
+            crew.current = (crew.current - dmg).max(0);
+        }
+    }
+    // White flash overlay — UI Node so it covers the whole
+    // viewport regardless of camera scale.
+    commands.spawn((
+        ChmmrFlash {
+            remaining_s: CHMMR_FLASH_S,
+            total_s: CHMMR_FLASH_S,
+        },
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(0.0),
+            left: Val::Px(0.0),
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 1.0)),
+    ));
+}
+
+/// Fade ChmmrFlash UI overlays toward alpha 0 over their
+/// lifetime, then despawn.
+fn tick_chmmr_flashes(
+    time: Res<Time<Real>>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut ChmmrFlash, &mut BackgroundColor)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut flash, mut bg) in &mut q {
+        flash.remaining_s -= dt;
+        if flash.remaining_s <= 0.0 {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
+            continue;
+        }
+        let frac = (flash.remaining_s / flash.total_s).clamp(0.0, 1.0);
+        let lin = bg.0.to_linear();
+        bg.0 = Color::srgba(lin.red, lin.green, lin.blue, frac);
     }
 }

@@ -5226,12 +5226,27 @@ fn tick_zap_flashes(
 fn tick_chmmr_satellites(
     mut commands: Commands,
     time: Res<Time<Physics>>,
+    ult: Res<crate::ultimate::UltimateState>,
     mut sats: Query<(Entity, &mut ChmmrSatellite, &mut Transform, &mut Position)>,
     owners: Query<(&Ship, &Position), Without<ChmmrSatellite>>,
     ship_pos: Query<(Entity, &Ship, &Position), (Without<Invisible>, Without<ChmmrSatellite>)>,
     shields: Query<&ShieldActive>,
     mut crews: Query<&mut Crew>,
 ) {
+    // During the Chmmr's own bump-set-spike-laser ultimate, the
+    // cinematic system `tick_chmmr_ultimate` (in Update) owns
+    // satellite positioning. Bailing here prevents the normal
+    // orbit from clobbering the volley formation each
+    // FixedUpdate tick.
+    if ult.variant == crate::ultimate::UltimateVariant::Chmmr
+        && matches!(
+            ult.phase,
+            crate::ultimate::UltimatePhase::ChmmrCharging
+                | crate::ultimate::UltimatePhase::ChmmrVolley
+        )
+    {
+        return;
+    }
     let dt = time.delta_secs();
     /// Orbit angular velocity (rad/s).
     const ORBITAL_RATE: f32 = 0.6;
