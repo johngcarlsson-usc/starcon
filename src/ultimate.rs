@@ -946,12 +946,15 @@ const CHMMR_SPIKER_DIST: f32 = 380.0;
 /// the satellites visibly settle in place for a beat).
 const CHMMR_BUMP_DELAY_S: f32 = 0.20;
 /// How close the opponent has to get to the next sat before the
-/// next stage triggers. Also the max distance the bumper sat
-/// will be from the opponent when stage 0 fires.
-const CHMMR_HIT_PROXIMITY: f32 = 80.0;
+/// next stage triggers. Wide enough that the impulse arrival
+/// window doesn't depend on hitting one specific frame at high
+/// pinball speeds.
+const CHMMR_HIT_PROXIMITY: f32 = 140.0;
 /// Speed the opponent's velocity is overwritten to on each
-/// volley contact. Pinball-fast.
-const CHMMR_IMPULSE_SPEED: f32 = 1800.0;
+/// volley contact. Pinball-fast, and mass-independent — we
+/// write `vel.0` directly, so a tiny Druuge and a huge Chmmr
+/// both fly at exactly this speed when slapped.
+const CHMMR_IMPULSE_SPEED: f32 = 2400.0;
 /// Crew damage per volley contact (× 3 hits + sustained laser).
 const CHMMR_HIT_DAMAGE: i32 = 2;
 /// Per-stage timeout so the volley can't stall forever if the
@@ -1681,7 +1684,13 @@ fn exit_cinematic(
     state.mmrxf_missile_cooldown_s = 0.0;
     state.druuge_shots_fired = 0;
     state.chmmr_stage = 0;
-    state.chmmr_opponent = None;
+    // Strip HyperActive off the Chmmr volley victim so they
+    // regain cap_velocity clamping + their own input.
+    if let Some(opp) = state.chmmr_opponent.take() {
+        if let Ok(mut e) = commands.get_entity(opp) {
+            e.remove::<HyperActive>();
+        }
+    }
     state.chmmr_stage_timer_s = 0.0;
     state.chmmr_sat_targets = [Vec2::ZERO; 3];
     state.thraddash_flame_timer_s = 0.0;
@@ -4782,6 +4791,23 @@ pub fn tick_chmmr_ultimate(
         state.chmmr_opponent = Some(opp_entity);
         state.chmmr_stage = 0;
         state.chmmr_stage_timer_s = 0.0;
+        // Lock the opponent out of cap_velocity / their own
+        // input so the volley impulses survive past the next
+        // physics tick. Without this, cap_velocity clamps the
+        // opponent's velocity back down to their speed_max
+        // every FixedUpdate and the slap evaporates instantly.
+        // Removed in `exit_cinematic` alongside the Chmmr's own.
+        if let Ok(mut ec) = commands.get_entity(opp_entity) {
+            ec.insert(HyperActive {
+                forced_ang_vel: 0.0,
+                // 1.0 (not 0.0) — `beam_width_mult` scales the
+                // firer's own beam visuals in `tick_beams`. We
+                // don't want the opponent's beams to go invisible
+                // mid-volley; we just want their cap_velocity +
+                // input lock.
+                beam_width_mult: 1.0,
+            });
+        }
         // Sat 0 (bumper) → at opponent. Sat 1 (setter) → 5 o'clock
         // in Chmmr's local frame. Sat 2 (spiker) → forward + far.
         //
