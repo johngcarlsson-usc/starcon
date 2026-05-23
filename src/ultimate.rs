@@ -615,6 +615,15 @@ impl Plugin for UltimatePlugin {
         .init_resource::<UltimateState>()
         .init_resource::<UltimateMeshes>()
         .add_systems(Startup, build_ultimate_meshes)
+        // Cinematic teardown: when the match resets (rematch
+        // or class-cycle hotkey), the ship gets despawned but
+        // the cinematic UI entities (portrait, beams, glow,
+        // etc.) and `UltimateState.player_entity` are NOT
+        // cleared by `ship::teardown_match`. Without an explicit
+        // abort, subsequent cinematic ticks try to write to
+        // `commands.entity(despawned_ship).insert(HyperActive)`
+        // which panics, freezing the frame.
+        .add_systems(OnEnter(crate::AppState::Resetting), abort_cinematic_on_reset)
         .init_resource::<MmrxfUnleashedSprite>()
         // ---- GgrsSchedule: gameplay-affecting cinematic systems ----
         //
@@ -1404,10 +1413,17 @@ fn tick_ultimate_phases(
                 _ => 0.0,
             };
         }
-        commands.entity(p1).insert(HyperActive {
-            forced_ang_vel: spin,
-            beam_width_mult: if beam_visible { 1.0 } else { 0.0 },
-        });
+        // `commands.entity(p1)` would panic if `p1` was
+        // despawned out from under us (rematch reset / class
+        // switch mid-cinematic). `get_entity` returns a Result;
+        // bail silently if the ship is gone — the next
+        // `abort_cinematic_if_ship_gone` tick will clean up.
+        if let Ok(mut e) = commands.get_entity(p1) {
+            e.insert(HyperActive {
+                forced_ang_vel: spin,
+                beam_width_mult: if beam_visible { 1.0 } else { 0.0 },
+            });
+        }
     }
 
     if state.phase_timer_s >= phase_total {
@@ -1622,6 +1638,24 @@ fn abort_cinematic_if_ship_gone(
             exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
         }
     }
+}
+
+/// OnEnter(Resetting): unconditionally tear down any active
+/// cinematic before `ship::teardown_match` despawns ships.
+/// This handles the class-cycle hotkey + rematch [R] paths in
+/// one place. Idempotent — if no cinematic was running, this
+/// is a no-op.
+fn abort_cinematic_on_reset(
+    mut state: ResMut<UltimateState>,
+    mut commands: Commands,
+    mut virt: ResMut<Time<Virtual>>,
+    mut zoom_state: ResMut<ZoomState>,
+) {
+    if state.phase == UltimatePhase::Idle {
+        return;
+    }
+    info!("abort_cinematic_on_reset: tearing down active cinematic");
+    exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
 }
 
 // ----------------------------------------------------------------
