@@ -4061,6 +4061,7 @@ fn handle_projectile_hits(
     shields: Query<&ShieldActive>,
     damage_to_batt: Query<&DamageToBattery>,
     asteroids_q: Query<&Position, With<Asteroid>>,
+    ships: Query<&Ship>,
     mut crews: Query<&mut Crew>,
     mut batteries: Query<&mut Battery>,
     mut velocities: Query<&mut LinearVelocity>,
@@ -4083,6 +4084,19 @@ fn handle_projectile_hits(
 
         if proj.owner == other_entity {
             continue;
+        }
+
+        // Friendly-fire filter: if both the firer and the target
+        // are ships and they share the same `player_slot`, the
+        // shot passes through. Without this, Pkunk clones (which
+        // share their summoner's slot) would shred each other
+        // and the main ship with their own bullets.
+        if let (Ok(firer_ship), Ok(target_ship)) =
+            (ships.get(proj.owner), ships.get(other_entity))
+        {
+            if firer_ship.player_slot == target_ship.player_slot {
+                continue;
+            }
         }
 
         // Projectile-vs-projectile: pass through silently. Without

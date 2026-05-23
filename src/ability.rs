@@ -394,7 +394,14 @@ fn dispatch_special(
         // enemy). Edge-only abilities still respect the edge —
         // RefillBattery is level-triggered, so this just means the
         // clone hammers special on cooldown until it's full.
-        let force = pkunk_clone.map_or(false, |c| c.retreating) && !edge_only;
+        // Pkunk clones always hold special. The Pkunk's special
+        // is `RefillBattery` — calling it tops the battery to
+        // max, which is the only way the Pkunk recharges. So
+        // clones should hammer it every cooldown to keep their
+        // primary auto-fire fed. Edge-only abilities (e.g.
+        // ToggleMode) wouldn't fire on a forced hold anyway, so
+        // we gate the force on `!edge_only`.
+        let force = pkunk_clone.is_some() && !edge_only;
         let triggered = if force {
             true
         } else if edge_only {

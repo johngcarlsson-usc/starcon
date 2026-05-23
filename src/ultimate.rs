@@ -3534,26 +3534,16 @@ pub fn tick_pkunk_aggressive_clones(
 
     use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-    /// Whirl overlay (rad/s) blended in once the clone is roughly
-    /// on-bearing — the death-spiral signature.
-    const PKUNK_AGGRO_SPIN: f32 = 6.0;
-    /// Switch CHARGING → RETREATING when battery falls at/below
-    /// this. Leaves enough headroom (≥ special_drain=2) to
-    /// actually trigger the refill special.
-    const RETREAT_BATT_LOW: i32 = 4;
-    /// Switch RETREATING → CHARGING when battery climbs back at
-    /// or above this. Wider band = less thrash.
-    const RESUME_BATT_HIGH: i32 = 10;
-
-    for (clone_e, clone_ship, mut clone, pos, rot, batt, derived, mut thrust, mut ang_vel) in &mut clones {
-        // Update state with hysteresis.
-        if clone.retreating {
-            if batt.current >= RESUME_BATT_HIGH {
-                clone.retreating = false;
-            }
-        } else if batt.current <= RETREAT_BATT_LOW {
-            clone.retreating = true;
-        }
+    for (clone_e, clone_ship, mut clone, pos, rot, _batt, derived, mut thrust, mut ang_vel)
+        in &mut clones
+    {
+        // Pin the legacy `retreating` flag to false — the clones
+        // never need to retreat now that `dispatch_special` is
+        // always holding the RefillBattery special on them
+        // every cooldown. The field is kept on PkunkClone so
+        // the aura-pulse visual code (which reads it) keeps
+        // compiling; no other behaviour depends on it.
+        clone.retreating = false;
 
         // Pick nearest non-friendly ship.
         let mut best: Option<(Vec2, f32)> = None;
@@ -3568,17 +3558,13 @@ pub fn tick_pkunk_aggressive_clones(
         }
         let Some((target_pos, _)) = best else { continue };
 
+        // Steer toward the target. Pure pursuit — no whirl
+        // overlay (the previous death-spiral was throwing the
+        // clones off course; the user wants them charging in
+        // and hitting, not pinwheeling).
         let cur_heading = rot.sin.atan2(rot.cos);
         let to_target = target_pos - pos.0;
-        // Bearing toward the target if charging, 180° away if
-        // retreating. The clone always thrusts forward (+Y in
-        // local frame), so flipping the bearing flips the run.
-        let desired_world = if clone.retreating {
-            -to_target
-        } else {
-            to_target
-        };
-        let bearing = desired_world.y.atan2(desired_world.x) - FRAC_PI_2;
+        let bearing = to_target.y.atan2(to_target.x) - FRAC_PI_2;
         let mut steer_err = bearing - cur_heading;
         while steer_err > PI {
             steer_err -= TAU;
@@ -3586,29 +3572,20 @@ pub fn tick_pkunk_aggressive_clones(
         while steer_err < -PI {
             steer_err += TAU;
         }
-
-        if clone.retreating {
-            // Just turn-and-burn away. No whirl — the spin is the
-            // aggro signature, not the recharge one.
-            ang_vel.0 = steer_err.signum() * derived.target_omega;
+        // Snap rotation toward target — classic angular control.
+        ang_vel.0 = if steer_err.abs() < 1e-3 {
+            0.0
         } else {
-            // Charge: steering term dominates when off-bearing,
-            // constant whirl takes over once nearly on-course so
-            // the clone whirls through the kill. Whirl sign biased
-            // by spawn-side so the two clones spin opposite ways.
-            let spin_sign = if clone.formation_offset_local.x < 0.0 {
-                -1.0
-            } else {
-                1.0
-            };
-            let steer_omega = steer_err.signum() * derived.target_omega;
-            let blend = (steer_err.abs() / FRAC_PI_2).clamp(0.0, 1.0);
-            ang_vel.0 = steer_omega * blend + spin_sign * PKUNK_AGGRO_SPIN * (1.0 - blend);
-        }
-
-        // Always thrust forward — clones close in on or run from
-        // the enemy with the same physical action.
-        thrust.0 = Vec2::new(0.0, derived.thrust_force);
+            steer_err.signum() * derived.target_omega
+        };
+        // Thrust forward only once roughly on-bearing so the
+        // clone commits to the chase instead of cruising
+        // sideways. Same heuristic as `tick_ai_pilots`.
+        thrust.0 = if steer_err.abs() < FRAC_PI_2 * 0.85 {
+            Vec2::new(0.0, derived.thrust_force)
+        } else {
+            Vec2::ZERO
+        };
     }
 }
 
