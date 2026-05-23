@@ -76,7 +76,9 @@
 
 use bevy::prelude::*;
 use bevy_ggrs::ggrs::{Message as GgrsMessage, NonBlockingSocket, PlayerType, SessionBuilder};
-use bevy_ggrs::{GgrsPlugin, LocalInputs, LocalPlayers, ReadInputs, Session};
+use bevy_ggrs::{
+    GgrsPlugin, GgrsSchedule, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs, Session,
+};
 use bevy_matchbox::matchbox_socket::WebRtcChannel;
 use bevy_matchbox::prelude::*;
 
@@ -274,13 +276,21 @@ impl Plugin for NetplayPlugin {
                     .run_if(in_state(AppState::LobbyOnline)),
             )
             // GGRS calls into the `ReadInputs` schedule once per
-            // frame to ask "what input did the local player make
+            // frame to ask "what input did the local player made
             // this frame?". We answer by reading the local
             // keyboard (always slot-0 keymap, since each peer
             // owns exactly one slot in an online match) and
             // stashing it in `LocalInputs<Config>` keyed by the
             // local handle.
-            .add_systems(ReadInputs, read_local_inputs);
+            .add_systems(ReadInputs, read_local_inputs)
+            // Bridge: inside GgrsSchedule (which only runs when
+            // a `Session<Config>` is present) we read the
+            // freshly-confirmed `PlayerInputs<Config>` and
+            // write them into our long-lived `NetInputs`
+            // resource. The next FixedUpdate's
+            // `gather_slot_inputs` then routes those inputs to
+            // each slot.
+            .add_systems(GgrsSchedule, net_inputs_bridge);
     }
 }
 
@@ -822,5 +832,32 @@ fn lobby_back_to_menu(
 ) {
     if keys.just_pressed(KeyCode::Escape) {
         next.set(AppState::MainMenu);
+    }
+}
+
+/// Bridge `PlayerInputs<Config>` (which only lives inside
+/// `GgrsSchedule`) into our long-lived `NetInputs` resource so
+/// `gather_slot_inputs` (running in FixedUpdate) can read it.
+///
+/// Each tick we shift `current → previous` then write the
+/// freshly-received per-handle inputs into `current`. Edge
+/// detection (just_pressed / just_released) is then computed
+/// by `gather_slot_inputs` as a per-bit diff between the two.
+fn net_inputs_bridge(
+    inputs: Option<Res<PlayerInputs<Config>>>,
+    mut net: ResMut<crate::input::NetInputs>,
+) {
+    let Some(inputs) = inputs else {
+        return;
+    };
+    net.previous = net.current;
+    // GGRS gives us a Vec<(Input, InputStatus)> indexed by
+    // handle. Map handle → slot 1:1 (handles are 0..H, slots
+    // also start at 0). `InputStatus` is ignored here; we just
+    // trust the most recent confirmed/predicted input.
+    for (handle, (input, _status)) in inputs.iter().enumerate() {
+        if handle < 4 {
+            net.current[handle] = *input;
+        }
     }
 }

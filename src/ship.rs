@@ -2474,8 +2474,7 @@ fn load_rotation_frames(
 ///     Either-direction recovery falls out naturally — see the
 ///     `AngularControl` doc-comment.
 fn apply_player_input(
-    keys: Res<ButtonInput<KeyCode>>,
-    virt: Res<input::VirtualInput>,
+    slot_inputs: Res<input::SlotInputs>,
     angular_override: Res<AngularControlOverride>,
     mut q: Query<(
         &Ship,
@@ -2534,11 +2533,7 @@ fn apply_player_input(
         // input the ship just coasts (cap_velocity is suppressed for
         // this ship until speed drops back under speed_max).
         if coasting.is_some() {
-            let input = input::read_local_input_with_virtual(
-                &keys,
-                Some(&virt),
-                ship.player_slot,
-            );
+            let input = slot_inputs.held[ship.player_slot.min(3)];
             // Steering: keep normal Classic snap behaviour so the
             // player can re-orient mid-coast.
             let dir = if input.pressed(input::INPUT_LEFT) {
@@ -2577,7 +2572,7 @@ fn apply_player_input(
         }
         let rot_cos = rot.cos;
         let rot_sin = rot.sin;
-        let input = input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot);
+        let input = slot_inputs.held[ship.player_slot.min(3)];
 
         let dir = if input.pressed(input::INPUT_LEFT) {
             1.0
@@ -3478,8 +3473,7 @@ fn tick_projectile_lifetime(
 /// ShardRange=9, ShardArmour=2, ShardRotation=1.
 fn tick_chebr_crystal(
     mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    virt: Res<input::VirtualInput>,
+    slot_inputs: Res<input::SlotInputs>,
     assets: Res<AssetServer>,
     mut rng: ResMut<crate::rng::GameRng>,
     projectiles: Query<&Position, With<Projectile>>,
@@ -3503,7 +3497,7 @@ fn tick_chebr_crystal(
     let weapon_damage = 6;
 
     for (entity, ship, ship_pos, ship_rot, ship_vel, mut carrier, mut batt) in &mut ships {
-        let input = input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot);
+        let input = slot_inputs.held[ship.player_slot.min(3)];
         let fire_held = input.pressed(input::INPUT_FIRE);
 
         // Clear stale handle if the crystal died on a hit (collision
@@ -3681,8 +3675,7 @@ fn tick_chebr_crystal(
 ///     CollisionStart events; state clears next tick.
 fn tick_meltr_charge(
     mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    virt: Res<input::VirtualInput>,
+    slot_inputs: Res<input::SlotInputs>,
     assets: Res<AssetServer>,
     time: Res<Time<Physics>>,
     mut projectiles: Query<(
@@ -3727,7 +3720,7 @@ fn tick_meltr_charge(
     const FLASH_DURATION_S: f32 = 0.4;
 
     for (entity, ship, ship_pos, ship_rot, ship_vel, mut state, mut batt) in &mut ships {
-        let input = input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot);
+        let input = slot_inputs.held[ship.player_slot.min(3)];
         let fire_held = input.pressed(input::INPUT_FIRE);
         let was_held = state.last_fire_held;
         state.last_fire_held = fire_held;
@@ -5227,8 +5220,7 @@ pub struct KohrAhBladePassive {
 /// shpkohma.cpp::activate_weapon + ::calculate.
 fn tick_kohma_blade(
     mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    virt: Res<input::VirtualInput>,
+    slot_inputs: Res<input::SlotInputs>,
     assets: Res<AssetServer>,
     // Liveness-only — no Position access, so no archetype conflict
     // with `passive` mutations below.
@@ -5251,7 +5243,7 @@ fn tick_kohma_blade(
     let blade_lifetime = blade_range_world / blade_velocity * 6.0;
 
     for (entity, ship, ship_pos, ship_rot, ship_vel, mut carrier, mut batt) in &mut ships {
-        let input = input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot);
+        let input = slot_inputs.held[ship.player_slot.min(3)];
         let fire_held = input.pressed(input::INPUT_FIRE);
 
         // Clear stale handle if the blade died on a hit.

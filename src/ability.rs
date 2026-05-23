@@ -286,8 +286,7 @@ impl Plugin for AbilityPlugin {
 
 fn dispatch_primary(
     mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    virt: Res<input::VirtualInput>,
+    slot_inputs: Res<input::SlotInputs>,
     assets: Res<AssetServer>,
     mut rng: ResMut<crate::rng::GameRng>,
     mut q: Query<(
@@ -326,8 +325,7 @@ fn dispatch_primary(
         // this player_slot.
         let force_fire = pkunk_clone.is_some() || ai.is_some();
         if !force_fire {
-            let input = input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot);
-            if !input.pressed(input::INPUT_FIRE) {
+            if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) {
                 continue;
             }
         }
@@ -356,8 +354,7 @@ fn dispatch_primary(
 
 fn dispatch_special(
     mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    virt: Res<input::VirtualInput>,
+    slot_inputs: Res<input::SlotInputs>,
     assets: Res<AssetServer>,
     mut rng: ResMut<crate::rng::GameRng>,
     mut q: Query<(
@@ -398,11 +395,9 @@ fn dispatch_special(
         let triggered = if force {
             true
         } else if edge_only {
-            input::read_local_just_pressed_with_virtual(&keys, Some(&virt), ship.player_slot)
-                .pressed(input::INPUT_SPECIAL)
+            slot_inputs.just_pressed(ship.player_slot, input::INPUT_SPECIAL)
         } else {
-            input::read_local_input_with_virtual(&keys, Some(&virt), ship.player_slot)
-                .pressed(input::INPUT_SPECIAL)
+            slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL)
         };
         if !triggered {
             continue;

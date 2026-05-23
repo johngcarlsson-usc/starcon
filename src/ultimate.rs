@@ -3737,8 +3737,7 @@ pub fn tick_mmrxf_needs_restore(
 pub fn tick_mmrxf_tangled_laser(
     time: Res<Time<Physics>>,
     mut state: ResMut<UltimateState>,
-    keys: Res<ButtonInput<KeyCode>>,
-    virt: Res<crate::input::VirtualInput>,
+    slot_inputs: Res<crate::input::SlotInputs>,
     mut commands: Commands,
     ships: Query<(Entity, &crate::ship::Ship, &Position, &Rotation)>,
     target_ships: Query<
@@ -3755,10 +3754,11 @@ pub fn tick_mmrxf_tangled_laser(
     }
     let Some(p1) = state.player_entity else { return };
     let Ok((_, firer_ship, firer_pos, firer_rot)) = ships.get(p1) else { return };
-    let input = crate::input::read_local_input_with_virtual(&keys, Some(&virt), firer_ship.player_slot);
+    let fire_held =
+        slot_inputs.pressed(firer_ship.player_slot, crate::input::INPUT_FIRE);
     let dt = time.delta_secs();
     state.mmrxf_laser_cooldown_s = (state.mmrxf_laser_cooldown_s - dt).max(0.0);
-    if !input.pressed(crate::input::INPUT_FIRE) {
+    if !fire_held {
         return;
     }
     if state.mmrxf_laser_cooldown_s > 0.0 {
@@ -3944,8 +3944,7 @@ fn tick_mmrxf_laser_segments(
 pub fn tick_mmrxf_split_launcher(
     time: Res<Time<Physics>>,
     mut state: ResMut<UltimateState>,
-    keys: Res<ButtonInput<KeyCode>>,
-    virt: Res<crate::input::VirtualInput>,
+    slot_inputs: Res<crate::input::SlotInputs>,
     mut commands: Commands,
     assets: Res<AssetServer>,
     ships: Query<(&crate::ship::Ship, &Position, &Rotation, &LinearVelocity), With<crate::ship::Ship>>,
@@ -3957,10 +3956,11 @@ pub fn tick_mmrxf_split_launcher(
     }
     let Some(p1) = state.player_entity else { return };
     let Ok((firer_ship, firer_pos, firer_rot, firer_vel)) = ships.get(p1) else { return };
-    let input = crate::input::read_local_input_with_virtual(&keys, Some(&virt), firer_ship.player_slot);
+    let special_held =
+        slot_inputs.pressed(firer_ship.player_slot, crate::input::INPUT_SPECIAL);
     let dt = time.delta_secs();
     state.mmrxf_missile_cooldown_s = (state.mmrxf_missile_cooldown_s - dt).max(0.0);
-    if !input.pressed(crate::input::INPUT_SPECIAL) || state.mmrxf_missile_cooldown_s > 0.0 {
+    if !special_held || state.mmrxf_missile_cooldown_s > 0.0 {
         return;
     }
     state.mmrxf_missile_cooldown_s = MMRXF_MISSILE_COOLDOWN_S;
