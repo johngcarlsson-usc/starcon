@@ -22,20 +22,51 @@
 //!      `GgrsSchedule` instead of `FixedUpdate`.
 //!
 //! Status:
-//!   - [x] Lobby state machine + UI text (this file + `menu.rs`).
-//!   - [x] `MatchboxSocket` connect on OnEnter(LobbyOnline).
-//!   - [x] Peer-count loop that transitions to InMatch once full.
-//!   - [ ] GGRS `SessionBuilder` handoff. **TODO** — wire
-//!         bevy_ggrs `Session<Config>` + register Rollback
-//!         components + move physics tick into `GgrsSchedule`.
-//!   - [ ] Determinism audit: switch the global `fastrand` calls
-//!         to a per-frame seeded RNG; replace `Time<Real>` reads
-//!         in gameplay systems with `Time<Physics>` /
-//!         `Time<Fixed>`; sort `Query` iteration where order
-//!         affects RNG consumption.
-//!   - [ ] Per-slot input routing: `read_local_input` returns
-//!         GGRS inputs for non-local slots once the session is
-//!         running.
+//!   - [x] Lobby state machine + setup UI (humans/ai pickers,
+//!         "Find Match" button, status text).
+//!   - [x] `MatchboxSocket` connect on a variant-specific URL
+//!         (`starcon-h{H}-a{A}?next=H`) so peers picking the
+//!         same combo land in the same bucket.
+//!   - [x] Peer-count loop transitions to SessionReady when
+//!         `target_humans` are connected.
+//!   - [x] GGRS `SessionBuilder` handoff: sorted PeerId
+//!         deterministic handle assignment, `Session<Config>`
+//!         + `LocalPlayers` resource installed on success.
+//!   - [x] Shared per-match seed: PeerId list is hashed with
+//!         Bevy's FixedHasher and written to `MatchSeed.0`, so
+//!         every peer initialises `GameRng` with the same seed
+//!         at the start of the match.
+//!   - [x] `read_local_inputs` writes `LocalInputs<Config>` in
+//!         the ReadInputs schedule so GGRS has something to
+//!         broadcast.
+//!   - [x] Determinism: `crate::rng::GameRng` migrated for the
+//!         major gameplay-affecting RNG sites (projectile
+//!         spread, asteroid spawn, all ultimate spawn paths,
+//!         crystal-shatter shards). Visual-only sites stay on
+//!         global fastrand per the policy in `crate::rng`.
+//!
+//! Still TODO before remote players visibly move:
+//!   - [ ] Migrate gameplay systems out of `FixedUpdate` and
+//!         into `GgrsSchedule` so GGRS can drive rollback. This
+//!         includes physics tick (currently Avian's
+//!         `PhysicsSchedule` in FixedUpdate) — non-trivial,
+//!         requires interleaving with Avian.
+//!   - [ ] Register `Rollback` markers on every component that
+//!         mutates during gameplay (Position, Rotation, Crew,
+//!         Battery, all projectile state, etc.) so bevy_ggrs
+//!         can snapshot/restore on rollback.
+//!   - [ ] Per-slot input routing: introduce a `SlotInputs`
+//!         resource `[PlayerInput; 4]` populated once per
+//!         frame; for local slots from the keyboard, for
+//!         remote slots from `PlayerInputs<Config>` via a
+//!         GgrsSchedule bridge system. Replace the ~12 call
+//!         sites of `read_local_input_with_virtual` to read
+//!         this resource by slot index instead.
+//!   - [ ] `Time<Real>` audit in gameplay systems: cinematic
+//!         visual systems can keep using `Time<Real>` (they
+//!         intentionally run while `Time<Virtual>` is paused),
+//!         but anything that mutates game state needs
+//!         `Time<Physics>` / `Time<Fixed>`.
 //!
 //! On WASM (the primary deployment target), WebRTC peer
 //! connections work out of the box. On native, you'll need a
