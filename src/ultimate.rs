@@ -634,7 +634,6 @@ impl Plugin for UltimatePlugin {
                 tick_chenjesu_tempest,
                 tick_shofixti_nova,
                 tick_pkunk_clones,
-                tick_slylandro_storm,
                 handle_slylandro_asteroid_hits,
                 tick_mycon_release,
                 tick_thraddash_restore,
@@ -675,6 +674,18 @@ impl Plugin for UltimatePlugin {
                 abort_cinematic_if_ship_gone,
                 tick_mycon_gather,
                 tick_mycon_orbit,
+                // tick_slylandro_storm has a fire-once arming
+                // pass during the PAUSED SlylandroCharging
+                // phase (it freezes every asteroid + adds the
+                // SlylandroLaunched marker). The launch-
+                // impulse pass during the UNPAUSED Storm phase
+                // could live in GgrsSchedule, but keeping both
+                // halves of the system in one schedule is
+                // simpler. Wall-clock-driven timing for the
+                // armed flight is acceptable since the asteroids
+                // are rolled-back entities and their post-
+                // impulse trajectories simulate in physics.
+                tick_slylandro_storm,
             ),
         )
         // ---- Update: visual-only systems ----
@@ -4154,8 +4165,22 @@ fn tick_druuge_barrage(
     if state.druuge_shots_fired >= DRUUGE_SHOT_COUNT || state.phase_timer_s < due_at {
         return;
     }
-    let Some(p1) = state.player_entity else { return };
-    let Ok((pos, rot, mut vel)) = ships.get_mut(p1) else { return };
+    let Some(p1) = state.player_entity else {
+        info!("Druuge: no player_entity, skipping shot");
+        return;
+    };
+    let Ok((pos, rot, mut vel)) = ships.get_mut(p1) else {
+        info!(
+            "Druuge: ships.get_mut({p1:?}) failed (ship despawned?), skipping shot"
+        );
+        return;
+    };
+    info!(
+        "Druuge: firing shot {} at t={:.2}s (due_at={:.2}s)",
+        state.druuge_shots_fired,
+        state.phase_timer_s,
+        due_at
+    );
     let fwd = Vec2::new(-rot.sin, rot.cos);
     let back = -fwd;
     let world = pos.0;
