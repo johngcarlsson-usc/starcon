@@ -3687,7 +3687,13 @@ pub fn tick_mmrxf_transform(
         if let Ok(mut overlay_xf) = overlay_q.get_mut(overlay) {
             overlay_xf.translation.x = pos.0.x;
             overlay_xf.translation.y = pos.0.y;
-            let angle = rot.sin.atan2(rot.cos) - std::f32::consts::FRAC_PI_2;
+            // Sprite art is drawn pointing +Y, same baseline as
+            // `Rotation` (identity = facing +Y). So the rotation
+            // angle the sprite needs IS just `atan2(sin, cos)`
+            // — no axis-mapping offset. The previous code
+            // subtracted π/2 which left the sprite 90° CW off
+            // its actual heading.
+            let angle = rot.sin.atan2(rot.cos);
             overlay_xf.rotation = Quat::from_rotation_z(angle);
             overlay_xf.scale = Vec3::ONE;
         }
