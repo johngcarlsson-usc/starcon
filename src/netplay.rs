@@ -39,13 +39,37 @@
 //!   - [x] `read_local_inputs` writes `LocalInputs<Config>` in
 //!         the ReadInputs schedule so GGRS has something to
 //!         broadcast.
+//!   - [x] `net_inputs_bridge` in `GgrsSchedule` copies
+//!         `PlayerInputs<Config>` into a long-lived
+//!         `NetInputs` resource so FixedUpdate gameplay can
+//!         read it.
+//!   - [x] `SlotInputs` (in `input.rs`): per-slot held +
+//!         just_pressed + just_released, populated each
+//!         FixedUpdate from kbd (local slots) or NetInputs
+//!         (remote slots). All ~12 gameplay-system call sites
+//!         migrated to read SlotInputs by slot index. Remote
+//!         players' inputs now reach `apply_player_input`,
+//!         `dispatch_primary`, ability dispatch, and the
+//!         per-class fire / charge / ult systems.
+//!   - [x] `INPUT_ULTIMATE` bit: SPACE / mobile ULT route
+//!         through the same PlayerInput bitfield as the other
+//!         buttons, so remote players can trigger their own
+//!         ultimates.
 //!   - [x] Determinism: `crate::rng::GameRng` migrated for the
 //!         major gameplay-affecting RNG sites (projectile
 //!         spread, asteroid spawn, all ultimate spawn paths,
 //!         crystal-shatter shards). Visual-only sites stay on
 //!         global fastrand per the policy in `crate::rng`.
 //!
-//! Still TODO before remote players visibly move:
+//! What you can do right now: a remote player turning,
+//! thrusting, firing primary / special / ult will all
+//! propagate to their slot and be visible on every peer's
+//! screen. This is a lockstep-ish hybrid — every machine
+//! simulates the same gameplay in `FixedUpdate` from the same
+//! inputs + seed.
+//!
+//! Still TODO for true rollback (so dropped frames /
+//! input-prediction errors don't accumulate divergence):
 //!   - [ ] Migrate gameplay systems out of `FixedUpdate` and
 //!         into `GgrsSchedule` so GGRS can drive rollback. This
 //!         includes physics tick (currently Avian's
@@ -55,13 +79,6 @@
 //!         mutates during gameplay (Position, Rotation, Crew,
 //!         Battery, all projectile state, etc.) so bevy_ggrs
 //!         can snapshot/restore on rollback.
-//!   - [ ] Per-slot input routing: introduce a `SlotInputs`
-//!         resource `[PlayerInput; 4]` populated once per
-//!         frame; for local slots from the keyboard, for
-//!         remote slots from `PlayerInputs<Config>` via a
-//!         GgrsSchedule bridge system. Replace the ~12 call
-//!         sites of `read_local_input_with_virtual` to read
-//!         this resource by slot index instead.
 //!   - [ ] `Time<Real>` audit in gameplay systems: cinematic
 //!         visual systems can keep using `Time<Real>` (they
 //!         intentionally run while `Time<Virtual>` is paused),
