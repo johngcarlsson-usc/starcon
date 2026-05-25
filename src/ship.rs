@@ -1764,7 +1764,10 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
         ShipClass::Kzedr => Some(ShipAbilities {
             primary: AbilitySpec {
                 kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
-                    barrels: single_barrel(forward, 36.0),
+                    // Fires out the BACK of the dreadnought — the
+                    // fusion bolt launches from the aft muzzle in
+                    // the ship's reverse direction.
+                    barrels: single_barrel(backward, 36.0),
                     random_spread_rad: 0.0,
                     speed: 80.0 * SC2_VEL_SCALE,
                     lifetime: (22.0 * SC2_RANGE_SCALE) / (80.0 * SC2_VEL_SCALE),
