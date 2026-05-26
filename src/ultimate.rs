@@ -188,6 +188,13 @@ pub struct UltimateState {
     pub chmmr_stage_timer_s: f32,
 }
 
+/// Marker stamped on an Alary battle cruiser once its ultimate
+/// has doubled it. Prevents the ultimate from doubling the same
+/// ship a second time — re-triggering plays the cinematic but
+/// the grow step no-ops.
+#[derive(Component, Debug)]
+pub struct AlaryDoubled;
+
 /// Marker on the Mmrnmhrm ship during MmrxfUnleashing. Normal
 /// Mmrxf primary / special abilities check for this and skip so
 /// the ultimate's weapons replace them rather than stacking on
@@ -400,6 +407,10 @@ pub enum UltimateVariant {
     /// Avatar finishes with a sustained laser. Every contact
     /// flashes the screen white and chips crew.
     Chmmr,
+    /// Alary: permanently doubles the battle cruiser's size
+    /// (visual + collider). One-time only — once grown, the
+    /// ultimate can't double it again.
+    Alary,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -526,6 +537,12 @@ pub enum UltimatePhase {
     /// Chmmr's face for the final), flashes the screen, and
     /// chips crew.
     ChmmrVolley,
+    // ---- Alary grow ----
+    /// Paused. The Alary battle cruiser scales 1× → 2× over the
+    /// phase; on completion its collider is doubled and an
+    /// `AlaryDoubled` marker is stamped so it can never grow
+    /// again. The 2× scale is permanent (not restored on exit).
+    AlaryGrowing,
 }
 
 /// Marker on the ship while the cinematic is active.
@@ -739,6 +756,9 @@ impl Plugin for UltimatePlugin {
                 // sub-stages in ChmmrVolley.
                 tick_chmmr_ultimate,
                 tick_chmmr_flashes,
+                // Alary: lerp the cruiser to 2× during the
+                // paused AlaryGrowing phase (permanent).
+                tick_alary_grow,
             ),
         )
         // ---- Update: visual-only systems ----
@@ -966,6 +986,11 @@ const CHMMR_FLASH_S: f32 = 0.28;
 /// Sustained laser duration during stage 3.
 const CHMMR_LASER_S: f32 = 1.0;
 
+// -- Alary "double in size" --
+const ALARY_GROW_S: f32 = 0.8;
+/// Final scale multiplier (one-time, permanent).
+const ALARY_GROW_FACTOR: f32 = 2.0;
+
 fn portrait_path(variant: UltimateVariant) -> &'static str {
     match variant {
         UltimateVariant::Earthling => "ultimate/portrait_earcr.png",
@@ -977,6 +1002,7 @@ fn portrait_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Slylandro => "ultimate/portrait_slypr.png",
         UltimateVariant::Mmrnmhrm => "ultimate/portrait_mmrxf.png",
         UltimateVariant::Chmmr => "ultimate/portrait_chmav.png",
+        UltimateVariant::Alary => "ultimate/portrait_alabc.png",
         _ => "ultimate/portrait_arisk.png",
     }
 }
@@ -996,6 +1022,7 @@ fn voice_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Slylandro => "ultimate/slypr_voi.wav",
         UltimateVariant::Mmrnmhrm => "ultimate/mmrxf_voi.wav",
         UltimateVariant::Chmmr => "ultimate/chmav_voi.wav",
+        UltimateVariant::Alary => "ultimate/alabc_voi.wav",
         _ => "ultimate/arisk_voi.wav",
     }
 }
@@ -1015,6 +1042,7 @@ fn variant_for_class(class: ShipClass) -> UltimateVariant {
         ShipClass::Mycpo => UltimateVariant::Mycon,
         ShipClass::Thrto => UltimateVariant::Thraddash,
         ShipClass::Chmav => UltimateVariant::Chmmr,
+        ShipClass::Alabc => UltimateVariant::Alary,
         _ => UltimateVariant::Arilou,
     }
 }
@@ -1287,6 +1315,7 @@ fn hyper_trigger(
         | UltimateVariant::Mycon
         | UltimateVariant::Thraddash
         | UltimateVariant::Chmmr
+        | UltimateVariant::Alary
         | UltimateVariant::None => {}
     }
 
@@ -1447,6 +1476,7 @@ fn tick_ultimate_phases(
                 let p = (state.phase_timer_s / CHMMR_VOLLEY_S).clamp(0.0, 1.0);
                 (CHMMR_VOLLEY_S, 1.0 - p, false, 0.0, false)
             }
+            UltimatePhase::AlaryGrowing => (ALARY_GROW_S, 1.0, false, 0.0, true),
             UltimatePhase::Idle => unreachable!(),
         };
 
@@ -1576,6 +1606,9 @@ fn tick_ultimate_phases(
                 UltimatePhase::ChmmrCharging
             }
             (UltimatePhase::ChmmrCharging, _) => UltimatePhase::ChmmrVolley,
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Alary) => {
+                UltimatePhase::AlaryGrowing
+            }
             // Final phases: exit.
             (UltimatePhase::ArilouUnleashing, _)
             | (UltimatePhase::EarthlingBlasting, _)
@@ -1590,7 +1623,8 @@ fn tick_ultimate_phases(
             | (UltimatePhase::KohrAhSlaughter, _)
             | (UltimatePhase::MyconHurricane, _)
             | (UltimatePhase::ThraddashBurning, _)
-            | (UltimatePhase::ChmmrVolley, _) => {
+            | (UltimatePhase::ChmmrVolley, _)
+            | (UltimatePhase::AlaryGrowing, _) => {
                 exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
                 return;
             }
@@ -1922,7 +1956,10 @@ fn drive_camera_during_ultimate(
         | UltimatePhase::KohrAhSharpening
         | UltimatePhase::MyconGathering
         | UltimatePhase::ThraddashIgniting
-        | UltimatePhase::ChmmrCharging => (1.0, HYPER_CAM_SCALE),
+        | UltimatePhase::ChmmrCharging
+        // Alary: hold the close-up on the ship as it doubles —
+        // the growth is the whole show.
+        | UltimatePhase::AlaryGrowing => (1.0, HYPER_CAM_SCALE),
         UltimatePhase::ChmmrVolley => {
             // Pull back fast so the whole bump-set-spike geometry
             // fits in-frame; the impulse travel is wide.
@@ -5075,5 +5112,59 @@ fn tick_chmmr_flashes(
         let frac = (flash.remaining_s / flash.total_s).clamp(0.0, 1.0);
         let lin = bg.0.to_linear();
         bg.0 = Color::srgba(lin.red, lin.green, lin.blue, frac);
+    }
+}
+
+// ----------------------------------------------------------------
+// Alary Battle Cruiser — "double in size" ultimate
+// ----------------------------------------------------------------
+
+/// During AlaryGrowing: lerp the cruiser's Transform.scale from
+/// 1× to ALARY_GROW_FACTOR over the phase. On the final tick,
+/// stamp `AlaryDoubled` (so the ultimate can't grow it again)
+/// and swap the collider for one of double the radius so the
+/// hitbox matches the bigger sprite. The scale is PERMANENT —
+/// unlike Mmrnmhrm, we never restore it on exit.
+///
+/// Lives in Update (not GgrsSchedule) so it advances during the
+/// paused AlaryGrowing phase — same pattern as the other paused-
+/// phase cinematic systems.
+pub fn tick_alary_grow(
+    state: Res<UltimateState>,
+    mut commands: Commands,
+    mut ships: Query<
+        (&mut Transform, Option<&AlaryDoubled>),
+        With<crate::ship::Ship>,
+    >,
+) {
+    if state.variant != UltimateVariant::Alary
+        || state.phase != UltimatePhase::AlaryGrowing
+    {
+        return;
+    }
+    let Some(p1) = state.player_entity else { return };
+    let Ok((mut xf, already)) = ships.get_mut(p1) else { return };
+
+    // Already doubled on a previous ultimate — the cinematic
+    // still plays, but the ship doesn't grow further.
+    if already.is_some() {
+        return;
+    }
+
+    // Ease scale 1 → ALARY_GROW_FACTOR across the phase.
+    let p = (state.phase_timer_s / ALARY_GROW_S).clamp(0.0, 1.0);
+    let factor = 1.0 + (ALARY_GROW_FACTOR - 1.0) * p;
+    xf.scale = Vec3::new(factor, factor, 1.0);
+
+    // On the final tick: lock in the permanent state — stamp the
+    // marker + double the collider radius so the hitbox matches.
+    if p >= 1.0 {
+        xf.scale = Vec3::new(ALARY_GROW_FACTOR, ALARY_GROW_FACTOR, 1.0);
+        if let Ok(mut ec) = commands.get_entity(p1) {
+            ec.insert(AlaryDoubled);
+            // Alary's spawn collider is circle(40); double it.
+            ec.insert(avian2d::prelude::Collider::circle(80.0));
+        }
+        info!("Alary doubled in size (permanent)");
     }
 }

@@ -110,6 +110,7 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("slypr", include_str!("../assets/ships/slypr.ini"), include_str!("../assets/ships/slypr.txt")),
     ("umgdr", include_str!("../assets/ships/umgdr.ini"), include_str!("../assets/ships/umgdr.txt")),
     ("meltr", include_str!("../assets/ships/meltr.ini"), include_str!("../assets/ships/meltr.txt")),
+    ("alabc", include_str!("../assets/ships/alabc.ini"), include_str!("../assets/ships/alabc.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -197,7 +198,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 25] = [
+pub const ALL_CLASSES: [ShipClass; 26] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -226,6 +227,7 @@ pub const ALL_CLASSES: [ShipClass; 25] = [
     ShipClass::Slypr,
     ShipClass::Umgdr,
     ShipClass::Meltr,
+    ShipClass::Alabc,
 ];
 
 /// How rotation responds to forces.
@@ -329,6 +331,12 @@ pub enum ShipClass {
     Umgdr,
     /// Melnorme Trader — chargeable plasma cannon (canonical mechanic).
     Meltr,
+    /// Alary Battle Cruiser (TW-Light fan ship) — slow, heavy,
+    /// tanky cruiser. Primary: a slow MIRV torpedo that splits
+    /// into homing warheads near the target. Special: toggleable
+    /// auto-firing turrets. Passive absorbance shield halves
+    /// incoming damage. Ultimate: doubles in size (once).
+    Alabc,
 }
 
 impl ShipClass {
@@ -360,6 +368,7 @@ impl ShipClass {
             ShipClass::Slypr => "slypr",
             ShipClass::Umgdr => "umgdr",
             ShipClass::Meltr => "meltr",
+            ShipClass::Alabc => "alabc",
         }
     }
 }
@@ -1262,6 +1271,17 @@ fn spawn_ship(
         // OnEnter system spawns the satellites.
         entity.insert(NeedsChmmrSatellites);
     }
+    if matches!(class, ShipClass::Alabc) {
+        // Permanent absorbance shield — halves all incoming
+        // damage for the whole match. `remaining: INFINITY` so
+        // `tick_shield` never expires it (INFINITY − dt =
+        // INFINITY). Matches the Alary's "Damage (even direct)
+        // cut in half" toughness quirk.
+        entity.insert(ShieldActive {
+            remaining: f32::INFINITY,
+            damage_factor: 0.5,
+        });
+    }
     let entity_id = entity.id();
 
     // Per-class visual overlays. Canonical use: the Orz turret
@@ -1764,10 +1784,7 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
         ShipClass::Kzedr => Some(ShipAbilities {
             primary: AbilitySpec {
                 kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
-                    // Fires out the BACK of the dreadnought — the
-                    // fusion bolt launches from the aft muzzle in
-                    // the ship's reverse direction.
-                    barrels: single_barrel(backward, 36.0),
+                    barrels: single_barrel(forward, 36.0),
                     random_spread_rad: 0.0,
                     speed: 80.0 * SC2_VEL_SCALE,
                     lifetime: (22.0 * SC2_RANGE_SCALE) / (80.0 * SC2_VEL_SCALE),
@@ -2436,6 +2453,101 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 20.0 / 20.0,
             },
         }),
+
+        // Alary Battle Cruiser (TW-Light fan ship). Faithful-ish
+        // to shpalabc.cpp's signature feel; some of the deepest
+        // nuances (per-turret hit-zone armour, engine-damage
+        // crippling, the multi-stage absorbance-capacity shield)
+        // are simplified — see notes below.
+        //
+        // Primary — MIRV torpedo. Canon fires one slow torpedo
+        // that splits into homing warheads near the target; we
+        // approximate with a tight forward cluster of slow
+        // homing warheads (the "fire and forget" feel) using the
+        // .ini Warhead* stats: Velocity 62, Damage 4, TurnRate
+        // 2.7.
+        //
+        // Special — turret salvo. Canon toggles three damageable
+        // auto-firing turrets; we fire a 3-beam auto-aim salvo
+        // per press (each beam locks the nearest enemy), which
+        // reads as the turrets ripple-firing without the full
+        // toggle/turret-armour subsystem.
+        //
+        // Tankiness — a permanent absorbance shield
+        // (`ShieldActive { damage_factor: 0.5 }`) is stamped on
+        // the hull at spawn (see spawn_class), halving all
+        // incoming damage. Matches the txt's "Damage (even
+        // direct) cut in half" quirk.
+        ShipClass::Alabc => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::SpawnProjectiles {
+                    volleys: vec![VolleySpec {
+                        barrels: vec![
+                            Barrel { local_pos: forward * 30.0, direction: forward },
+                            Barrel {
+                                local_pos: forward * 28.0 + Vec2::new(-14.0, 0.0),
+                                direction: forward,
+                            },
+                            Barrel {
+                                local_pos: forward * 28.0 + Vec2::new(14.0, 0.0),
+                                direction: forward,
+                            },
+                        ],
+                        // Slow, like the canon torpedo/warheads.
+                        random_spread_rad: 0.18,
+                        speed: 40.0 * SC2_VEL_SCALE,
+                        lifetime: (40.0 * SC2_RANGE_SCALE) / (40.0 * SC2_VEL_SCALE),
+                        color: Color::srgb(0.85, 1.0, 0.7),
+                        sprite_size: 14.0,
+                        sprite_path: Some("ships/alabc/sprites/shot_a01.png".into()),
+                        // Homing warheads — "fire and forget".
+                        homing_turn_rate: sc2_turning(2.7),
+                        is_limpet: false,
+                        recoil_impulse: 0.0,
+                    }],
+                },
+                // WeaponRate 18 / 20 fps ≈ 0.9 s between volleys.
+                cooldown_s: 18.0 / 20.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::SpawnBeams {
+                    beams: vec![
+                        crate::ability::BeamSpec {
+                            local_origin: Vec2::new(0.0, 26.0),
+                            local_dir: forward,
+                            range: 18.0 * SC2_RANGE_SCALE,
+                            damage_per_tick: 3,
+                            color: Color::srgb(0.7, 1.0, 0.85),
+                            auto_aim: true,
+                            duration_s: 0.4,
+                            width: 2.0,
+                        },
+                        crate::ability::BeamSpec {
+                            local_origin: Vec2::new(-22.0, -14.0),
+                            local_dir: forward,
+                            range: 18.0 * SC2_RANGE_SCALE,
+                            damage_per_tick: 3,
+                            color: Color::srgb(0.7, 1.0, 0.85),
+                            auto_aim: true,
+                            duration_s: 0.4,
+                            width: 2.0,
+                        },
+                        crate::ability::BeamSpec {
+                            local_origin: Vec2::new(22.0, -14.0),
+                            local_dir: forward,
+                            range: 18.0 * SC2_RANGE_SCALE,
+                            damage_per_tick: 3,
+                            color: Color::srgb(0.7, 1.0, 0.85),
+                            auto_aim: true,
+                            duration_s: 0.4,
+                            width: 2.0,
+                        },
+                    ],
+                },
+                // SpecialRate 6 / 20 fps = 0.3 s between salvos.
+                cooldown_s: 6.0 / 20.0,
+            },
+        }),
     }
 }
 
@@ -2451,6 +2563,10 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
     match class {
         // chebr & orzne: 0-indexed `ship_s_NN_tga.png`. Frame 0 is north.
         ShipClass::Chebr | ShipClass::Orzne => format!("ship_s_{:02}_tga.png", frame),
+
+        // alabc: 0-indexed 3-digit `ship_s_NNN_tga.png` (the TW-Light
+        // Alary dat ships 64 frames as SHIP_S_000_TGA … SHIP_S_063_TGA).
+        ShipClass::Alabc => format!("ship_s_{:03}_tga.png", frame),
 
         // druma: frame 0 is `ship_s00.png` (no suffix), frames 1-63
         // are `ship_sNN_bmp.png`.
@@ -2926,6 +3042,8 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Meltr => 22.0,
         ShipClass::Chmav | ShipClass::Kohma | ShipClass::Chebr => 28.0,
         ShipClass::Kzedr => 34.0,
+        // Alary is the biggest, heaviest hull in the roster.
+        ShipClass::Alabc => 40.0,
     };
     PhysicsSpec {
         collider_radius,
