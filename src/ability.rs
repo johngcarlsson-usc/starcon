@@ -380,6 +380,12 @@ fn dispatch_special(
         if mmrxf_active.is_some() {
             continue;
         }
+        // Specials owned by a dedicated system (e.g. Alary turret
+        // toggle, `tick_alary_turrets`) handle their own input,
+        // drain, and cooldown — skip the generic dispatcher.
+        if matches!(abilities.special.kind, AbilityKind::ManagedExternally { .. }) {
+            continue;
+        }
         if cd.0 > 0.0 {
             continue;
         }

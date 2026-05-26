@@ -739,6 +739,59 @@ pub struct CrystalCarrier {
     pub last_fire_held: bool,
 }
 
+/// Per-ship state for the Alary Battle Cruiser MIRV launcher
+/// (`shpalabc.cpp`). The primary fires ONE slow homing torpedo per
+/// press; the torpedo splits into five warheads on proximity to a
+/// target. Muzzle alternates side each shot (legacy `side *= -1`).
+#[derive(Component, Debug)]
+pub struct AlaryMirvState {
+    /// Edge tracking for the fire key — the launcher is one-shot
+    /// per press, not auto-fire.
+    pub last_fire_held: bool,
+    /// Seconds until the launcher can fire again.
+    pub cooldown_s: f32,
+    /// +1.0 / −1.0, flipped after each launch so consecutive
+    /// torpedoes leave from opposite sides of the hull.
+    pub side: f32,
+}
+
+impl Default for AlaryMirvState {
+    fn default() -> Self {
+        Self {
+            last_fire_held: false,
+            cooldown_s: 0.0,
+            side: 1.0,
+        }
+    }
+}
+
+/// Per-ship state for the Alary's toggleable hull turret battery
+/// (`shpalabc.cpp` special). `special` press toggles the turrets
+/// on/off; while on, each of the three turrets auto-fires at the
+/// nearest enemy on its own recharge timer.
+#[derive(Component, Debug, Default)]
+pub struct AlaryTurrets {
+    pub on: bool,
+    pub last_special_held: bool,
+    /// Per-turret recharge timers (3 hull turrets).
+    pub recharge_s: [f32; 3],
+}
+
+/// A slow homing MIRV torpedo in flight. Does NO contact damage on
+/// its own (legacy note: "Torpedo itself will not do damage on
+/// collisions"); when it closes within `proximity` world units of an
+/// enemy ship it despawns and spawns five homing warheads fanned at
+/// `[0, ±50°, ±75°]` off its heading.
+#[derive(Component, Debug)]
+pub struct AlaryTorpedo {
+    pub owner: Entity,
+    pub proximity: f32,
+    pub wh_speed: f32,
+    pub wh_damage: i32,
+    pub wh_turn: f32,
+    pub wh_lifetime: f32,
+}
+
 /// Inertialess-drive marker. A ship with this component has its
 /// linear velocity *directly* set from thrust input each tick:
 /// thrust held → forward at `speed_max`; thrust released → zero
@@ -834,6 +887,8 @@ impl Plugin for ShipPlugin {
                 tick_zap_flashes,
                 tick_asteroid_explosions,
                 replenish_asteroids,
+                tick_alary_mirv,
+                tick_alary_turrets,
             ),
         )
         .add_systems(
@@ -1281,6 +1336,11 @@ fn spawn_ship(
             remaining: f32::INFINITY,
             damage_factor: 0.5,
         });
+        // MIRV launcher + toggleable turret battery state, both
+        // driven by dedicated `tick_alary_*` systems (the abilities
+        // are `ManagedExternally`).
+        entity.insert(AlaryMirvState::default());
+        entity.insert(AlaryTurrets::default());
     }
     let entity_id = entity.id();
 
@@ -2454,98 +2514,34 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             },
         }),
 
-        // Alary Battle Cruiser (TW-Light fan ship). Faithful-ish
-        // to shpalabc.cpp's signature feel; some of the deepest
-        // nuances (per-turret hit-zone armour, engine-damage
-        // crippling, the multi-stage absorbance-capacity shield)
-        // are simplified — see notes below.
+        // Alary Battle Cruiser (TW-Light fan ship). Faithful
+        // port of shpalabc.cpp's signature systems:
         //
-        // Primary — MIRV torpedo. Canon fires one slow torpedo
-        // that splits into homing warheads near the target; we
-        // approximate with a tight forward cluster of slow
-        // homing warheads (the "fire and forget" feel) using the
-        // .ini Warhead* stats: Velocity 62, Damage 4, TurnRate
-        // 2.7.
+        // Primary — MIRV torpedo. ONE slow homing torpedo that
+        // homes toward the target and, once within proximity,
+        // splits into FIVE homing warheads fanned at
+        // [0, ±50°, ±75°] off its heading (shpalabc.cpp
+        // AlaryBCTorpedo::calculate). The torpedo itself does no
+        // contact damage; only the warheads hurt. Driven by the
+        // dedicated `tick_alary_mirv` system.
         //
-        // Special — turret salvo. Canon toggles three damageable
-        // auto-firing turrets; we fire a 3-beam auto-aim salvo
-        // per press (each beam locks the nearest enemy), which
-        // reads as the turrets ripple-firing without the full
-        // toggle/turret-armour subsystem.
+        // Special — toggleable turrets. Press special to toggle
+        // three hull turrets on/off; while on they auto-fire at
+        // the nearest enemy on a recharge. Driven by
+        // `tick_alary_turrets`.
         //
         // Tankiness — a permanent absorbance shield
-        // (`ShieldActive { damage_factor: 0.5 }`) is stamped on
-        // the hull at spawn (see spawn_class), halving all
-        // incoming damage. Matches the txt's "Damage (even
-        // direct) cut in half" quirk.
+        // (`ShieldActive { damage_factor: 0.5 }`, stamped at
+        // spawn) halves all incoming damage, per the txt's
+        // "Damage (even direct) cut in half" quirk.
         ShipClass::Alabc => Some(ShipAbilities {
             primary: AbilitySpec {
-                kind: AbilityKind::SpawnProjectiles {
-                    volleys: vec![VolleySpec {
-                        barrels: vec![
-                            Barrel { local_pos: forward * 30.0, direction: forward },
-                            Barrel {
-                                local_pos: forward * 28.0 + Vec2::new(-14.0, 0.0),
-                                direction: forward,
-                            },
-                            Barrel {
-                                local_pos: forward * 28.0 + Vec2::new(14.0, 0.0),
-                                direction: forward,
-                            },
-                        ],
-                        // Slow, like the canon torpedo/warheads.
-                        random_spread_rad: 0.18,
-                        speed: 40.0 * SC2_VEL_SCALE,
-                        lifetime: (40.0 * SC2_RANGE_SCALE) / (40.0 * SC2_VEL_SCALE),
-                        color: Color::srgb(0.85, 1.0, 0.7),
-                        sprite_size: 14.0,
-                        sprite_path: Some("ships/alabc/sprites/shot_a01.png".into()),
-                        // Homing warheads — "fire and forget".
-                        homing_turn_rate: sc2_turning(2.7),
-                        is_limpet: false,
-                        recoil_impulse: 0.0,
-                    }],
-                },
-                // WeaponRate 18 / 20 fps ≈ 0.9 s between volleys.
-                cooldown_s: 18.0 / 20.0,
+                kind: AbilityKind::ManagedExternally { ident: "alary-mirv" },
+                cooldown_s: 0.0,
             },
             special: AbilitySpec {
-                kind: AbilityKind::SpawnBeams {
-                    beams: vec![
-                        crate::ability::BeamSpec {
-                            local_origin: Vec2::new(0.0, 26.0),
-                            local_dir: forward,
-                            range: 18.0 * SC2_RANGE_SCALE,
-                            damage_per_tick: 3,
-                            color: Color::srgb(0.7, 1.0, 0.85),
-                            auto_aim: true,
-                            duration_s: 0.4,
-                            width: 2.0,
-                        },
-                        crate::ability::BeamSpec {
-                            local_origin: Vec2::new(-22.0, -14.0),
-                            local_dir: forward,
-                            range: 18.0 * SC2_RANGE_SCALE,
-                            damage_per_tick: 3,
-                            color: Color::srgb(0.7, 1.0, 0.85),
-                            auto_aim: true,
-                            duration_s: 0.4,
-                            width: 2.0,
-                        },
-                        crate::ability::BeamSpec {
-                            local_origin: Vec2::new(22.0, -14.0),
-                            local_dir: forward,
-                            range: 18.0 * SC2_RANGE_SCALE,
-                            damage_per_tick: 3,
-                            color: Color::srgb(0.7, 1.0, 0.85),
-                            auto_aim: true,
-                            duration_s: 0.4,
-                            width: 2.0,
-                        },
-                    ],
-                },
-                // SpecialRate 6 / 20 fps = 0.3 s between salvos.
-                cooldown_s: 6.0 / 20.0,
+                kind: AbilityKind::ManagedExternally { ident: "alary-turrets" },
+                cooldown_s: 0.0,
             },
         }),
     }
@@ -4043,6 +4039,321 @@ fn tick_meltr_charge(
     }
 }
 
+/// Alary Battle Cruiser MIRV launcher (`shpalabc.cpp` primary).
+///
+/// Each fire press launches ONE slow homing torpedo from an
+/// alternating side of the hull (legacy `side *= -1`). The torpedo
+/// itself does no contact damage — `steer_homing_projectiles` curves
+/// it toward the nearest enemy, and once it closes within `proximity`
+/// it despawns and bursts into five faster homing warheads fanned at
+/// `[0, ±50°, ±75°]` off its heading (the canonical 5-warhead MIRV
+/// spread). Warheads are normal damaging homing projectiles.
+fn tick_alary_mirv(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    assets: Res<AssetServer>,
+    torpedoes: Query<(Entity, &AlaryTorpedo, &Position, &LinearVelocity)>,
+    ships: Query<(Entity, &Ship, &Position)>,
+    mut launchers: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut AlaryMirvState,
+        &mut Battery,
+        Option<&crate::ai::AiControlled>,
+    )>,
+) {
+    let dt = time.delta_secs();
+
+    // Torpedo: .ini [Weapon] Velocity 44, TurnRate 17, Proximity 15.
+    let torpedo_speed = 44.0 * SC2_VEL_SCALE;
+    let torpedo_turn = sc2_turning(17.0);
+    let proximity = 15.0 * SC2_RANGE_SCALE;
+    // Warheads: WarheadVelocity 62, WarheadDamage 4, WarheadTurnRate
+    // 2.7, WarheadRange 39.5.
+    let wh_speed = 62.0 * SC2_VEL_SCALE;
+    let wh_turn = sc2_turning(2.7);
+    let wh_damage = 4;
+    let wh_lifetime = (39.5 * SC2_RANGE_SCALE) / wh_speed;
+    // WeaponRate 18 → 18/20 s between launches; WeaponDrain 24.
+    let cooldown_after = 18.0 / 20.0;
+    let weapon_drain = 24;
+
+    for (entity, ship, pos, rot, vel, mut state, mut batt, ai) in &mut launchers {
+        if state.cooldown_s > 0.0 {
+            state.cooldown_s -= dt;
+        }
+
+        let fire_held =
+            ai.is_some() || slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        let was_held = state.last_fire_held;
+        state.last_fire_held = fire_held;
+        let just_pressed = fire_held && !was_held;
+        // Humans launch one torpedo per press; the AI just holds fire.
+        let want_launch = if ai.is_some() { fire_held } else { just_pressed };
+
+        if want_launch && state.cooldown_s <= 0.0 {
+            if batt.current < weapon_drain {
+                continue;
+            }
+            batt.current = (batt.current - weapon_drain).max(0);
+            state.cooldown_s = cooldown_after;
+
+            let forward = Vec2::new(-rot.sin, rot.cos);
+            let right = Vec2::new(rot.cos, rot.sin);
+            let muzzle = pos.0 + forward * 50.0 + right * (30.0 * state.side);
+            state.side = -state.side;
+
+            let torp_vel = vel.0 + forward * torpedo_speed;
+            let init_angle = forward.y.atan2(forward.x) - std::f32::consts::FRAC_PI_2;
+
+            commands.spawn((
+                Projectile {
+                    owner: entity,
+                    damage: 0,
+                    lifetime: 10.0,
+                },
+                AlaryTorpedo {
+                    owner: entity,
+                    proximity,
+                    wh_speed,
+                    wh_damage,
+                    wh_turn,
+                    wh_lifetime,
+                },
+                Homing {
+                    target: None,
+                    turn_rate: torpedo_turn,
+                },
+                Sprite {
+                    image: assets.load("ships/alabc/sprites/shot_b00.png"),
+                    custom_size: Some(Vec2::splat(40.0)),
+                    ..default()
+                },
+                Transform::from_translation(muzzle.extend(0.5)),
+                RigidBody::Dynamic,
+                Collider::circle(16.0),
+                // Sensor → no impulse exchange. The proximity split is
+                // detected manually below; `handle_projectile_hits`
+                // ignores torpedoes so they never despawn on touch.
+                Sensor,
+                Mass(2.0),
+                Position(muzzle),
+                Rotation::radians(init_angle),
+                LinearVelocity(torp_vel),
+                AngularVelocity::ZERO,
+                LinearDamping(0.0),
+                AngularDamping(0.0),
+            ));
+            info!("alary MIRV torpedo launched");
+        }
+    }
+
+    // Split any torpedo that has closed within `proximity` of an enemy.
+    let split_offsets = [
+        0.0_f32,
+        50.0_f32.to_radians(),
+        -50.0_f32.to_radians(),
+        75.0_f32.to_radians(),
+        -75.0_f32.to_radians(),
+    ];
+    for (t_entity, torp, t_pos, t_vel) in &torpedoes {
+        let owner_slot = ships.get(torp.owner).ok().map(|(_, s, _)| s.player_slot);
+        let mut best: Option<(Vec2, f32)> = None;
+        for (_e, s, p) in &ships {
+            if Some(s.player_slot) == owner_slot {
+                continue;
+            }
+            let d2 = (p.0 - t_pos.0).length_squared();
+            if best.map(|(_, bd)| d2 < bd).unwrap_or(true) {
+                best = Some((p.0, d2));
+            }
+        }
+        let Some((_target, d2)) = best else {
+            continue;
+        };
+        if d2 > torp.proximity * torp.proximity {
+            continue;
+        }
+
+        let speed = t_vel.0.length();
+        let heading = if speed > 0.0 { t_vel.0 / speed } else { Vec2::Y };
+        let base_angle = heading.y.atan2(heading.x);
+        for off in split_offsets {
+            let a = base_angle + off;
+            let dir = Vec2::new(a.cos(), a.sin());
+            let wvel = dir * torp.wh_speed;
+            let init_angle = a - std::f32::consts::FRAC_PI_2;
+            // Spawn each warhead a little along its own heading so the
+            // five don't pile up at one point and have Avian's solver
+            // blast them apart on the first step.
+            let spawn_pos = t_pos.0 + dir * 22.0;
+            commands.spawn((
+                Projectile {
+                    owner: torp.owner,
+                    damage: torp.wh_damage,
+                    lifetime: torp.wh_lifetime,
+                },
+                Homing {
+                    target: None,
+                    turn_rate: torp.wh_turn,
+                },
+                Sprite {
+                    image: assets.load("ships/alabc/sprites/shot_a01.png"),
+                    custom_size: Some(Vec2::splat(18.0)),
+                    ..default()
+                },
+                Transform::from_translation(spawn_pos.extend(0.5)),
+                RigidBody::Dynamic,
+                Collider::circle(8.0),
+                Mass(0.5 + torp.wh_damage as f32 * 0.4),
+                Position(spawn_pos),
+                Rotation::radians(init_angle),
+                LinearVelocity(wvel),
+                AngularVelocity::ZERO,
+                LinearDamping(0.0),
+                AngularDamping(0.0),
+                CollisionEventsEnabled,
+            ));
+        }
+        commands.entity(t_entity).despawn();
+        info!("alary MIRV split into 5 warheads");
+    }
+}
+
+/// Alary toggleable hull turret battery (`shpalabc.cpp` special).
+///
+/// Pressing `special` toggles the three turrets on/off. While on, each
+/// turret independently auto-fires a lightly-homing bolt at the nearest
+/// enemy in range on its own recharge, paying a small battery drain per
+/// shot. Turrets idle (but stay "on") when the battery can't pay.
+fn tick_alary_turrets(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    assets: Res<AssetServer>,
+    ships: Query<(Entity, &Ship, &Position)>,
+    mut turret_ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut AlaryTurrets,
+        &mut Battery,
+    )>,
+) {
+    let dt = time.delta_secs();
+    // .ini [Special] Velocity 90, Range 18, Damage 3, TurnRate 2,
+    // SpecialRate 6, SpecialDrain 2.
+    let turret_speed = 90.0 * SC2_VEL_SCALE;
+    let turret_range = 18.0 * SC2_RANGE_SCALE;
+    let turret_damage = 3;
+    let turret_turn = sc2_turning(2.0);
+    let turret_lifetime = turret_range / turret_speed;
+    let recharge_after = 6.0 / 20.0;
+    let special_drain = 2;
+    // Three hull turret mounts in local space (+Y forward): nose plus
+    // two aft quarters.
+    let mounts = [
+        Vec2::new(0.0, 34.0),
+        Vec2::new(-30.0, -18.0),
+        Vec2::new(30.0, -18.0),
+    ];
+
+    for (entity, ship, pos, rot, vel, mut turrets, mut batt) in &mut turret_ships {
+        let special_held = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
+        let was = turrets.last_special_held;
+        turrets.last_special_held = special_held;
+        if special_held && !was {
+            turrets.on = !turrets.on;
+            info!("alary turrets {}", if turrets.on { "ON" } else { "OFF" });
+        }
+
+        // Recharge timers always tick, even while off.
+        for r in turrets.recharge_s.iter_mut() {
+            if *r > 0.0 {
+                *r -= dt;
+            }
+        }
+        if !turrets.on {
+            continue;
+        }
+
+        // Nearest enemy ship.
+        let mut best: Option<(Vec2, f32)> = None;
+        for (_e, s, p) in &ships {
+            if s.player_slot == ship.player_slot {
+                continue;
+            }
+            let d2 = (p.0 - pos.0).length_squared();
+            if best.map(|(_, bd)| d2 < bd).unwrap_or(true) {
+                best = Some((p.0, d2));
+            }
+        }
+        let Some((target_pos, target_d2)) = best else {
+            continue;
+        };
+        if target_d2 > turret_range * turret_range {
+            continue;
+        }
+
+        for i in 0..mounts.len() {
+            if turrets.recharge_s[i] > 0.0 {
+                continue;
+            }
+            if batt.current < special_drain {
+                break;
+            }
+            batt.current = (batt.current - special_drain).max(0);
+            turrets.recharge_s[i] = recharge_after;
+
+            let m = mounts[i];
+            let world_off = Vec2::new(
+                m.x * rot.cos - m.y * rot.sin,
+                m.x * rot.sin + m.y * rot.cos,
+            );
+            let muzzle = pos.0 + world_off;
+            let mut dir = (target_pos - muzzle).normalize_or_zero();
+            if dir == Vec2::ZERO {
+                dir = Vec2::new(-rot.sin, rot.cos);
+            }
+            let bolt_vel = vel.0 + dir * turret_speed;
+            let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
+            commands.spawn((
+                Projectile {
+                    owner: entity,
+                    damage: turret_damage,
+                    lifetime: turret_lifetime,
+                },
+                Homing {
+                    target: None,
+                    turn_rate: turret_turn,
+                },
+                Sprite {
+                    image: assets.load("ships/alabc/sprites/shot_t00.png"),
+                    custom_size: Some(Vec2::splat(18.0)),
+                    ..default()
+                },
+                Transform::from_translation(muzzle.extend(0.5)),
+                RigidBody::Dynamic,
+                Collider::circle(6.0),
+                Mass(0.5 + turret_damage as f32 * 0.4),
+                Position(muzzle),
+                Rotation::radians(init_angle),
+                LinearVelocity(bolt_vel),
+                AngularVelocity::ZERO,
+                LinearDamping(0.0),
+                AngularDamping(0.0),
+                CollisionEventsEnabled,
+            ));
+        }
+    }
+}
+
 /// Steer each `Homing` projectile toward the nearest enemy ship (an
 /// enemy is "ship whose `player_slot` ≠ projectile owner's slot").
 ///
@@ -4184,6 +4495,9 @@ fn handle_projectile_hits(
     damage_to_batt: Query<&DamageToBattery>,
     asteroids_q: Query<&Position, With<Asteroid>>,
     ships: Query<&Ship>,
+    // Alary MIRV torpedoes deal no contact damage and never despawn
+    // on touch — they only split on proximity (`tick_alary_mirv`).
+    torpedoes: Query<&AlaryTorpedo>,
     mut satellites: Query<(&mut ChmmrSatellite, &Position)>,
     mut crews: Query<&mut Crew>,
     mut batteries: Query<&mut Battery>,
@@ -4204,6 +4518,11 @@ fn handle_projectile_hits(
             Ok(p) => p,
             Err(_) => continue,
         };
+
+        // The MIRV torpedo is inert on contact — pass through.
+        if torpedoes.get(proj_entity).is_ok() {
+            continue;
+        }
 
         if proj.owner == other_entity {
             continue;
