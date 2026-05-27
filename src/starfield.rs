@@ -586,7 +586,26 @@ fn follow_ships_with_camera(
     // render-offset pass (`apply_toroidal_render_offset`) draws every
     // body in this same frame, and the starfield tiles around it, so
     // the unbounded focus is invisible.
-    let focus = cam_xf.translation.truncate();
+    //
+    // EXCEPT at a match-start snap: a new match's ships spawn in the
+    // canonical cell (±900), but the focus may have drifted whole
+    // arenas during the previous match. Imaging the fresh spawns around
+    // that stale focus picks wrapped copies (the spawn pair is >½ arena
+    // apart, so the nearest images land the wrong way round) — that's
+    // the "P1 ends up on the right, ships back-to-back" bug. On snap we
+    // re-anchor the focus to the canonical origin so the ships image at
+    // their true spawn positions.
+    let count = ships.iter().count();
+    let snap_transition = zoom_state.last_ship_count == 0 && count > 0;
+    let snap = snap_transition || zoom_state.pending_initial_snap;
+    let focus = if snap {
+        Vec2::ZERO
+    } else {
+        cam_xf.translation.truncate()
+    };
+    if snap {
+        unwrap.images.clear();
+    }
 
     // For every ship we hold two candidate images: the "sticky" one
     // (continuous with last frame's choice) and the "fresh" minimum-
@@ -626,7 +645,6 @@ fn follow_ships_with_camera(
     if entries.is_empty() {
         return;
     }
-    let count = entries.len();
     let sticky_extent = (s_max - s_min).max_element();
     let fresh_extent = (f_max - f_min).max_element();
 
@@ -671,17 +689,10 @@ fn follow_ships_with_camera(
     let needed = span + Vec2::splat(pad * 2.0);
     let raw_scale = (needed.x / win.x).max(needed.y / win.y).clamp(SCALE_MIN, SCALE_MAX);
 
-    // Snap conditions: either a 0→N transition was missed
-    // somehow, or `pending_initial_snap` was set by
-    // `reset_for_new_match` on the most recent OnEnter(InMatch).
-    // Both fire the same tighten-on-this-frame path.
-    let snap_transition = zoom_state.last_ship_count == 0 && count > 0;
-    let snap_pending = zoom_state.pending_initial_snap;
-    let snap = snap_transition || snap_pending;
+    // `snap` was determined up top (it gates the focus re-anchor).
+    // Consume the flags now.
     zoom_state.last_ship_count = count;
-    if snap_pending {
-        zoom_state.pending_initial_snap = false;
-    }
+    zoom_state.pending_initial_snap = false;
 
     // On snap, use a *tight* framing (small padding) because the
     // player wants the smallest bounding box at match start.

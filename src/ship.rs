@@ -4553,7 +4553,9 @@ fn steer_homing_projectiles(
                 if Some(s.player_slot) == owner_slot {
                     continue;
                 }
-                let d2 = (p.0 - proj_pos.0).length_squared();
+                // Toroidal distance — the target may be nearer the
+                // wrapped way, so pick by minimum-image, not raw.
+                let d2 = crate::physics::min_image(p.0 - proj_pos.0).length_squared();
                 if best.map(|(_, bd)| d2 < bd).unwrap_or(true) {
                     best = Some((e, d2));
                 }
@@ -4568,7 +4570,11 @@ fn steer_homing_projectiles(
             continue;
         };
 
-        let to_target = target_pos.0 - proj_pos.0;
+        // Steer along the SHORTEST path on the torus: a target across
+        // the wrap seam is reached by heading off the near edge, not the
+        // long way around. Without min_image the missile flew away from
+        // an opponent that was actually adjacent through the wrap.
+        let to_target = crate::physics::min_image(target_pos.0 - proj_pos.0);
         let speed = vel.0.length();
         if speed <= 0.0 || to_target.length_squared() == 0.0 {
             continue;
@@ -4945,6 +4951,7 @@ fn tick_point_defense(
     time: Res<Time<Physics>>,
     assets: Res<AssetServer>,
     spatial: avian2d::prelude::SpatialQuery,
+    camera: Query<&Transform, With<Camera2d>>,
     mut firers: Query<(Entity, &Ship, &Position, &mut PointDefenseActive)>,
     positions: Query<&Position>,
     projectiles: Query<&Projectile>,
@@ -4955,11 +4962,13 @@ fn tick_point_defense(
     shields: Query<&ShieldActive>,
 ) {
     use avian2d::prelude::SpatialQueryFilter;
-    // The SDI laser fires discrete shots: each cycle it picks the single
-    // nearest threat (incoming shot, asteroid, or enemy ship), zaps it,
-    // and draws a brief laser line. Rate-limited so it reads as pulses
-    // and doesn't deal physics-tick-rate damage.
-    const PD_FIRE_INTERVAL_S: f32 = 0.12;
+    // Canonical SDI laser (shpearcr.cpp activate_special): every cycle it
+    // fires a laser at EVERY object in range — incoming shots, asteroids,
+    // and enemy ships — not just one. SpecialRate=9 frames ≈ 0.45 s
+    // between volleys, so we pace it there rather than firing every
+    // physics tick (which dealt absurd DPS and flickered).
+    const PD_FIRE_INTERVAL_S: f32 = 9.0 / 20.0;
+    let focus = camera.single().ok().map(|t| t.translation.truncate());
     let dt = time.delta_secs();
     for (firer_entity, firer, firer_pos, mut beam) in &mut firers {
         beam.remaining -= dt;
@@ -4969,12 +4978,14 @@ fn tick_point_defense(
             let filter = SpatialQueryFilter::default().with_excluded_entities([firer_entity]);
             let candidates = spatial.shape_intersections(&probe, firer_pos.0, 0.0, &filter);
 
-            // Pick the nearest valid target this cycle.
-            let mut best: Option<(Entity, f32, PdKind)> = None;
+            // Render the laser in the camera's wrapped frame so it stays
+            // glued to the firer + target instead of being drawn at raw
+            // arena coords (invisible once the focus has drifted).
+            let firer_img = focus.map_or(firer_pos.0, |f| crate::physics::nearest_image(firer_pos.0, f));
             for e in candidates {
                 let kind = if let Ok(proj) = projectiles.get(e) {
                     if proj.owner == firer_entity {
-                        continue; // our own shot
+                        continue;
                     }
                     PdKind::Projectile
                 } else if asteroids.get(e).is_ok() {
@@ -4988,21 +4999,18 @@ fn tick_point_defense(
                     continue;
                 };
                 let Ok(p) = positions.get(e) else { continue };
-                let d2 = (p.0 - firer_pos.0).length_squared();
-                if best.map(|(_, bd, _)| d2 < bd).unwrap_or(true) {
-                    best = Some((e, d2, kind));
-                }
-            }
+                let target_pos = p.0;
 
-            if let Some((target, _, kind)) = best {
-                let target_pos = positions.get(target).map(|p| p.0).unwrap_or(firer_pos.0);
-                // Visible laser line from ship to target.
-                let delta = target_pos - firer_pos.0;
-                let len = delta.length().max(1.0);
-                let mid = (firer_pos.0 + target_pos) * 0.5;
-                let angle = delta.y.atan2(delta.x) - std::f32::consts::FRAC_PI_2;
+                // Laser line from firer to target, both imaged near the
+                // camera (target via min-image off the firer so it spans
+                // the short way across a seam).
+                let rel = crate::physics::min_image(target_pos - firer_pos.0);
+                let target_img = firer_img + rel;
+                let len = rel.length().max(1.0);
+                let mid = (firer_img + target_img) * 0.5;
+                let angle = rel.y.atan2(rel.x) - std::f32::consts::FRAC_PI_2;
                 commands.spawn((
-                    ZapFlash { remaining_s: 0.08, total_s: 0.08 },
+                    ZapFlash { remaining_s: 0.10, total_s: 0.10 },
                     Sprite::from_color(Color::srgba(0.6, 1.0, 1.0, 0.95), Vec2::new(3.0, len)),
                     Transform {
                         translation: mid.extend(0.32),
@@ -5012,24 +5020,31 @@ fn tick_point_defense(
                 ));
                 match kind {
                     PdKind::Projectile => {
-                        commands.entity(target).despawn();
+                        if let Ok(mut ec) = commands.get_entity(e) {
+                            ec.try_despawn();
+                        }
                     }
                     PdKind::Asteroid => {
                         spawn_asteroid_explosion(&mut commands, &assets, target_pos, 24.0);
-                        commands.entity(target).despawn();
+                        if let Ok(mut ec) = commands.get_entity(e) {
+                            ec.try_despawn();
+                        }
                     }
                     PdKind::Ship => {
-                        let factor = shields.get(target).map(|s| s.damage_factor).unwrap_or(1.0);
+                        let factor = shields.get(e).map(|s| s.damage_factor).unwrap_or(1.0);
                         let dmg = ((beam.damage_per_tick as f32 * factor).round() as i32).max(0);
                         if dmg > 0 {
-                            if let Ok(mut crew) = crews.get_mut(target) {
+                            if let Ok(mut crew) = crews.get_mut(e) {
                                 crew.current = (crew.current - dmg).max(0);
                             }
                         }
                     }
                 }
-                beam.cooldown_s = PD_FIRE_INTERVAL_S;
             }
+            // Reset the cycle timer whether or not anything was in range,
+            // so the cadence stays steady (a press with no targets simply
+            // does nothing this cycle).
+            beam.cooldown_s = PD_FIRE_INTERVAL_S;
         }
 
         if beam.remaining <= 0.0 {
