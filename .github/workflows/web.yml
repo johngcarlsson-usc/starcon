@@ -62,6 +62,7 @@ jobs:
           # bundles long after a push.
           SHA=$(git rev-parse --short HEAD)
           sed "s|__BUILD_SHA__|${SHA}|g" web/index.html > dist/index.html
+          sed "s|__BUILD_SHA__|${SHA}|g" web/manifest.json > dist/manifest.json
           cp -r assets dist/assets
 
       - name: Show build size

@@ -653,7 +653,20 @@ fn follow_ships_with_camera(
     // for continuity. The safety valve forces fresh if the sticky box
     // has grown so wide that a body could approach the half-arena point
     // (beyond which the render offset's own image would flip).
-    const HYSTERESIS_WU: f32 = 700.0;
+    //
+    // The dead-band is the visible cost of every reframe: when we finally
+    // cross it, the framing tightens by ~HYSTERESIS_WU in one snap (and
+    // the camera centroid hops half an arena, re-imaging both ships). So
+    // we want this as SMALL as possible while still killing the flip-flop.
+    // The framing is "switch once, then stable" (after a switch the new
+    // sticky == fresh, so it won't bounce back until a ship re-crosses the
+    // boundary the other way), which means even a tiny dead-band defeats
+    // per-frame oscillation at the exact half-arena point. 700 was wildly
+    // oversized — it let the pair drift to opposite screen edges (true sep
+    // ~1150) before snapping them together with a jarring ~700 WU jolt.
+    // 150 trips the reframe at true sep ~1425, so the ships never get more
+    // than slightly-wide before the view tightens, and the snap is small.
+    const HYSTERESIS_WU: f32 = 150.0;
     let force_fresh = sticky_extent > crate::physics::ARENA_SIZE * 0.85;
     let use_fresh = force_fresh || fresh_extent + HYSTERESIS_WU < sticky_extent;
     // A genuine reframe (the images actually move to the other side) —
