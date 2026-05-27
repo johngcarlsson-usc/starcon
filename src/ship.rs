@@ -953,7 +953,7 @@ pub fn load_ship_catalog(mut commands: Commands) {
     info!("ship catalog: {} entries", ships.len());
     info!("------------------------------------------------------------");
     info!("CONTROLS");
-    info!("  P1 — Arrow keys (turn / thrust),  R-Ctrl fire,  R-Shift special");
+    info!("  P1 — Arrow keys (turn / thrust),  . fire,  / special");
     info!("  P2 — W A D      (thrust / turn),  Z fire,  L-Shift special");
     info!("  ULTIMATE — hold turn-L + turn-R + thrust + fire + special together");
     info!("  Tab / Shift+Tab        — cycle P1 to next/prev ship");

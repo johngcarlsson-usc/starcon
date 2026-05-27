@@ -158,13 +158,14 @@ fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
     // matter when more than one human is at the same keyboard.
     match slot {
         // P1 lives entirely on the RIGHT of the keyboard: arrow
-        // cluster to steer, the two right-hand modifiers to fire.
+        // cluster to steer, and the `.` / `/` keys (just left of the
+        // arrows) to fire — roomier than the cramped R-Ctrl/R-Shift.
         0 => &[
             (KeyCode::ArrowLeft, INPUT_LEFT),
             (KeyCode::ArrowRight, INPUT_RIGHT),
             (KeyCode::ArrowUp, INPUT_THRUST),
-            (KeyCode::ControlRight, INPUT_FIRE),
-            (KeyCode::ShiftRight, INPUT_SPECIAL),
+            (KeyCode::Period, INPUT_FIRE),
+            (KeyCode::Slash, INPUT_SPECIAL),
         ],
         // P2 lives entirely on the LEFT: WAD to steer, Z + L-Shift
         // (both bottom-left) to fire. Keeps the two hot-seat players
