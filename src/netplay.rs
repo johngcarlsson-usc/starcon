@@ -117,7 +117,7 @@ use bevy_ggrs::{
     GgrsPlugin, GgrsSchedule, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs, RollbackApp,
     Session,
 };
-use bevy_matchbox::matchbox_socket::WebRtcChannel;
+use bevy_matchbox::matchbox_socket::{RtcIceServerConfig, WebRtcChannel};
 use bevy_matchbox::prelude::*;
 
 use crate::AppState;
@@ -686,7 +686,28 @@ fn handle_setup_buttons(
                     base, state.target_humans, state.target_ai, state.target_humans
                 );
                 info!("netplay: opening matchbox socket → {}", url);
-                let socket = MatchboxSocket::new_unreliable(url);
+                // Build the socket with an explicit ICE config: Google
+                // STUN for the fast path, plus a free public TURN relay
+                // (OpenRelay) so peers behind symmetric NAT / CGNAT /
+                // mobile networks — where STUN-only hole-punching fails —
+                // can still connect by relaying through the TURN server.
+                // Same-machine tabs connect via host candidates and never
+                // needed this; remote peers usually do.
+                let socket = MatchboxSocket::from(
+                    WebRtcSocketBuilder::new(url)
+                        .ice_server(RtcIceServerConfig {
+                            urls: vec![
+                                "stun:stun.l.google.com:19302".to_string(),
+                                "stun:stun1.l.google.com:19302".to_string(),
+                                "turn:openrelay.metered.ca:80".to_string(),
+                                "turn:openrelay.metered.ca:443".to_string(),
+                                "turn:openrelay.metered.ca:443?transport=tcp".to_string(),
+                            ],
+                            username: Some("openrelayproject".to_string()),
+                            credential: Some("openrelayproject".to_string()),
+                        })
+                        .add_channel(ChannelConfig::unreliable()),
+                );
                 commands.insert_resource(socket);
                 state.status = LobbyStatus::Connecting;
                 state.connected = 0;
@@ -748,14 +769,29 @@ fn update_lobby(
     let Some(mut socket) = socket else {
         return;
     };
-    // Pump WebRTC: returns the list of peer state changes since
-    // the last call, but we just count connected peers afterward.
-    let _events = socket.update_peers();
+    // Pump WebRTC and log each peer state change so the browser
+    // console shows exactly how far a connection gets: a `CONNECTED`
+    // line means WebRTC (ICE) succeeded; if you only ever see
+    // "waiting" with no CONNECTED, the two peers never reached each
+    // other (different rooms, or NAT/firewall blocking even TURN).
+    for (peer, peer_state) in socket.update_peers() {
+        match peer_state {
+            PeerState::Connected => {
+                info!("netplay: peer {peer:?} CONNECTED");
+            }
+            PeerState::Disconnected => {
+                info!("netplay: peer {peer:?} disconnected");
+            }
+        }
+    }
     let remote_count = socket.connected_peers().count();
     let total = remote_count + 1; // +1 for the local player
+    let humans = state.target_humans;
+    if total != state.connected {
+        info!("netplay: players {total}/{humans} connected");
+    }
     state.connected = total;
 
-    let humans = state.target_humans;
     state.status = match state.status {
         LobbyStatus::Failed(msg) => LobbyStatus::Failed(msg),
         _ if total >= humans => LobbyStatus::SessionReady,
