@@ -118,10 +118,12 @@ impl Plugin for MobileControlsPlugin {
 pub struct TiltAimEnabled(pub bool);
 
 /// Latest device tilt, refreshed from the browser's `deviceorientation`
-/// event. `gamma` is the left-right tilt in degrees (~[-90, 90]).
+/// event and rotated into the SCREEN's frame, so it reads correctly in
+/// portrait and either landscape. `lr` is the left-right roll in
+/// degrees as the player perceives it on screen (~[-90, 90]).
 #[derive(Resource, Default)]
 pub struct TiltInput {
-    pub gamma: f32,
+    pub lr: f32,
 }
 
 /// Phone tilt (degrees off level) at which the in-place rotation hits
@@ -131,7 +133,9 @@ const TILT_FULL_TURN_DEG: f32 = 30.0;
 // --- Device-orientation (tilt) sensor, WASM only ---
 #[cfg(target_arch = "wasm32")]
 thread_local! {
+    // Raw event angles in the device's natural (portrait) frame.
     static TILT_GAMMA: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+    static TILT_BETA: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
 }
 
 /// Register a `deviceorientation` listener that stashes the latest tilt
@@ -148,6 +152,9 @@ fn setup_tilt_listener() {
             if let Some(g) = e.gamma() {
                 TILT_GAMMA.with(|c| c.set(g as f32));
             }
+            if let Some(b) = e.beta() {
+                TILT_BETA.with(|c| c.set(b as f32));
+            }
         },
     );
     let _ = window
@@ -158,11 +165,33 @@ fn setup_tilt_listener() {
 #[cfg(not(target_arch = "wasm32"))]
 fn setup_tilt_listener() {}
 
+/// Current screen orientation angle (0/90/180/270), read via reflection
+/// so we don't need extra web-sys features. Falls back to 0 (portrait).
+#[cfg(target_arch = "wasm32")]
+fn screen_orientation_angle() -> f32 {
+    use wasm_bindgen::JsValue;
+    let Some(win) = web_sys::window() else { return 0.0 };
+    let get = |obj: &JsValue, key: &str| js_sys::Reflect::get(obj, &JsValue::from_str(key)).ok();
+    get(&win, "screen")
+        .and_then(|s| get(&s, "orientation"))
+        .and_then(|o| get(&o, "angle"))
+        .and_then(|a| a.as_f64())
+        .unwrap_or(0.0) as f32
+}
+
 #[cfg(target_arch = "wasm32")]
 fn pump_tilt(mut tilt: ResMut<TiltInput>) {
-    let g = TILT_GAMMA.with(|c| c.get());
-    if tilt.gamma != g {
-        tilt.gamma = g;
+    let gamma = TILT_GAMMA.with(|c| c.get());
+    let beta = TILT_BETA.with(|c| c.get());
+    // DeviceOrientation angles are in the device's natural (portrait)
+    // frame, so in landscape the player's left-right roll lands on
+    // `beta`, not `gamma`. Rotate the (gamma, beta) tilt vector by the
+    // screen orientation so `lr` is always the on-screen left-right
+    // roll: portrait → gamma, landscape → ±beta.
+    let theta = screen_orientation_angle().to_radians();
+    let lr = gamma * theta.cos() + beta * theta.sin();
+    if tilt.lr != lr {
+        tilt.lr = lr;
     }
 }
 
@@ -551,7 +580,7 @@ fn drive_virtual_input(
             // absolute path. gamma > 0 = tilt right → a right turn
             // (negative, matching the `dir` convention).
             absolute = true;
-            turn = (-tilt.gamma / TILT_FULL_TURN_DEG).clamp(-1.0, 1.0);
+            turn = (-tilt.lr / TILT_FULL_TURN_DEG).clamp(-1.0, 1.0);
             for state in &sticks {
                 aim = state.delta;
             }
