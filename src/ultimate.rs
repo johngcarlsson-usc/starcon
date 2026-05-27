@@ -974,7 +974,11 @@ const CHMMR_HIT_PROXIMITY: f32 = 140.0;
 /// volley contact. Pinball-fast, and mass-independent — we
 /// write `vel.0` directly, so a tiny Druuge and a huge Chmmr
 /// both fly at exactly this speed when slapped.
-const CHMMR_IMPULSE_SPEED: f32 = 2400.0;
+//
+// TEMP (debug): lowered from 2400 so the spiked opponent drifts slowly
+// after the zapsat hits and the bump-set-spike is easy to eyeball.
+// Bump back up to ~2400 for the real "flung uncontrollably" feel.
+const CHMMR_IMPULSE_SPEED: f32 = 600.0;
 /// Crew damage per volley contact (× 3 hits + sustained laser).
 const CHMMR_HIT_DAMAGE: i32 = 2;
 /// Per-stage timeout so the volley can't stall forever if the

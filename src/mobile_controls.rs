@@ -14,6 +14,11 @@
 //! relative to the keyboard; on a phone they're the only way to play.
 
 use bevy::prelude::*;
+use virtual_joystick::{
+    JoystickFixed, NoAction, VirtualJoystickBundle, VirtualJoystickInteractionArea,
+    VirtualJoystickNode, VirtualJoystickPlugin, VirtualJoystickState,
+    VirtualJoystickUIBackground, VirtualJoystickUIKnob,
+};
 
 use crate::input::{
     PlayerInput, VirtualInput, INPUT_FIRE, INPUT_LEFT, INPUT_RIGHT, INPUT_SPECIAL,
@@ -22,9 +27,7 @@ use crate::input::{
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TouchAction {
-    Left,
-    Right,
-    Thrust,
+    // Turn/thrust now come from the virtual analog stick, not buttons.
     Fire,
     Special,
     Ultimate,
@@ -41,9 +44,6 @@ pub enum TouchAction {
 impl TouchAction {
     fn mask(self) -> Option<u8> {
         match self {
-            TouchAction::Left => Some(INPUT_LEFT),
-            TouchAction::Right => Some(INPUT_RIGHT),
-            TouchAction::Thrust => Some(INPUT_THRUST),
             TouchAction::Fire => Some(INPUT_FIRE),
             TouchAction::Special => Some(INPUT_SPECIAL),
             TouchAction::Ultimate => Some(INPUT_ULTIMATE),
@@ -54,9 +54,6 @@ impl TouchAction {
     }
     fn label(self) -> &'static str {
         match self {
-            TouchAction::Left => "<",
-            TouchAction::Right => ">",
-            TouchAction::Thrust => "^",
             TouchAction::Fire => "FIRE",
             TouchAction::Special => "SPEC",
             TouchAction::Ultimate => "ULT",
@@ -98,16 +95,24 @@ pub struct MobileControlsPlugin;
 
 impl Plugin for MobileControlsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TouchButtonsVisible>()
+        app.add_plugins(VirtualJoystickPlugin::<u8>::default())
+            .init_resource::<TouchButtonsVisible>()
             .add_systems(Startup, spawn_touch_controls)
             .add_systems(Update, (drive_virtual_input, apply_visibility));
     }
 }
 
+// Virtual analog stick (left thumb). Sized to sit where the old D-pad
+// was; the knob rides inside the base.
+const STICK_BASE: f32 = 150.0;
+const STICK_KNOB: f32 = 72.0;
+/// Stick deflection (0..1 per axis) past which a direction registers.
+/// Below this the stick reads as centred (no input).
+const STICK_DEADZONE: f32 = 0.3;
+
 // Compact "Nintendo gamepad" sizing: a small directional cross on
 // the left, a face-button diamond on the right. Kept deliberately
 // little so the buttons don't swallow the play area on a phone.
-const DPAD_BTN: f32 = 46.0;
 const FACE_BTN: f32 = 50.0;
 const ULT_BTN: f32 = 42.0;
 const CHIP_BTN: f32 = 34.0;
@@ -115,8 +120,9 @@ const BTN_MARGIN: f32 = 16.0;
 const PAD_GAP: f32 = 10.0;
 const BTN_ALPHA: f32 = 0.32;
 
-fn spawn_touch_controls(mut commands: Commands) {
-    let dpad_color = Color::srgba(0.20, 0.55, 0.95, BTN_ALPHA);
+fn spawn_touch_controls(mut commands: Commands, assets: Res<AssetServer>) {
+    let stick_color = Color::srgba(0.45, 0.70, 1.0, 0.55);
+    let stick_bg_color = Color::srgba(0.20, 0.55, 0.95, BTN_ALPHA * 0.7);
     let fire_color = Color::srgba(0.95, 0.45, 0.25, BTN_ALPHA);
     let spec_color = Color::srgba(0.65, 0.30, 0.95, BTN_ALPHA);
     let ult_color = Color::srgba(1.0, 0.85, 0.20, BTN_ALPHA);
@@ -126,63 +132,74 @@ fn spawn_touch_controls(mut commands: Commands) {
     // or not, so make it as unobtrusive as possible.
     let toggle_color = Color::srgba(0.4, 0.4, 0.4, 0.22);
 
-    // ---- Left: directional cross (D-pad) ----
-    // Thrust on top, turn-left / turn-right below it, arranged as a
-    // little cross so the thumb rocks between them like a real pad.
-    let dpad_w = DPAD_BTN * 2.0 + PAD_GAP;
-    let dpad_h = DPAD_BTN * 2.0 + PAD_GAP;
+    // ---- Left: virtual analog stick (replaces the D-pad) ----
+    // A real thumb-stick from the `virtual_joystick` crate: drag it in
+    // any direction and the ship turns AND thrusts together (a diagonal
+    // push sets the turn and thrust bits at once) instead of jabbing
+    // separate buttons. `drive_virtual_input` reads its analog `delta`
+    // each frame. Tagged TouchButtonCluster so the +-knob hides/shows
+    // it with the rest of the touch UI. Structure mirrors the crate's
+    // `create_joystick` helper, but spawned inline so we can attach our
+    // own marker to the root.
+    let knob_img = assets.load("ui/joystick_knob.png");
+    let base_img = assets.load("ui/joystick_base.png");
     commands
         .spawn((
             TouchButtonCluster,
-            Node {
+            VirtualJoystickBundle::new(
+                VirtualJoystickNode::<u8>::default()
+                    .with_id(0)
+                    .with_behavior(JoystickFixed)
+                    .with_action(NoAction),
+            )
+            .set_style(Node {
                 position_type: PositionType::Absolute,
                 bottom: Val::Px(BTN_MARGIN),
                 left: Val::Px(BTN_MARGIN),
-                width: Val::Px(dpad_w),
-                height: Val::Px(dpad_h),
+                width: Val::Px(STICK_BASE),
+                height: Val::Px(STICK_BASE),
                 ..default()
-            },
+            }),
         ))
-        .with_children(|pad| {
-            // ▲ thrust — top-center
-            spawn_gamepad_btn(
-                pad,
-                TouchAction::Thrust,
-                dpad_color,
-                DPAD_BTN,
-                10.0,
-                Val::Px(0.0),
-                Val::Px((dpad_w - DPAD_BTN) * 0.5),
-                Val::Auto,
-                Val::Auto,
-                20.0,
-            );
-            // ◀ turn-left — bottom-left
-            spawn_gamepad_btn(
-                pad,
-                TouchAction::Left,
-                dpad_color,
-                DPAD_BTN,
-                10.0,
-                Val::Auto,
-                Val::Px(0.0),
-                Val::Auto,
-                Val::Px(0.0),
-                20.0,
-            );
-            // ▶ turn-right — bottom-right
-            spawn_gamepad_btn(
-                pad,
-                TouchAction::Right,
-                dpad_color,
-                DPAD_BTN,
-                10.0,
-                Val::Auto,
-                Val::Auto,
-                Val::Px(0.0),
-                Val::Px(0.0),
-                20.0,
-            );
+        .with_children(|j| {
+            j.spawn((
+                VirtualJoystickInteractionArea,
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+            ));
+            j.spawn((
+                VirtualJoystickUIKnob,
+                ImageNode {
+                    color: stick_color,
+                    image: knob_img,
+                    ..default()
+                },
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(STICK_KNOB),
+                    height: Val::Px(STICK_KNOB),
+                    ..default()
+                },
+                ZIndex(1),
+            ));
+            j.spawn((
+                VirtualJoystickUIBackground,
+                ImageNode {
+                    color: stick_bg_color,
+                    image: base_img,
+                    ..default()
+                },
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(STICK_BASE),
+                    height: Val::Px(STICK_BASE),
+                    ..default()
+                },
+                ZIndex(0),
+            ));
         });
 
     // ---- Right: face-button diamond ----
@@ -378,6 +395,8 @@ fn drive_virtual_input(
     mut virt: ResMut<VirtualInput>,
     mut visible: ResMut<TouchButtonsVisible>,
     mut buttons: Query<(&Interaction, &TouchAction, &mut LastInteraction)>,
+    sticks: Query<&VirtualJoystickState>,
+    mut last_stick: Local<u8>,
 ) {
     let mut held = PlayerInput::default();
     let mut pressed = PlayerInput::default();
@@ -413,6 +432,38 @@ fn drive_virtual_input(
         }
         last.0 = *interaction;
     }
+
+    // Analog stick → directional bits. The crate keeps the current
+    // thumb deflection in `delta` (-1..1 per axis, already y-up). A
+    // dead-zone keeps a roughly-centred stick from registering, and
+    // because x and y are independent a diagonal push naturally sets
+    // turn AND thrust at the same time — the whole point of the stick.
+    // Only when the touch UI is revealed — the joystick crate matches
+    // raw touch/mouse positions against the node rect and doesn't honour
+    // `Visibility::Hidden`, so without this guard a drag in the bottom-
+    // left corner would steer P1 even while the controls are hidden.
+    let mut stick = 0u8;
+    if visible.0 {
+        for state in &sticks {
+            let d = state.delta;
+            if d.x < -STICK_DEADZONE {
+                stick |= INPUT_LEFT;
+            } else if d.x > STICK_DEADZONE {
+                stick |= INPUT_RIGHT;
+            }
+            if d.y > STICK_DEADZONE {
+                stick |= INPUT_THRUST;
+            }
+        }
+    }
+    // Edges for the stick bits (Inertial-mode steering watches the
+    // turn-key release), diffed against last frame's stick state.
+    let stick_pressed = stick & !*last_stick;
+    let stick_released = !stick & *last_stick;
+    *last_stick = stick;
+    held.buttons |= stick;
+    pressed.buttons |= stick_pressed;
+    released.buttons |= stick_released;
 
     virt.held = held;
     virt.just_pressed = pressed;

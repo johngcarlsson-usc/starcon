@@ -7,6 +7,7 @@ mod menu;
 mod netplay;
 mod physics;
 mod rng;
+mod settings_menu;
 mod ship;
 mod mobile_controls;
 mod starfield;
@@ -79,6 +80,7 @@ fn main() {
             menu::MenuPlugin,
             ai::AiPlugin,
             rng::RngPlugin,
+            settings_menu::SettingsMenuPlugin,
         ))
         .init_resource::<ship::PreloadedAssets>()
         .add_systems(Startup, (setup_camera, ship::preload_all_assets))

@@ -6153,6 +6153,7 @@ dependencies = [
  "rust-ini",
  "serde",
  "serde_json",
+ "virtual_joystick",
  "web-sys",
 ]
 
@@ -6840,6 +6841,17 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "virtual_joystick"
+version = "2.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbdf4bdf7e07affe66c10dbd6f863d199f5253a0f36a7078a3df655e84fb8ac4"
+dependencies = [
+ "bevy",
+ "serde",
+ "variadics_please",
+]
 
 [[package]]
 name = "virtue"

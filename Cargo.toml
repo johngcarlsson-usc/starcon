@@ -54,6 +54,7 @@ fastrand = "2"
 # Activated via the `tools` feature so the game binary stays lean.
 image = { version = "0.25", default-features = false, features = ["bmp", "png"], optional = true }
 serde_json = { version = "1", optional = true }
+virtual_joystick = "2.7"
 
 [features]
 default = []
