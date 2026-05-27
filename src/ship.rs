@@ -520,9 +520,13 @@ pub struct ShieldActive {
 pub struct PointDefenseActive {
     pub remaining: f32,
     pub range: f32,
-    /// Damage applied to each enemy ship still in range each tick.
-    /// Enemy *projectiles* in range are unconditionally despawned.
+    /// Damage dealt to the target each time the laser fires.
     pub damage_per_tick: i32,
+    /// Seconds until the laser can fire again. The SDI laser fires
+    /// discrete shots at one target per cycle (not continuously every
+    /// physics tick), so it reads as visible pulses and doesn't deal
+    /// 60-per-second damage.
+    pub cooldown_s: f32,
 }
 
 /// Bevy component on-add hook: tag the new entity with
@@ -730,6 +734,15 @@ pub struct MeltrChargeState {
 /// alive, `None` otherwise. The dedicated tick system clears it
 /// either when the projectile dies on a hit (collision → despawn) or
 /// after the on-release behaviour fires.
+/// Shofixti Glory Device arming state: the suicide blast needs three
+/// `special` presses to confirm. Presses reset if you wait too long, so
+/// a stray tap doesn't leave you primed to die.
+#[derive(Component, Debug, Default)]
+pub struct ShofixtiGlory {
+    pub presses: u8,
+    pub since_last_s: f32,
+}
+
 #[derive(Component, Debug, Default)]
 pub struct CrystalCarrier {
     pub current: Option<Entity>,
@@ -889,6 +902,7 @@ impl Plugin for ShipPlugin {
                 replenish_asteroids,
                 tick_alary_mirv,
                 tick_alary_turrets,
+                tick_shofixti_glory,
             ),
         )
         .add_systems(
@@ -1308,6 +1322,9 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Chebr) {
         entity.insert(CrystalCarrier::default());
+    }
+    if matches!(class, ShipClass::Shosc) {
+        entity.insert(ShofixtiGlory::default());
     }
     if matches!(class, ShipClass::Meltr) {
         entity.insert(MeltrChargeState::default());
@@ -1934,20 +1951,11 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 3.0 / 20.0,
             },
             special: AbilitySpec {
-                // .ini Special Range=13 → 520 u, Damage=20, Scale=2.5.
-                // Canonical: 3 presses → blast everything in range and
-                // damage self by 999. We don't have the 3-press
-                // confirmation yet (TODO: shpshosc.cpp:52); for now,
-                // single-press → instant blast.
-                kind: AbilityKind::SpawnDamageZone {
-                    offset: Vec2::ZERO,
-                    radius: 13.0 * SC2_RANGE_SCALE,
-                    damage_per_sec: 1_000_000.0,
-                    duration_s: 0.1,
-                    source_self: false,
-                    color: Color::srgba(1.0, 0.6, 0.2, 0.55),
-                },
-                cooldown_s: 999.0,
+                // Glory Device: 3 presses to confirm the suicide blast
+                // (shpshosc.cpp). Counted by `tick_shofixti_glory`, which
+                // spawns the range-13 blast on the third press.
+                kind: AbilityKind::ManagedExternally { ident: "shofixti-glory" },
+                cooldown_s: 0.0,
             },
         }),
 
@@ -1995,7 +2003,10 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 1.0 / 20.0,
             },
             special: AbilitySpec {
-                kind: AbilityKind::RefillBattery,
+                // Taunt: recharge a chunk per press (BattMax=12), never
+                // battery-gated, so the Pkunk can always insult its way
+                // back from empty instead of dying at 0 battery.
+                kind: AbilityKind::AddBattery { amount: 4 },
                 cooldown_s: 16.0 / 20.0,
             },
         }),
@@ -4402,6 +4413,53 @@ fn tick_alary_turrets(
     }
 }
 
+/// Shofixti Glory Device — three `special` presses to detonate. Each
+/// press arms a stage; the third spawns the range-13 suicide blast
+/// (a `DamageZone` with no source exemption, so it kills the Shofixti
+/// too). Presses time out after a short window so a stray tap doesn't
+/// leave the ship primed.
+fn tick_shofixti_glory(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(&Ship, &Position, &mut ShofixtiGlory)>,
+) {
+    const RESET_WINDOW_S: f32 = 1.5;
+    let dt = time.delta_secs();
+    for (ship, pos, mut glory) in &mut ships {
+        if slot_inputs.just_pressed(ship.player_slot, input::INPUT_SPECIAL) {
+            glory.presses += 1;
+            glory.since_last_s = 0.0;
+            info!(
+                "P{} Glory Device armed {}/3",
+                ship.player_slot + 1,
+                glory.presses
+            );
+            if glory.presses >= 3 {
+                glory.presses = 0;
+                // Range-13 blast, no source exemption → the Shofixti
+                // dies in the blaze too. Big damage-per-sec over a short
+                // window for the "blaze of glory" lethality.
+                spawn_damage_zone(
+                    &mut commands,
+                    None,
+                    pos.0,
+                    13.0 * SC2_RANGE_SCALE,
+                    1_000_000.0,
+                    0.12,
+                    Color::srgba(1.0, 0.6, 0.2, 0.55),
+                );
+                info!("P{} GLORY DEVICE detonates", ship.player_slot + 1);
+            }
+        } else {
+            glory.since_last_s += dt;
+            if glory.presses > 0 && glory.since_last_s > RESET_WINDOW_S {
+                glory.presses = 0;
+            }
+        }
+    }
+}
+
 /// Steer each `Homing` projectile toward the nearest enemy ship (an
 /// enemy is "ship whose `player_slot` ≠ projectile owner's slot").
 ///
@@ -4804,64 +4862,107 @@ fn tick_shield(
 fn tick_point_defense(
     mut commands: Commands,
     time: Res<Time<Physics>>,
+    assets: Res<AssetServer>,
     spatial: avian2d::prelude::SpatialQuery,
     mut firers: Query<(Entity, &Ship, &Position, &mut PointDefenseActive)>,
+    positions: Query<&Position>,
     projectiles: Query<&Projectile>,
+    asteroids: Query<(), With<Asteroid>>,
     ships_invisible: Query<(), With<Invisible>>,
     ship_data: Query<&Ship>,
     mut crews: Query<&mut Crew>,
     shields: Query<&ShieldActive>,
 ) {
     use avian2d::prelude::SpatialQueryFilter;
+    // The SDI laser fires discrete shots: each cycle it picks the single
+    // nearest threat (incoming shot, asteroid, or enemy ship), zaps it,
+    // and draws a brief laser line. Rate-limited so it reads as pulses
+    // and doesn't deal physics-tick-rate damage.
+    const PD_FIRE_INTERVAL_S: f32 = 0.12;
     let dt = time.delta_secs();
     for (firer_entity, firer, firer_pos, mut beam) in &mut firers {
-        // Avian-native: query everything in the PD radius from the
-        // firer's position. Replaces the per-tick "iterate
-        // projectiles + ships + distance check" scan.
-        let probe = Collider::circle(beam.range);
-        let filter = SpatialQueryFilter::default().with_excluded_entities([firer_entity]);
-        let candidates = spatial.shape_intersections(&probe, firer_pos.0, 0.0, &filter);
+        beam.remaining -= dt;
+        beam.cooldown_s -= dt;
+        if beam.cooldown_s <= 0.0 {
+            let probe = Collider::circle(beam.range);
+            let filter = SpatialQueryFilter::default().with_excluded_entities([firer_entity]);
+            let candidates = spatial.shape_intersections(&probe, firer_pos.0, 0.0, &filter);
 
-        for entity in candidates {
-            // Hostile projectiles in range get nuked.
-            if let Ok(proj) = projectiles.get(entity) {
-                if proj.owner != firer_entity {
-                    commands.entity(entity).despawn();
-                }
-                continue;
-            }
-            // Hostile non-invisible ships take per-tick damage.
-            if beam.damage_per_tick > 0 {
-                if ships_invisible.get(entity).is_ok() {
-                    continue;
-                }
-                let Ok(target_ship) = ship_data.get(entity) else {
+            // Pick the nearest valid target this cycle.
+            let mut best: Option<(Entity, f32, PdKind)> = None;
+            for e in candidates {
+                let kind = if let Ok(proj) = projectiles.get(e) {
+                    if proj.owner == firer_entity {
+                        continue; // our own shot
+                    }
+                    PdKind::Projectile
+                } else if asteroids.get(e).is_ok() {
+                    PdKind::Asteroid
+                } else if let Ok(ts) = ship_data.get(e) {
+                    if ts.player_slot == firer.player_slot || ships_invisible.get(e).is_ok() {
+                        continue;
+                    }
+                    PdKind::Ship
+                } else {
                     continue;
                 };
-                if target_ship.player_slot == firer.player_slot {
-                    continue;
+                let Ok(p) = positions.get(e) else { continue };
+                let d2 = (p.0 - firer_pos.0).length_squared();
+                if best.map(|(_, bd, _)| d2 < bd).unwrap_or(true) {
+                    best = Some((e, d2, kind));
                 }
-                let factor = shields
-                    .get(entity)
-                    .map(|s| s.damage_factor)
-                    .unwrap_or(1.0);
-                let dmg = ((beam.damage_per_tick as f32 * factor).round() as i32).max(0);
-                if dmg > 0 {
-                    if let Ok(mut crew) = crews.get_mut(entity) {
-                        crew.current = (crew.current - dmg).max(0);
+            }
+
+            if let Some((target, _, kind)) = best {
+                let target_pos = positions.get(target).map(|p| p.0).unwrap_or(firer_pos.0);
+                // Visible laser line from ship to target.
+                let delta = target_pos - firer_pos.0;
+                let len = delta.length().max(1.0);
+                let mid = (firer_pos.0 + target_pos) * 0.5;
+                let angle = delta.y.atan2(delta.x) - std::f32::consts::FRAC_PI_2;
+                commands.spawn((
+                    ZapFlash { remaining_s: 0.08, total_s: 0.08 },
+                    Sprite::from_color(Color::srgba(0.6, 1.0, 1.0, 0.95), Vec2::new(3.0, len)),
+                    Transform {
+                        translation: mid.extend(0.32),
+                        rotation: Quat::from_rotation_z(angle),
+                        scale: Vec3::ONE,
+                    },
+                ));
+                match kind {
+                    PdKind::Projectile => {
+                        commands.entity(target).despawn();
+                    }
+                    PdKind::Asteroid => {
+                        spawn_asteroid_explosion(&mut commands, &assets, target_pos, 24.0);
+                        commands.entity(target).despawn();
+                    }
+                    PdKind::Ship => {
+                        let factor = shields.get(target).map(|s| s.damage_factor).unwrap_or(1.0);
+                        let dmg = ((beam.damage_per_tick as f32 * factor).round() as i32).max(0);
+                        if dmg > 0 {
+                            if let Ok(mut crew) = crews.get_mut(target) {
+                                crew.current = (crew.current - dmg).max(0);
+                            }
+                        }
                     }
                 }
+                beam.cooldown_s = PD_FIRE_INTERVAL_S;
             }
         }
 
-        beam.remaining -= dt;
         if beam.remaining <= 0.0 {
-            commands
-                .entity(firer_entity)
-                .remove::<PointDefenseActive>();
+            commands.entity(firer_entity).remove::<PointDefenseActive>();
             info!("P{} point defense offline", firer.player_slot + 1);
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum PdKind {
+    Projectile,
+    Asteroid,
+    Ship,
 }
 
 /// Reposition each attached zone to follow its owner, then apply

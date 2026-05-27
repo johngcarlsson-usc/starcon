@@ -80,6 +80,12 @@ pub enum AbilityKind {
     /// set current=max.
     RefillBattery,
 
+    /// Add a fixed `amount` to battery (clamped to max), NOT full. The
+    /// dispatcher treats this as a recharge: it is never battery-gated
+    /// and never drains, so it works even at 0 battery — the Pkunk taunt
+    /// (`shppkunk.c`) recharges a chunk per press instead of topping out.
+    AddBattery { amount: i32 },
+
     /// Burn `crew_cost` crew to add `batt_gain` to battery. Skips with
     /// no effect if the firer has ≤ 1 crew or the battery is already
     /// full. Canonical Druuge special (shpdruma.cpp:calculate_fire_special).
@@ -418,10 +424,16 @@ fn dispatch_special(
         if !triggered {
             continue;
         }
-        if ship.stats.special_drain > 0 && batt.current < ship.stats.special_drain {
-            continue;
+        // Recharge specials (AddBattery, e.g. the Pkunk taunt) are never
+        // battery-gated and never drain — otherwise they'd be unusable at
+        // 0 battery, which is exactly when you need to recharge.
+        let is_recharge = matches!(abilities.special.kind, AbilityKind::AddBattery { .. });
+        if !is_recharge {
+            if ship.stats.special_drain > 0 && batt.current < ship.stats.special_drain {
+                continue;
+            }
+            batt.current = (batt.current - ship.stats.special_drain).max(0);
         }
-        batt.current = (batt.current - ship.stats.special_drain).max(0);
         // Specials reuse weapon_damage for projectile damage today;
         // when a per-ability damage override is needed (e.g. Syreen
         // siren song damage scales with range, not weapon_damage),
@@ -602,6 +614,7 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
                 remaining: *duration_s,
                 range: *range,
                 damage_per_tick: *damage_per_tick,
+                cooldown_s: 0.0,
             });
             info!("P{} point defense online", slot);
         }
@@ -622,6 +635,10 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
         AbilityKind::RefillBattery => {
             ctx.batt.current = ctx.batt.max;
             info!("P{} battery refilled", slot);
+        }
+        AbilityKind::AddBattery { amount } => {
+            ctx.batt.current = (ctx.batt.current + amount).min(ctx.batt.max);
+            info!("P{} taunt → battery {}/{}", slot, ctx.batt.current, ctx.batt.max);
         }
         AbilityKind::BurnCrewForBattery {
             crew_cost,
