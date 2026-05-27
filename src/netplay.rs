@@ -200,9 +200,11 @@ pub const INPUT_DELAY: usize = 2;
 ///   - or `ngrok http 3536` → wss URL
 ///   Then both peers use that URL: `?signal=wss://abc.ngrok.io`.
 ///
-/// The default below points to a placeholder; the lobby will
-/// fail to connect unless `?signal=` overrides it.
-pub const SIGNALING_URL: &str = "ws://localhost:3536";
+/// Default matchbox signaling server. Points at the deployed Replit
+/// Reserved-VM matchbox so the plain GitHub Pages URL works online with
+/// no query string. Override with `?signal=ws(s)://host` for local dev
+/// (`ws://localhost:3536`) or a different server.
+pub const SIGNALING_URL: &str = "wss://basic-boilerplate.replit.app";
 
 /// Set by `menu.rs` when the player picks "Online". Read on
 /// OnEnter(LobbyOnline) to decide whether to open a socket.
@@ -239,26 +241,24 @@ pub struct IceOverride {
 
 /// Build the ICE server list for the matchbox socket.
 ///
-/// STUN: `?stun=` overrides it; `?stun=none` disables it (relay-only);
-/// unset uses Google STUN. TURN: `?turn=`/`?turn_user=`/`?turn_cred=`
-/// override it, else best-effort OpenRelay over UDP.
+/// Defaults (tuned for this game's players, who sit behind symmetric
+/// NAT and thus always relay): NO STUN, and a single TCP TURN relay.
+/// matchbox 0.14 gathers ICE NON-trickle — each side blocks until the
+/// browser finishes gathering before sending its offer/answer, with no
+/// timeout cap — so any listed server the network can't reach (or a
+/// lossy UDP path that makes the TURN Allocate retransmit) stalls the
+/// connect ~40s per side. We measured exactly that: STUN and UDP/TLS
+/// relays stalled ~90s; the TCP relay connects in a couple of seconds.
 ///
-/// Why this is finicky: matchbox 0.14 gathers ICE NON-trickle — each
-/// side blocks until the browser finishes gathering before it sends
-/// its offer/answer, with no timeout cap. So ANY listed server the
-/// network can't reach stalls every connect ~39.5 s per side. The
-/// fastest config lists only servers that actually respond; for a
-/// symmetric-NAT network that always relays, that can mean dropping
-/// STUN entirely and listing one reachable TURN endpoint.
+/// Overrides (URL query params): `?stun=` adds a STUN server (or
+/// `none`); `?turn=`/`?turn_user=`/`?turn_cred=` swap the relay (e.g.
+/// for a self-hosted coturn).
 fn build_ice_config(over: &IceOverride) -> RtcIceServerConfig {
     let mut urls = Vec::new();
+    // STUN is opt-in only — see the non-trickle stall note above.
     match over.stun_url.as_deref() {
-        Some("none") | Some("") => {}
+        Some("none") | Some("") | None => {}
         Some(s) => urls.push(s.to_string()),
-        None => {
-            urls.push("stun:stun.l.google.com:19302".to_string());
-            urls.push("stun:stun1.l.google.com:19302".to_string());
-        }
     }
     if let Some(turn) = &over.turn_url {
         urls.push(turn.clone());
@@ -268,12 +268,14 @@ fn build_ice_config(over: &IceOverride) -> RtcIceServerConfig {
             credential: over.turn_cred.clone(),
         }
     } else {
-        urls.push("turn:openrelay.metered.ca:80".to_string());
-        urls.push("turn:openrelay.metered.ca:443".to_string());
+        // metered.ca TCP relay — the transport proven to connect fast
+        // on a lossy-UDP / symmetric-NAT network. Free-tier creds; you
+        // can regenerate them in the metered dashboard if abused.
+        urls.push("turn:global.relay.metered.ca:80?transport=tcp".to_string());
         RtcIceServerConfig {
             urls,
-            username: Some("openrelayproject".to_string()),
-            credential: Some("openrelayproject".to_string()),
+            username: Some("a6c88029d884fc61f4607daa".to_string()),
+            credential: Some("4cJdlCmAI4qGgnwo".to_string()),
         }
     }
 }
