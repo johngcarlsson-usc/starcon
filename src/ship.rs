@@ -16,6 +16,11 @@ pub struct ShipStats {
     pub name: String,
     pub origin: String,
     pub crew_max: i32,
+    /// Starting crew (`.ini` `Crew`), which can be below `crew_max` —
+    /// the Syreen starts at 12 of 42 and absorbs enemy crew via its
+    /// song. Defaults to `crew_max` when the `.ini` omits a distinct
+    /// `Crew`, so every other ship still starts full.
+    pub crew_start: i32,
     pub batt_max: i32,
     pub speed_max: f32,
     pub accel_rate: f32,
@@ -58,6 +63,11 @@ impl ShipStats {
             name,
             origin: info.get("Origin").unwrap_or("").to_string(),
             crew_max: g(ship, "CrewMax"),
+            crew_start: {
+                let cm: i32 = g(ship, "CrewMax");
+                let c: i32 = g(ship, "Crew");
+                if c > 0 { c.min(cm) } else { cm }
+            },
             batt_max: g(ship, "BattMax"),
             speed_max: g(ship, "SpeedMax"),
             accel_rate: g(ship, "AccelRate"),
@@ -1239,7 +1249,7 @@ fn spawn_ship(
         },
         class,
         Crew {
-            current: stats.crew_max,
+            current: stats.crew_start,
             max: stats.crew_max,
         },
         Battery {
@@ -5636,9 +5646,15 @@ fn apply_syreen_drain(
                 }
             }
         }
+        // The lured crew "jump ship" and join the Syreen — it absorbs
+        // them up to its (large) max, which is why it starts under-
+        // crewed. Apply after the loop so we don't borrow `crews` twice.
         if drained_total > 0 {
+            if let Ok(mut firer_crew) = crews.get_mut(firer_entity) {
+                firer_crew.current = (firer_crew.current + drained_total).min(firer_crew.max);
+            }
             info!(
-                "P{} Syreen song drained {} crew",
+                "P{} Syreen song lured {} crew aboard",
                 firer_ship.player_slot + 1,
                 drained_total
             );
