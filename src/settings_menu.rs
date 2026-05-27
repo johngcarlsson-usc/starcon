@@ -174,15 +174,22 @@ fn handle_settings_buttons(
     mut debug_collider: ResMut<DebugCollider>,
     mut camera_mode: ResMut<CameraFollowMode>,
     mut zoom: ResMut<crate::starfield::ZoomState>,
-    mut tilt_aim: ResMut<crate::mobile_controls::TiltAimEnabled>,
+    mut scheme: ResMut<crate::mobile_controls::MobileScheme>,
 ) {
+    use crate::mobile_controls::MobileScheme;
     for (interaction, button) in &interactions {
         if !matches!(interaction, Interaction::Pressed) {
             continue;
         }
         match button {
             SettingButton::Toggle => open.0 = !open.0,
-            SettingButton::TiltAim => tilt_aim.0 = !tilt_aim.0,
+            SettingButton::TiltAim => {
+                *scheme = match *scheme {
+                    MobileScheme::Normal => MobileScheme::AbsoluteTilt,
+                    MobileScheme::AbsoluteTilt => MobileScheme::Absolute,
+                    MobileScheme::Absolute => MobileScheme::Normal,
+                };
+            }
             SettingButton::Steering => {
                 angular.0 = match angular.0 {
                     None => Some(AngularControl::Classic),
@@ -231,7 +238,7 @@ fn update_setting_labels(
     angular: Res<AngularControlOverride>,
     debug_collider: Res<DebugCollider>,
     camera_mode: Res<CameraFollowMode>,
-    tilt_aim: Res<crate::mobile_controls::TiltAimEnabled>,
+    scheme: Res<crate::mobile_controls::MobileScheme>,
     mut labels: Query<(&SettingValueText, &mut Text)>,
 ) {
     for (label, mut text) in &mut labels {
@@ -255,7 +262,13 @@ fn update_setting_labels(
                 format!("Camera: {v}")
             }
             SettingButton::TiltAim => {
-                format!("Tilt+Aim: {}", if tilt_aim.0 { "On" } else { "Off" })
+                use crate::mobile_controls::MobileScheme;
+                let v = match *scheme {
+                    MobileScheme::Normal => "Off",
+                    MobileScheme::AbsoluteTilt => "Tilt+Aim",
+                    MobileScheme::Absolute => "Aim only",
+                };
+                format!("Steer mode: {v}")
             }
             SettingButton::Toggle => continue,
         };

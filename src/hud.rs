@@ -76,15 +76,22 @@ impl Plugin for HudPlugin {
                     destroy_zero_crew_ships,
                     detect_winner,
                     update_status_banner,
+                    compact_hud_for_touch,
                 )
                     .run_if(in_state(crate::AppState::InMatch)),
             );
     }
 }
 
-const BAR_WIDTH_PX: f32 = 180.0;
 const BAR_HEIGHT_PX: f32 = 12.0;
 const PANEL_BG: Color = Color::srgba(0.08, 0.10, 0.16, 0.85);
+/// HUD column width: full when playing with keyboard, compact when the
+/// on-screen touch controls are showing (so it doesn't crowd a phone).
+const HUD_WIDTH_FULL: f32 = 220.0;
+const HUD_WIDTH_COMPACT: f32 = 132.0;
+/// Panel background when compact — more transparent so it stays out of
+/// the way of the play area on mobile.
+const PANEL_BG_COMPACT: Color = Color::srgba(0.08, 0.10, 0.16, 0.45);
 const BAR_BG: Color = Color::srgb(0.12, 0.14, 0.18);
 const CREW_COLOR: Color = Color::srgb(0.35, 0.95, 0.50);
 const BATT_COLOR: Color = Color::srgb(0.45, 0.75, 1.00);
@@ -94,6 +101,40 @@ const BATT_COLOR: Color = Color::srgb(0.45, 0.75, 1.00);
 #[derive(Component)]
 struct HudNode;
 
+/// The right-edge stat column; `compact_hud_for_touch` resizes it.
+#[derive(Component)]
+struct HudColumn;
+
+/// A per-player stat panel; goes more transparent in compact mode.
+#[derive(Component)]
+struct HudPanel;
+
+/// Shrink + fade the stat HUD whenever the on-screen touch controls are
+/// showing (i.e. the player is on a phone), so the bars don't eat the
+/// right edge of a small screen. Reverts to the full panel for
+/// keyboard play.
+fn compact_hud_for_touch(
+    touch: Res<crate::mobile_controls::TouchButtonsVisible>,
+    mut columns: Query<&mut Node, With<HudColumn>>,
+    mut panels: Query<&mut BackgroundColor, With<HudPanel>>,
+) {
+    // Runs every frame but only writes on an actual change, so it picks
+    // up both toggles and the initial state when the HUD first spawns
+    // without re-triggering a layout pass each frame.
+    let width = Val::Px(if touch.0 { HUD_WIDTH_COMPACT } else { HUD_WIDTH_FULL });
+    for mut node in &mut columns {
+        if node.width != width {
+            node.width = width;
+        }
+    }
+    let bg = if touch.0 { PANEL_BG_COMPACT } else { PANEL_BG };
+    for mut color in &mut panels {
+        if color.0 != bg {
+            color.0 = bg;
+        }
+    }
+}
+
 fn setup_hud(mut commands: Commands, config: Res<crate::ship::MatchConfig>) {
     // Right-edge column with one panel per active slot stacked
     // vertically. Slot count comes from `MatchConfig` — the
@@ -102,12 +143,13 @@ fn setup_hud(mut commands: Commands, config: Res<crate::ship::MatchConfig>) {
     commands
         .spawn((
             HudNode,
+            HudColumn,
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(0.0),
                 right: Val::Px(0.0),
                 bottom: Val::Px(0.0),
-                width: Val::Px(220.0),
+                width: Val::Px(HUD_WIDTH_FULL),
                 flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::SpaceBetween,
                 padding: UiRect::all(Val::Px(12.0)),
@@ -164,6 +206,7 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, slot: usize) {
 
     parent
         .spawn((
+            HudPanel,
             Node {
                 width: Val::Percent(100.0),
                 flex_direction: FlexDirection::Column,
@@ -247,7 +290,9 @@ fn spawn_stat_row<F>(
             // Bottom: the bar (BG + fill child)
             row.spawn((
                 Node {
-                    width: Val::Px(BAR_WIDTH_PX),
+                    // Track the column width (it shrinks in compact mode)
+                    // instead of a fixed pixel width.
+                    width: Val::Percent(100.0),
                     height: Val::Px(BAR_HEIGHT_PX),
                     ..default()
                 },

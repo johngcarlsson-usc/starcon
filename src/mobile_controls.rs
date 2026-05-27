@@ -97,7 +97,7 @@ impl Plugin for MobileControlsPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(VirtualJoystickPlugin::<u8>::default())
             .init_resource::<TouchButtonsVisible>()
-            .init_resource::<TiltAimEnabled>()
+            .init_resource::<MobileScheme>()
             .init_resource::<TiltInput>()
             .add_systems(Startup, (spawn_touch_controls, setup_tilt_listener))
             .add_systems(
@@ -112,10 +112,19 @@ impl Plugin for MobileControlsPlugin {
     }
 }
 
-/// On when the "Tilt + absolute aim" control scheme is selected
-/// (settings menu). Drives `drive_virtual_input` into absolute-aim mode.
-#[derive(Resource, Default)]
-pub struct TiltAimEnabled(pub bool);
+/// Mobile control scheme, cycled from the settings menu. `Normal` is
+/// the relative-turn joystick; the two absolute modes point the ship
+/// where the stick points (twin-stick aim), differing only in whether
+/// phone tilt also rotates the ship when the stick is centred.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MobileScheme {
+    #[default]
+    Normal,
+    /// Absolute aim + phone tilt rotates in place when stick is idle.
+    AbsoluteTilt,
+    /// Absolute aim only — no tilt.
+    Absolute,
+}
 
 /// Latest device tilt, refreshed from the browser's `deviceorientation`
 /// event and rotated into the SCREEN's frame, so it reads correctly in
@@ -202,8 +211,9 @@ fn pump_tilt(_tilt: ResMut<TiltInput>) {}
 /// .requestPermission()`. Call it when the player turns the scheme on
 /// (other platforms don't expose the method, so this is a no-op there).
 #[cfg(target_arch = "wasm32")]
-fn request_tilt_permission_on_enable(enabled: Res<TiltAimEnabled>) {
-    if !enabled.is_changed() || !enabled.0 {
+fn request_tilt_permission_on_enable(scheme: Res<MobileScheme>) {
+    // Only the tilt scheme needs motion access.
+    if !scheme.is_changed() || *scheme != MobileScheme::AbsoluteTilt {
         return;
     }
     use wasm_bindgen::prelude::*;
@@ -220,7 +230,7 @@ fn request_tilt_permission_on_enable(enabled: Res<TiltAimEnabled>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn request_tilt_permission_on_enable(_enabled: Res<TiltAimEnabled>) {}
+fn request_tilt_permission_on_enable(_scheme: Res<MobileScheme>) {}
 
 // Virtual analog stick (left thumb). Sized to sit where the old D-pad
 // was; the knob rides inside the base.
@@ -517,7 +527,7 @@ fn spawn_gamepad_btn(
 fn drive_virtual_input(
     mut virt: ResMut<VirtualInput>,
     mut visible: ResMut<TouchButtonsVisible>,
-    tilt_enabled: Res<TiltAimEnabled>,
+    scheme: Res<MobileScheme>,
     tilt: Res<TiltInput>,
     mut buttons: Query<(&Interaction, &TouchAction, &mut LastInteraction)>,
     sticks: Query<&VirtualJoystickState>,
@@ -572,15 +582,18 @@ fn drive_virtual_input(
     let mut absolute = false;
     let mut aim = Vec2::ZERO;
     if visible.0 {
-        if tilt_enabled.0 {
+        if *scheme != MobileScheme::Normal {
             // Absolute-aim scheme: the stick vector points the ship in
-            // WORLD space (apply_player_input turns to face it + thrusts),
-            // and phone tilt rotates the ship in place when the stick is
-            // centred. No digital turn/thrust bits — steering is the
-            // absolute path. gamma > 0 = tilt right → a right turn
-            // (negative, matching the `dir` convention).
+            // WORLD space (apply_player_input turns to face it + thrusts).
+            // In AbsoluteTilt, phone tilt also rotates the ship in place
+            // when the stick is centred (the tilt rides the `turn` axis,
+            // left-roll → left turn, matching the `dir` convention); in
+            // Absolute there's no tilt. No digital turn/thrust bits —
+            // steering is the absolute path.
             absolute = true;
-            turn = (-tilt.lr / TILT_FULL_TURN_DEG).clamp(-1.0, 1.0);
+            if *scheme == MobileScheme::AbsoluteTilt {
+                turn = (-tilt.lr / TILT_FULL_TURN_DEG).clamp(-1.0, 1.0);
+            }
             for state in &sticks {
                 aim = state.delta;
             }
