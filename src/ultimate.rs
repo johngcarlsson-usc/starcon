@@ -1063,7 +1063,7 @@ const BLADE_MESH_HANDLE: Handle<Mesh> = uuid_handle!("ec3a8f1e-7e8b-4f1b-9b3c-43
 fn hyper_trigger(
     slot_inputs: Res<crate::input::SlotInputs>,
     mut state: ResMut<UltimateState>,
-    cameras: Query<(&Transform, &Projection), With<Camera2d>>,
+    mut cameras: Query<(&mut Transform, &Projection), With<Camera2d>>,
     ships: Query<(Entity, &Ship, &ShipClass, &Transform), Without<Camera2d>>,
     ship_pose: Query<(&Position, &Rotation), With<Ship>>,
     catalog: Res<crate::ship::ShipCatalog>,
@@ -1090,9 +1090,25 @@ fn hyper_trigger(
     else {
         return;
     };
-    let Ok((cam_xf, projection)) = cameras.single() else {
+    let Ok((mut cam_xf, projection)) = cameras.single_mut() else {
         return;
     };
+
+    // Rebase the camera into the acting ship's canonical arena cell.
+    // The auto-follow camera lives in a CONTINUOUS frame that may have
+    // drifted whole arenas away as the ships lapped the torus; the
+    // cinematic, however, frames the ship and spawns its effects in raw
+    // arena coordinates. Snapping the camera to the ship's nearest
+    // image brings both into the same cell (a no-op when there's no
+    // drift) and preserves the on-screen position, so the dramatic
+    // zoom-in lands on the ship instead of on empty space a few arenas
+    // over. The PostUpdate render offset then keeps every body imaged
+    // around this rebased camera for the rest of the cinematic.
+    if let Ok((ship_p, _)) = ship_pose.get(entity) {
+        let rebased = crate::physics::nearest_image(cam_xf.translation.truncate(), ship_p.0);
+        cam_xf.translation.x = rebased.x;
+        cam_xf.translation.y = rebased.y;
+    }
 
     state.variant = variant_for_class(*class);
     state.player_entity = Some(entity);

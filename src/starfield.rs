@@ -156,11 +156,21 @@ impl Plugin for StarfieldPlugin {
                     handle_zoom_input,
                     handle_pinch_zoom,
                     smooth_zoom_scale,
-                    apply_toroidal_render_offset,
                     tick_starfield_parallax,
                     tick_zoom_stars,
                 )
                     .chain(),
+            )
+            // The render offset runs in PostUpdate, *after* every
+            // camera-moving system (the auto-follow AND the Ultimate
+            // cinematic driver, which lives in another plugin) has had
+            // its say, and before Bevy propagates GlobalTransforms.
+            // That ordering is what keeps bodies glued to whichever
+            // camera is in charge this frame.
+            .add_systems(
+                PostUpdate,
+                apply_toroidal_render_offset
+                    .before(bevy::transform::TransformSystems::Propagate),
             );
     }
 }
@@ -244,7 +254,7 @@ fn wrap_to_tile(v: Vec2, tile: f32) -> Vec2 {
 }
 
 const ZOOM_STEP: f32 = 1.05;
-const SCALE_MIN: f32 = 0.25;
+const SCALE_MIN: f32 = 0.15;
 const SCALE_MAX: f32 = 6.0;
 /// How many seconds of zoom-input silence before the camera
 /// auto-reverts from Manual back to Auto follow. The follow's
@@ -593,10 +603,17 @@ fn follow_ships_with_camera(
     let mut f_min = Vec2::splat(f32::INFINITY);
     let mut f_max = Vec2::splat(f32::NEG_INFINITY);
     for (e, p) in &ships {
+        // Pull any remembered image into the current focus cell first.
+        // For normal continuity this is a no-op (last frame's image is
+        // already near the focus); but if the focus was rebased while
+        // we weren't looking — e.g. the Ultimate cinematic snapped it
+        // into the ship's canonical cell — this discards the stale,
+        // arenas-away memory so the camera doesn't pan all the way back.
         let prev = unwrap
             .images
             .get(&e)
             .copied()
+            .map(|img| crate::physics::nearest_image(img, focus))
             .unwrap_or_else(|| crate::physics::nearest_image(p.0, focus));
         let sticky = crate::physics::nearest_image(p.0, prev);
         let fresh = crate::physics::nearest_image(p.0, focus);
@@ -646,11 +663,12 @@ fn follow_ships_with_camera(
     let win = Vec2::new(window.width().max(1.0), window.height().max(1.0));
 
     // Pad the bounding box so the ships sit in the central zone, not
-    // at the screen edges, then choose the scale that fits the longer
-    // dimension. 500 wu is generous — when ships are close you still
-    // see a big chunk of arena around them.
-    const PAD_WU: f32 = 500.0;
-    let needed = span + Vec2::splat(PAD_WU * 2.0);
+    // at the screen edges. The padding is *proportional* to the
+    // bounding box (with a small floor) so close-quarters fights zoom
+    // in tight — the padding shrinks with the ships — while a wide
+    // separation still leaves breathing room around the pair.
+    let pad = (span.max_element() * 0.35).max(150.0);
+    let needed = span + Vec2::splat(pad * 2.0);
     let raw_scale = (needed.x / win.x).max(needed.y / win.y).clamp(SCALE_MIN, SCALE_MAX);
 
     // Snap conditions: either a 0→N transition was missed
@@ -668,8 +686,8 @@ fn follow_ships_with_camera(
     // On snap, use a *tight* framing (small padding) because the
     // player wants the smallest bounding box at match start.
     let snap_scale = {
-        const SNAP_PAD_WU: f32 = 200.0;
-        let needed_tight = span + Vec2::splat(SNAP_PAD_WU * 2.0);
+        let pad = (span.max_element() * 0.25).max(120.0);
+        let needed_tight = span + Vec2::splat(pad * 2.0);
         (needed_tight.x / win.x)
             .max(needed_tight.y / win.y)
             .clamp(SCALE_MIN, SCALE_MAX)
@@ -717,23 +735,18 @@ fn follow_ships_with_camera(
     }
 }
 
-/// Draw every physics body at its periodic image nearest the camera
-/// focus, so wraparound is seamless. Runs in `Update` after the
-/// follow/zoom systems have settled the camera for the frame, and
-/// after Avian's (FixedUpdate) position→transform sync — so it has
-/// the last word on each body's render translation. Skipped during
-/// the Ultimate cinematic, which stages the camera and ships in raw
-/// arena coordinates.
+/// Draw every physics body at its periodic image nearest the camera,
+/// so wraparound is seamless. Runs in `PostUpdate` after every
+/// camera-moving system (auto-follow AND the Ultimate cinematic) and
+/// before transform propagation, so it always images bodies around the
+/// camera that's actually in charge this frame. During the cinematic
+/// the camera is rebased into the acting ship's canonical cell (see
+/// `hyper_trigger`), so this keeps the ship and its effects framed
+/// correctly there too.
 fn apply_toroidal_render_offset(
-    ultimate: Option<Res<crate::ultimate::UltimateState>>,
     camera: Query<&Transform, With<Camera2d>>,
     mut bodies: Query<(&Position, &mut Transform), Without<Camera2d>>,
 ) {
-    if let Some(u) = ultimate {
-        if u.phase != crate::ultimate::UltimatePhase::Idle {
-            return;
-        }
-    }
     let Ok(cam) = camera.single() else { return };
     let focus = cam.translation.truncate();
     for (pos, mut xf) in &mut bodies {
