@@ -230,22 +230,36 @@ pub struct IceOverride {
     pub turn_url: Option<String>,
     pub turn_user: Option<String>,
     pub turn_cred: Option<String>,
+    /// STUN override from `?stun=`. A value of `none` disables STUN
+    /// entirely (relay-only) — useful when STUN servers your network
+    /// can't reach would otherwise stall matchbox's non-trickle ICE
+    /// gathering. Unset → default Google STUN.
+    pub stun_url: Option<String>,
 }
 
-/// Build the ICE server list for the matchbox socket. Always includes
-/// Google STUN (fast srflx). For TURN: if the URL provided an override
-/// we use exactly that; otherwise we use OpenRelay over UDP — those are
-/// the endpoints that actually relayed for the test network. We
-/// deliberately OMIT OpenRelay's TCP/443 endpoint: this network can't
-/// reach it, and because matchbox gathers ICE non-trickle (waits for
-/// gathering to finish), an unreachable server stalls every connect
-/// ~39.5 s per side. Listing only reachable servers keeps connects
-/// fast.
+/// Build the ICE server list for the matchbox socket.
+///
+/// STUN: `?stun=` overrides it; `?stun=none` disables it (relay-only);
+/// unset uses Google STUN. TURN: `?turn=`/`?turn_user=`/`?turn_cred=`
+/// override it, else best-effort OpenRelay over UDP.
+///
+/// Why this is finicky: matchbox 0.14 gathers ICE NON-trickle — each
+/// side blocks until the browser finishes gathering before it sends
+/// its offer/answer, with no timeout cap. So ANY listed server the
+/// network can't reach stalls every connect ~39.5 s per side. The
+/// fastest config lists only servers that actually respond; for a
+/// symmetric-NAT network that always relays, that can mean dropping
+/// STUN entirely and listing one reachable TURN endpoint.
 fn build_ice_config(over: &IceOverride) -> RtcIceServerConfig {
-    let mut urls = vec![
-        "stun:stun.l.google.com:19302".to_string(),
-        "stun:stun1.l.google.com:19302".to_string(),
-    ];
+    let mut urls = Vec::new();
+    match over.stun_url.as_deref() {
+        Some("none") | Some("") => {}
+        Some(s) => urls.push(s.to_string()),
+        None => {
+            urls.push("stun:stun.l.google.com:19302".to_string());
+            urls.push("stun:stun1.l.google.com:19302".to_string());
+        }
+    }
     if let Some(turn) = &over.turn_url {
         urls.push(turn.clone());
         RtcIceServerConfig {
@@ -309,6 +323,10 @@ fn capture_signal_override(
             ice.turn_user = Some(decode(rest));
         } else if let Some(rest) = pair.strip_prefix("turn_cred=") {
             ice.turn_cred = Some(decode(rest));
+        } else if let Some(rest) = pair.strip_prefix("stun=") {
+            let decoded = decode(rest);
+            info!("netplay: STUN override from URL: {}", decoded);
+            ice.stun_url = Some(decoded);
         }
     }
 }
