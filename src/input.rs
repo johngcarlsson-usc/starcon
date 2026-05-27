@@ -17,6 +17,11 @@ pub const INPUT_SPECIAL: u8 = 1 << 4;
 /// once is impractical. Either way the bit rides through `PlayerInput`
 /// so it travels over the network and rolls back deterministically.
 pub const INPUT_ULTIMATE: u8 = 1 << 5;
+/// Set when this input is in "absolute aim" mode: the `aim` axis (not
+/// the digital turn bits) drives steering — the ship turns to face the
+/// stick's world direction and thrusts that way. See
+/// `apply_player_input`.
+pub const INPUT_ABSOLUTE: u8 = 1 << 6;
 
 /// Holding turn-left + turn-right + thrust + fire + special together
 /// fires the ultimate. The on-screen gamepad uses its own ULT button
@@ -47,6 +52,12 @@ pub struct PlayerInput {
     /// inside `PlayerInput` so it crosses the network and rolls back
     /// like every other input bit.
     pub turn: i8,
+    /// Absolute-aim stick vector, each axis quantised to `[-100, 100]`
+    /// (= −1.0..=1.0 via `aim_vec`), world frame (+y = up/north). Only
+    /// meaningful when `INPUT_ABSOLUTE` is set. The ship turns to face
+    /// this direction and thrusts along it.
+    pub aim_x: i8,
+    pub aim_y: i8,
 }
 
 impl PlayerInput {
@@ -56,6 +67,10 @@ impl PlayerInput {
     /// Analog turn as a float in `[-1.0, 1.0]`.
     pub fn turn_f32(&self) -> f32 {
         self.turn as f32 / 100.0
+    }
+    /// Absolute-aim stick vector as floats in `[-1.0, 1.0]` per axis.
+    pub fn aim_vec(&self) -> Vec2 {
+        Vec2::new(self.aim_x as f32 / 100.0, self.aim_y as f32 / 100.0)
     }
 }
 
@@ -128,7 +143,13 @@ pub struct VirtualInput {
     /// Analog turn from the on-screen stick, in `[-1.0, 1.0]` (+1 =
     /// full left, −1 = full right). OR'd into player 1's input as the
     /// analog turn axis. `0.0` when the stick is centred or absent.
+    /// In tilt+absolute mode this carries the TILT rotation instead.
     pub turn: f32,
+    /// Absolute-aim mode active (tilt+stick scheme). When true the
+    /// `aim` vector drives steering for player 1 instead of `turn`.
+    pub absolute: bool,
+    /// Stick vector for absolute-aim mode, world frame (+y up).
+    pub aim: Vec2,
 }
 
 fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
@@ -198,7 +219,7 @@ pub fn read_local_input(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput
     } else {
         0
     };
-    PlayerInput { buttons, turn }
+    PlayerInput { buttons, turn, aim_x: 0, aim_y: 0 }
 }
 
 /// Same as `read_local_input` but also OR's in the virtual touch
@@ -213,12 +234,21 @@ pub fn read_local_input_with_virtual(
     if slot == 0 {
         if let Some(v) = virt {
             input.buttons |= v.held.buttons;
-            // If the analog stick is deflected it OWNS the turn axis
-            // (overriding the keyboard's bang-bang value) so a phone
-            // player gets proportional, fine-grained steering. The
-            // digital LEFT/RIGHT bits the stick also sets keep
-            // bit-driven systems (Supox strafe, etc.) working.
-            if v.turn.abs() > f32::EPSILON {
+            if v.absolute {
+                // Tilt + absolute-aim scheme: the stick vector aims the
+                // ship and `turn` carries the tilt rotation (used when
+                // the stick is centred). `apply_player_input` reads the
+                // INPUT_ABSOLUTE branch.
+                input.buttons |= INPUT_ABSOLUTE;
+                input.aim_x = (v.aim.x.clamp(-1.0, 1.0) * 100.0) as i8;
+                input.aim_y = (v.aim.y.clamp(-1.0, 1.0) * 100.0) as i8;
+                input.turn = (v.turn.clamp(-1.0, 1.0) * 100.0) as i8;
+            } else if v.turn.abs() > f32::EPSILON {
+                // Normal scheme: the deflected stick OWNS the turn axis
+                // (overriding the keyboard's bang-bang value) for
+                // proportional, fine-grained steering. The digital
+                // LEFT/RIGHT bits the stick also sets keep bit-driven
+                // systems (Supox strafe, etc.) working.
                 input.turn = (v.turn.clamp(-1.0, 1.0) * 100.0) as i8;
             }
         }
@@ -238,7 +268,7 @@ pub fn read_local_just_pressed(keys: &ButtonInput<KeyCode>, slot: usize) -> Play
             buttons |= mask;
         }
     }
-    PlayerInput { buttons, turn: 0 }
+    PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0 }
 }
 
 pub fn read_local_just_pressed_with_virtual(
@@ -267,7 +297,7 @@ pub fn read_local_just_released(keys: &ButtonInput<KeyCode>, slot: usize) -> Pla
             buttons |= mask;
         }
     }
-    PlayerInput { buttons, turn: 0 }
+    PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0 }
 }
 
 pub struct InputPlugin;
@@ -348,8 +378,8 @@ pub fn gather_slot_inputs(
                 let edge_release = !cur.buttons & prev.buttons;
                 (
                     cur,
-                    PlayerInput { buttons: edge_press, turn: 0 },
-                    PlayerInput { buttons: edge_release, turn: 0 },
+                    PlayerInput { buttons: edge_press, turn: 0, aim_x: 0, aim_y: 0 },
+                    PlayerInput { buttons: edge_release, turn: 0, aim_x: 0, aim_y: 0 },
                 )
             }
         } else {

@@ -97,10 +97,101 @@ impl Plugin for MobileControlsPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(VirtualJoystickPlugin::<u8>::default())
             .init_resource::<TouchButtonsVisible>()
-            .add_systems(Startup, spawn_touch_controls)
-            .add_systems(Update, (drive_virtual_input, apply_visibility));
+            .init_resource::<TiltAimEnabled>()
+            .init_resource::<TiltInput>()
+            .add_systems(Startup, (spawn_touch_controls, setup_tilt_listener))
+            .add_systems(
+                Update,
+                (
+                    pump_tilt,
+                    drive_virtual_input,
+                    apply_visibility,
+                    request_tilt_permission_on_enable,
+                ),
+            );
     }
 }
+
+/// On when the "Tilt + absolute aim" control scheme is selected
+/// (settings menu). Drives `drive_virtual_input` into absolute-aim mode.
+#[derive(Resource, Default)]
+pub struct TiltAimEnabled(pub bool);
+
+/// Latest device tilt, refreshed from the browser's `deviceorientation`
+/// event. `gamma` is the left-right tilt in degrees (~[-90, 90]).
+#[derive(Resource, Default)]
+pub struct TiltInput {
+    pub gamma: f32,
+}
+
+/// Phone tilt (degrees off level) at which the in-place rotation hits
+/// the ship's max turn rate. Smaller tilts rotate proportionally slower.
+const TILT_FULL_TURN_DEG: f32 = 30.0;
+
+// --- Device-orientation (tilt) sensor, WASM only ---
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static TILT_GAMMA: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
+/// Register a `deviceorientation` listener that stashes the latest tilt
+/// in a thread-local; `pump_tilt` copies it into `TiltInput` each frame.
+/// On Android / desktop sensor emulation this starts firing immediately;
+/// on iOS it stays silent until `requestPermission` is granted.
+#[cfg(target_arch = "wasm32")]
+fn setup_tilt_listener() {
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen::JsCast;
+    let Some(window) = web_sys::window() else { return };
+    let cb = Closure::<dyn FnMut(web_sys::DeviceOrientationEvent)>::new(
+        |e: web_sys::DeviceOrientationEvent| {
+            if let Some(g) = e.gamma() {
+                TILT_GAMMA.with(|c| c.set(g as f32));
+            }
+        },
+    );
+    let _ = window
+        .add_event_listener_with_callback("deviceorientation", cb.as_ref().unchecked_ref());
+    cb.forget(); // keep the closure alive for the page's lifetime
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn setup_tilt_listener() {}
+
+#[cfg(target_arch = "wasm32")]
+fn pump_tilt(mut tilt: ResMut<TiltInput>) {
+    let g = TILT_GAMMA.with(|c| c.get());
+    if tilt.gamma != g {
+        tilt.gamma = g;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn pump_tilt(_tilt: ResMut<TiltInput>) {}
+
+/// iOS 13+ gates motion sensors behind `DeviceOrientationEvent
+/// .requestPermission()`. Call it when the player turns the scheme on
+/// (other platforms don't expose the method, so this is a no-op there).
+#[cfg(target_arch = "wasm32")]
+fn request_tilt_permission_on_enable(enabled: Res<TiltAimEnabled>) {
+    if !enabled.is_changed() || !enabled.0 {
+        return;
+    }
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen::JsCast;
+    let Some(window) = web_sys::window() else { return };
+    if let Ok(doe) = js_sys::Reflect::get(&window, &JsValue::from_str("DeviceOrientationEvent")) {
+        if let Ok(rp) = js_sys::Reflect::get(&doe, &JsValue::from_str("requestPermission")) {
+            if rp.is_function() {
+                let f: js_sys::Function = rp.unchecked_into();
+                let _ = f.call0(&doe);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn request_tilt_permission_on_enable(_enabled: Res<TiltAimEnabled>) {}
 
 // Virtual analog stick (left thumb). Sized to sit where the old D-pad
 // was; the knob rides inside the base.
@@ -397,6 +488,8 @@ fn spawn_gamepad_btn(
 fn drive_virtual_input(
     mut virt: ResMut<VirtualInput>,
     mut visible: ResMut<TouchButtonsVisible>,
+    tilt_enabled: Res<TiltAimEnabled>,
+    tilt: Res<TiltInput>,
     mut buttons: Query<(&Interaction, &TouchAction, &mut LastInteraction)>,
     sticks: Query<&VirtualJoystickState>,
     mut last_stick: Local<u8>,
@@ -447,34 +540,50 @@ fn drive_virtual_input(
     // left corner would steer P1 even while the controls are hidden.
     let mut stick = 0u8;
     let mut turn = 0.0_f32;
+    let mut absolute = false;
+    let mut aim = Vec2::ZERO;
     if visible.0 {
-        for state in &sticks {
-            let d = state.delta; // -1..1 per axis, y-up
-            if d.length() <= STICK_DEADZONE {
-                continue;
+        if tilt_enabled.0 {
+            // Absolute-aim scheme: the stick vector points the ship in
+            // WORLD space (apply_player_input turns to face it + thrusts),
+            // and phone tilt rotates the ship in place when the stick is
+            // centred. No digital turn/thrust bits — steering is the
+            // absolute path. gamma > 0 = tilt right → a right turn
+            // (negative, matching the `dir` convention).
+            absolute = true;
+            turn = (-tilt.gamma / TILT_FULL_TURN_DEG).clamp(-1.0, 1.0);
+            for state in &sticks {
+                aim = state.delta;
             }
-            // Proportional turn: angle of the stick off the vertical
-            // (forward) axis, saturating at STICK_FULL_TURN_DEG. So a
-            // small lean gives a slow turn — the "cue to turn slowly" —
-            // and ~30° off (or more) gives the ship's full turn rate.
-            // Sign matches the `dir` convention (push right → −, a
-            // right turn).
-            let angle_off = d.x.atan2(d.y); // 0 = straight up, + = right
-            turn = (-angle_off / STICK_FULL_TURN_DEG.to_radians()).clamp(-1.0, 1.0);
-            // Digital bits for systems that still read them (Supox
-            // strafe, ultimate chord, post-ultimate coasting). Thrust
-            // engages when the stick is pushed forward of centre.
-            if turn > 0.15 {
-                stick |= INPUT_LEFT;
-            } else if turn < -0.15 {
-                stick |= INPUT_RIGHT;
-            }
-            if d.y > STICK_DEADZONE {
-                stick |= INPUT_THRUST;
+        } else {
+            for state in &sticks {
+                let d = state.delta; // -1..1 per axis, y-up
+                if d.length() <= STICK_DEADZONE {
+                    continue;
+                }
+                // Proportional turn: angle of the stick off the vertical
+                // (forward) axis, saturating at STICK_FULL_TURN_DEG. A
+                // small lean gives a slow turn; ~30° off gives full rate.
+                // Sign matches the `dir` convention (push right → −).
+                let angle_off = d.x.atan2(d.y); // 0 = straight up, + = right
+                turn = (-angle_off / STICK_FULL_TURN_DEG.to_radians()).clamp(-1.0, 1.0);
+                // Digital bits for systems that still read them (Supox
+                // strafe, ultimate chord, coasting). Thrust engages when
+                // the stick is pushed forward of centre.
+                if turn > 0.15 {
+                    stick |= INPUT_LEFT;
+                } else if turn < -0.15 {
+                    stick |= INPUT_RIGHT;
+                }
+                if d.y > STICK_DEADZONE {
+                    stick |= INPUT_THRUST;
+                }
             }
         }
     }
     virt.turn = turn;
+    virt.absolute = absolute;
+    virt.aim = aim;
     // Edges for the stick bits (Inertial-mode steering watches the
     // turn-key release), diffed against last frame's stick state.
     let stick_pressed = stick & !*last_stick;

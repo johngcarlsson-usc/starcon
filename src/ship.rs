@@ -2625,6 +2625,7 @@ fn load_rotation_frames(
 fn apply_player_input(
     slot_inputs: Res<input::SlotInputs>,
     angular_override: Res<AngularControlOverride>,
+    time: Res<Time<Physics>>,
     mut q: Query<(
         &Ship,
         &ShipClass,
@@ -2722,6 +2723,53 @@ fn apply_player_input(
         let rot_cos = rot.cos;
         let rot_sin = rot.sin;
         let input = slot_inputs.held[ship.player_slot.min(3)];
+
+        // Absolute-aim scheme (tilt + stick): the stick points where the
+        // ship should go in WORLD space — it turns to face the stick
+        // direction (at its normal max rate, so it's fair) and thrusts
+        // once roughly aligned. When the stick is centred, the tilt
+        // value (carried in `turn`) rotates the ship in place so you can
+        // line up a shot while drifting. Self-contained — skips the
+        // relative steering / Supox / thrust paths below.
+        if input.pressed(input::INPUT_ABSOLUTE) {
+            use std::f32::consts::{FRAC_PI_2, PI, TAU};
+            let forward = Vec2::new(-rot_sin, rot_cos);
+            let facing = forward.y.atan2(forward.x);
+            let aim = input.aim_vec();
+            if aim.length() > 0.25 {
+                let desired = aim.y.atan2(aim.x);
+                let mut err = desired - facing;
+                while err > PI {
+                    err -= TAU;
+                }
+                while err < -PI {
+                    err += TAU;
+                }
+                // Turn toward the target; the dt scaling makes the ship
+                // land exactly on the heading (no overshoot/oscillation),
+                // capped at its normal max turn rate.
+                let dt = time.delta_secs().max(1e-4);
+                ang_vel.0 = (err / dt).clamp(-derived.target_omega, derived.target_omega);
+                torque.0 = 0.0;
+                last_turn.had_input = true;
+                // Thrust once we're facing roughly toward the target —
+                // "turn, then go" — so we don't accelerate backwards
+                // while still spinning around.
+                thrust.0 = if err.abs() < FRAC_PI_2 {
+                    Vec2::new(0.0, derived.thrust_force)
+                } else {
+                    Vec2::ZERO
+                };
+            } else {
+                // Stick centred: tilt rotates in place, no thrust.
+                let dir = input.turn_f32().clamp(-1.0, 1.0);
+                ang_vel.0 = dir * derived.target_omega;
+                torque.0 = 0.0;
+                last_turn.had_input = dir.abs() > 1e-3;
+                thrust.0 = Vec2::ZERO;
+            }
+            continue;
+        }
 
         // Analog turn axis: keyboard is ±1.0 (bang-bang), the touch
         // stick supplies proportional values in between for fine, slow

@@ -34,6 +34,8 @@ enum SettingButton {
     Steering,
     Colliders,
     Camera,
+    /// Mobile "tilt + absolute aim" control scheme.
+    TiltAim,
 }
 
 /// Marks a text node whose contents reflect the live value of a setting.
@@ -125,6 +127,7 @@ fn spawn_settings_ui(mut commands: Commands, mut open: ResMut<SettingsMenuOpen>)
                 spawn_row(panel, SettingButton::Steering);
                 spawn_row(panel, SettingButton::Colliders);
                 spawn_row(panel, SettingButton::Camera);
+                spawn_row(panel, SettingButton::TiltAim);
             });
         });
 }
@@ -171,6 +174,7 @@ fn handle_settings_buttons(
     mut debug_collider: ResMut<DebugCollider>,
     mut camera_mode: ResMut<CameraFollowMode>,
     mut zoom: ResMut<crate::starfield::ZoomState>,
+    mut tilt_aim: ResMut<crate::mobile_controls::TiltAimEnabled>,
 ) {
     for (interaction, button) in &interactions {
         if !matches!(interaction, Interaction::Pressed) {
@@ -178,6 +182,7 @@ fn handle_settings_buttons(
         }
         match button {
             SettingButton::Toggle => open.0 = !open.0,
+            SettingButton::TiltAim => tilt_aim.0 = !tilt_aim.0,
             SettingButton::Steering => {
                 angular.0 = match angular.0 {
                     None => Some(AngularControl::Classic),
@@ -226,6 +231,7 @@ fn update_setting_labels(
     angular: Res<AngularControlOverride>,
     debug_collider: Res<DebugCollider>,
     camera_mode: Res<CameraFollowMode>,
+    tilt_aim: Res<crate::mobile_controls::TiltAimEnabled>,
     mut labels: Query<(&SettingValueText, &mut Text)>,
 ) {
     for (label, mut text) in &mut labels {
@@ -247,6 +253,9 @@ fn update_setting_labels(
                     CameraFollowMode::Manual => "Manual",
                 };
                 format!("Camera: {v}")
+            }
+            SettingButton::TiltAim => {
+                format!("Tilt+Aim: {}", if tilt_aim.0 { "On" } else { "Off" })
             }
             SettingButton::Toggle => continue,
         };
