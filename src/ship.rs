@@ -905,6 +905,12 @@ impl Plugin for ShipPlugin {
             crate::ultimate::tick_pkunk_aggressive_clones
                 .after(apply_player_input),
         );
+        // Planet gravity nudges LinearVelocity; run it before the speed
+        // cap so the whip-boosted cap is honoured the same tick.
+        app.add_systems(
+            bevy_ggrs::GgrsSchedule,
+            (apply_planet_gravity.before(cap_velocity), tick_planet_contact),
+        );
         app.add_systems(
             bevy_ggrs::GgrsSchedule,
             (
@@ -934,6 +940,7 @@ impl Plugin for ShipPlugin {
                 update_overlay_sprites,
                 tick_invisible_visual,
                 draw_shield_rings,
+                draw_gravity_field,
             ),
         );
     }
@@ -1014,6 +1021,7 @@ pub fn spawn_match(
         }
     }
 
+    spawn_planet(&mut commands, &assets, &mut rng);
     spawn_asteroids(&mut commands, &assets, &mut rng);
 }
 
@@ -1164,8 +1172,12 @@ pub fn teardown_match(
     overlays: Query<Entity, With<OverlaySprite>>,
     satellites: Query<Entity, With<ChmmrSatellite>>,
     asteroids: Query<Entity, With<Asteroid>>,
+    planets: Query<Entity, With<Planet>>,
 ) {
     for e in &ships {
+        commands.entity(e).try_despawn();
+    }
+    for e in &planets {
         commands.entity(e).try_despawn();
     }
     for e in &projectiles {
@@ -3020,19 +3032,31 @@ fn swap_rotation_frame(mut q: Query<(&Rotation, &ShipFrames, &mut Sprite, &mut T
 /// the magnitude cap.
 fn cap_velocity(
     mut commands: Commands,
+    planets: Query<(&Position, &Planet)>,
     mut q: Query<(
         Entity,
+        &Position,
         &ShipPhysicsDerived,
         &mut LinearVelocity,
         Option<&crate::ultimate::HyperActive>,
         Option<&crate::ultimate::PostUltimateCoasting>,
     )>,
 ) {
-    for (entity, derived, mut vel, hyper, coasting) in &mut q {
+    for (entity, pos, derived, mut vel, hyper, coasting) in &mut q {
         // Skip ships mid-ultimate — the lightspeed jump deliberately
         // exceeds speed_max for the duration of the cinematic.
         if hyper.is_some() {
             continue;
+        }
+        // Gravity whip: within a planet's gravity range the cap is raised,
+        // so a slingshot can briefly exceed the ship's normal top speed.
+        // Use the strongest (largest multiplier) planet in range.
+        let mut whip = 1.0_f32;
+        for (planet_pos, planet) in &planets {
+            let d_sq = crate::physics::min_image(planet_pos.0 - pos.0).length_squared();
+            if d_sq <= planet.gravity_range * planet.gravity_range {
+                whip = whip.max(planet.whip_mult);
+            }
         }
         let speed = vel.0.length();
         if coasting.is_some() {
@@ -3047,8 +3071,9 @@ fn cap_velocity(
             }
             continue;
         }
-        if speed > derived.speed_max && derived.speed_max > 0.0 {
-            vel.0 = vel.0 / speed * derived.speed_max;
+        let cap = derived.speed_max * whip;
+        if speed > cap && cap > 0.0 {
+            vel.0 = vel.0 / speed * cap;
         }
     }
 }
@@ -4466,6 +4491,30 @@ fn draw_shield_rings(
         let c = focus.map_or(pos.0, |f| crate::physics::nearest_image(pos.0, f));
         gizmos.circle_2d(c, pulse, Color::srgba(0.45, 0.78, 1.0, 0.7));
         gizmos.circle_2d(c, pulse - 3.0, Color::srgba(0.7, 0.9, 1.0, 0.35));
+    }
+}
+
+/// Faint dashed-ish ring showing each planet's gravity-well boundary, so
+/// the pull isn't invisible. Pulses gently. Drawn at the camera-nearest
+/// periodic image so it tracks the planet across the toroidal wrap.
+fn draw_gravity_field(
+    time: Res<Time>,
+    mut gizmos: Gizmos,
+    camera: Query<&Transform, With<Camera2d>>,
+    planets: Query<(&Position, &Planet)>,
+) {
+    let focus = camera.single().ok().map(|t| t.translation.truncate());
+    let t = time.elapsed_secs();
+    for (pos, planet) in &planets {
+        let c = focus.map_or(pos.0, |f| crate::physics::nearest_image(pos.0, f));
+        // A few faint concentric rings between the surface and the range
+        // edge so the field reads as a region, not just an outline.
+        for i in 1..=3 {
+            let frac = i as f32 / 3.0;
+            let r = planet.radius + (planet.gravity_range - planet.radius) * frac;
+            let pulse = 0.06 + 0.05 * (t * 1.5 - i as f32).sin().max(0.0);
+            gizmos.circle_2d(c, r, Color::srgba(0.55, 0.7, 1.0, pulse));
+        }
     }
 }
 
@@ -6346,6 +6395,183 @@ pub fn spawn_asteroids(
         ));
     }
     info!("spawned {N} asteroids");
+}
+
+// ---------------------------------------------------------------------------
+// Planet — a central gravity well (legacy `melee/mcbodies.cpp:Planet`).
+//
+// A massive, immovable body sitting at the arena centre. It pulls every
+// dynamic body (ships + asteroids) toward it with a distance-falloff
+// acceleration, so players can slingshot/whip around it for free direction
+// changes and a speed boost near the surface. It is SOLID — ships bounce
+// off it — and grazing the surface costs crew.
+//
+// Faithfulness notes vs. the original (`melee/mcbodies.cpp` + the shipped
+// `data/server.ini` [Planet] block):
+//   - LINEAR falloff (`GravityPower = 1`): accel = force · (1 − r/range).
+//     The original supports other powers, but its own server.ini ships
+//     power=1 with the comment "linear falloff seems to feel better for
+//     game purposes" — so that's what we use.
+//   - Distances come straight from server.ini via `scale_range(x) = x·40`:
+//     GravityRange = 18 → 720 wu, GravityMinDist = 6 → 240 wu. `r` is
+//     clamped to `mindist` so the pull plateaus (doesn't spike) at the core.
+//   - GravityWhip = 0.5 → within the well a ship's speed cap is raised up
+//     to 1.5× (the "gravity whip" that lets a slingshot keep its speed).
+//   - Arilou (and anything with `InertialessDrive`) is IMMUNE — matches
+//     `shparisk.cpp:ArilouSkiff::calculate_gravity()` (empty) +
+//     `accelerate()` rejecting any external source.
+//   - The `gravity_accel` magnitude is the one value not cleanly portable
+//     (the original's GravityForce=1.5 runs through `scale_acceleration`,
+//     whose distance/time ratios are internally inconsistent with
+//     scale_range — the devs flag this with a literal "WTF????" comment).
+//     It's tuned here to OUR ship accelerations (~576–2300 wu/s²).
+// ---------------------------------------------------------------------------
+
+/// Central gravity-well body. Static (never moves); pulls dynamic bodies in.
+#[derive(Component, Debug)]
+#[component(on_add = auto_add_rollback)]
+pub struct Planet {
+    /// Solid collision radius (world units).
+    pub radius: f32,
+    /// Outside this radius gravity is zero (world units). `scale_range(18)`.
+    pub gravity_range: f32,
+    /// Distance is clamped to at least this before the linear falloff is
+    /// applied, so the pull plateaus near the core. `scale_range(6)`.
+    pub gravity_mindist: f32,
+    /// Acceleration coefficient (wu/s²). Actual pull = this · (1 − r/range).
+    pub gravity_accel: f32,
+    /// While a ship is within `gravity_range`, its speed cap is multiplied by
+    /// this — the "gravity whip" (server.ini GravityWhip = 0.5 → 1.5×).
+    pub whip_mult: f32,
+}
+
+impl Default for Planet {
+    fn default() -> Self {
+        Self {
+            radius: 100.0, // PLAN_S0x sprites are 200×200 → ~100 px radius
+            gravity_range: 720.0,   // scale_range(18)
+            gravity_mindist: 240.0, // scale_range(6)
+            gravity_accel: 1400.0,
+            whip_mult: 1.5, // 1 + GravityWhip(0.5)
+        }
+    }
+}
+
+/// Spawn the central planet at the arena origin. Called once per match from
+/// `spawn_match`. Ships spawn at ±900 on the axes, well outside the
+/// `gravity_range`, so they don't start trapped in the well. The original
+/// (`other/planet3d.cpp:create_planet`) picks a random one of the three
+/// `PLAN_S0x` melee.dat sprites; we do the same with the seeded RNG so peers
+/// agree.
+pub fn spawn_planet(commands: &mut Commands, assets: &AssetServer, rng: &mut crate::rng::GameRng) {
+    let planet = Planet::default();
+    let visual = planet.radius * 2.0;
+    let frame = 1 + rng.usize_range(0..3); // PLAN_S01..03
+    commands.spawn((
+        Sprite {
+            image: assets.load(format!("ui/planet_{:02}.png", frame)),
+            color: Color::WHITE,
+            custom_size: Some(Vec2::splat(visual)),
+            ..default()
+        },
+        // Below ships/projectiles (z 0.5..) but above the starfield.
+        Transform::from_translation(Vec2::ZERO.extend(0.05)),
+        RigidBody::Static,
+        Collider::circle(planet.radius),
+        // Some bounce so ramming the planet kicks you off rather than
+        // sticking; ships keep most of their speed.
+        Restitution::new(0.4),
+        Friction::new(0.0),
+        Position(Vec2::ZERO),
+        CollisionEventsEnabled,
+        planet,
+    ));
+    info!("spawned central planet (gravity well)");
+}
+
+/// Pull every dynamic body toward each planet, inverse-square with distance
+/// (clamped at `gravity_mindist`), out to `gravity_range`. Toroidal: uses the
+/// minimum-image direction so the pull takes the shortest path across the
+/// wrap. Runs in `GgrsSchedule` before `cap_velocity` so the whip-boosted cap
+/// applies the same tick. Arilou / `InertialessDrive` ships are immune.
+fn apply_planet_gravity(
+    time: Res<Time<Physics>>,
+    planets: Query<(&Position, &Planet)>,
+    mut bodies: Query<
+        (
+            &Position,
+            &mut LinearVelocity,
+            Option<&InertialessDrive>,
+            Option<&crate::ultimate::HyperActive>,
+        ),
+        Or<(With<Ship>, With<Asteroid>)>,
+    >,
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    for (planet_pos, planet) in &planets {
+        let range_sq = planet.gravity_range * planet.gravity_range;
+        for (pos, mut vel, inertialess, hyper) in &mut bodies {
+            // Inertialess drive (Arilou) rejects all external acceleration;
+            // a ship mid-ultimate owns its own motion.
+            if inertialess.is_some() || hyper.is_some() {
+                continue;
+            }
+            let to_planet = crate::physics::min_image(planet_pos.0 - pos.0);
+            let dist_sq = to_planet.length_squared();
+            if dist_sq > range_sq || dist_sq < 1.0 {
+                continue;
+            }
+            let dist = dist_sq.sqrt();
+            // Linear falloff (server.ini GravityPower = 1): full strength at
+            // the core (clamped at mindist), zero at gravity_range.
+            let r = dist.max(planet.gravity_mindist);
+            let falloff = (1.0 - r / planet.gravity_range).max(0.0);
+            let accel = planet.gravity_accel * falloff;
+            vel.0 += (to_planet / dist) * accel * dt;
+        }
+    }
+}
+
+/// Crew cost for grazing the planet's surface, applied once per contact.
+/// On a fresh `CollisionStart` between a ship and a planet, deduct a chunk of
+/// the ship's crew (shield-aware). The legacy `Planet::inflict_damage` kills
+/// ~1/3 of crew on touch — that's brutal with our bouncy contact, so we use a
+/// gentler 1/8 (min 2). Deterministic: Avian's collision events are generated
+/// inside `GgrsSchedule`, so they replay identically on rollback.
+fn tick_planet_contact(
+    mut reader: MessageReader<CollisionStart>,
+    planets: Query<(), With<Planet>>,
+    mut crews: Query<&mut Crew>,
+    shields: Query<&ShieldActive>,
+    ships: Query<&Ship>,
+) {
+    for event in reader.read() {
+        // Identify which collider is the planet and which is the ship.
+        let (ship_e, planet_e) = if planets.contains(event.collider1) {
+            (event.collider2, event.collider1)
+        } else if planets.contains(event.collider2) {
+            (event.collider1, event.collider2)
+        } else {
+            continue;
+        };
+        let _ = planet_e;
+        let Ok(ship) = ships.get(ship_e) else {
+            continue;
+        };
+        let Ok(mut crew) = crews.get_mut(ship_e) else {
+            continue;
+        };
+        let factor = shields.get(ship_e).map(|s| s.damage_factor).unwrap_or(1.0);
+        let base = (crew.current / 8).max(2);
+        let dmg = ((base as f32 * factor).round() as i32).max(0);
+        if dmg > 0 {
+            crew.current = (crew.current - dmg).max(0);
+            info!("P{} grazed the planet: -{} crew", ship.player_slot + 1, dmg);
+        }
+    }
 }
 
 /// Strong-handle keep-alive for every asset the game will ever
