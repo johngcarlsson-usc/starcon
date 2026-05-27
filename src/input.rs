@@ -9,11 +9,20 @@ pub const INPUT_RIGHT: u8 = 1 << 1;
 pub const INPUT_THRUST: u8 = 1 << 2;
 pub const INPUT_FIRE: u8 = 1 << 3;
 pub const INPUT_SPECIAL: u8 = 1 << 4;
-/// Ultimate cinematic trigger. Set by SPACE on keyboard or the
-/// on-screen ULT button. Routes through PlayerInput like the
-/// other bits so it can travel over the network — a remote
-/// player firing their ultimate triggers it on every peer.
+/// Ultimate cinematic trigger. On the keyboard this bit is NOT mapped
+/// to a single key — it's *derived* in `gather_slot_inputs` when a
+/// slot holds all five movement+weapon inputs at once (the
+/// `INPUT_ULTIMATE_CHORD`). The on-screen gamepad keeps a dedicated
+/// ULT button (`VirtualInput`) since mashing five touch buttons at
+/// once is impractical. Either way the bit rides through `PlayerInput`
+/// so it travels over the network and rolls back deterministically.
 pub const INPUT_ULTIMATE: u8 = 1 << 5;
+
+/// Holding turn-left + turn-right + thrust + fire + special together
+/// fires the ultimate. The on-screen gamepad uses its own ULT button
+/// instead of this chord.
+pub const INPUT_ULTIMATE_CHORD: u8 =
+    INPUT_LEFT | INPUT_RIGHT | INPUT_THRUST | INPUT_FIRE | INPUT_SPECIAL;
 
 #[repr(C)]
 #[derive(
@@ -111,20 +120,26 @@ fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
     // slots that aren't the local player — these tables only
     // matter when more than one human is at the same keyboard.
     match slot {
+        // P1 lives entirely on the RIGHT of the keyboard: arrow
+        // cluster to steer, the two right-hand modifiers to fire.
         0 => &[
             (KeyCode::ArrowLeft, INPUT_LEFT),
             (KeyCode::ArrowRight, INPUT_RIGHT),
             (KeyCode::ArrowUp, INPUT_THRUST),
-            (KeyCode::KeyZ, INPUT_FIRE),
-            (KeyCode::KeyX, INPUT_SPECIAL),
-            (KeyCode::Space, INPUT_ULTIMATE),
+            (KeyCode::ControlRight, INPUT_FIRE),
+            (KeyCode::ShiftRight, INPUT_SPECIAL),
         ],
+        // P2 lives entirely on the LEFT: WAD to steer, Z + L-Shift
+        // (both bottom-left) to fire. Keeps the two hot-seat players
+        // at opposite ends of the keyboard. We deliberately avoid
+        // Left-Ctrl for fire: with W as thrust, Ctrl+W would close
+        // the browser tab (a shortcut the page can't suppress).
         1 => &[
             (KeyCode::KeyA, INPUT_LEFT),
             (KeyCode::KeyD, INPUT_RIGHT),
             (KeyCode::KeyW, INPUT_THRUST),
-            (KeyCode::KeyG, INPUT_FIRE),
-            (KeyCode::KeyH, INPUT_SPECIAL),
+            (KeyCode::KeyZ, INPUT_FIRE),
+            (KeyCode::ShiftLeft, INPUT_SPECIAL),
         ],
         2 => &[
             (KeyCode::KeyJ, INPUT_LEFT),
@@ -281,7 +296,11 @@ pub fn gather_slot_inputs(
 
     let n = config.slot_count().min(4);
     for slot in 0..n {
-        let (held, pressed_edge, released_edge) = if online {
+        // Last tick's held state for this slot, captured before we
+        // overwrite it — used to find the rising edge of the
+        // ultimate chord below.
+        let prev_held = slot_inputs.held[slot];
+        let (mut held, mut pressed_edge, released_edge) = if online {
             // Online: local handle reads kbd (slot 0 keymap);
             // every other slot reads from NetInputs.
             if Some(slot) == local_handle {
@@ -307,6 +326,25 @@ pub fn gather_slot_inputs(
             let released = read_local_just_released_with_virtual(&keys, Some(&virt), slot);
             (held, pressed, released)
         };
+
+        // Derive the ultimate bit from the five-button chord. We do
+        // this AFTER the keyboard/network read (and after the touch
+        // OR for slot 0) so a remote player's chord — whose raw bits
+        // arrive over the wire — resolves to the same ultimate on
+        // every peer. The touch ULT button has already set
+        // INPUT_ULTIMATE directly via VirtualInput, so this only
+        // adds the keyboard path.
+        let chord_now =
+            held.buttons & INPUT_ULTIMATE_CHORD == INPUT_ULTIMATE_CHORD;
+        let chord_prev =
+            prev_held.buttons & INPUT_ULTIMATE_CHORD == INPUT_ULTIMATE_CHORD;
+        if chord_now {
+            held.buttons |= INPUT_ULTIMATE;
+            if !chord_prev {
+                pressed_edge.buttons |= INPUT_ULTIMATE;
+            }
+        }
+
         slot_inputs.held[slot] = held;
         slot_inputs.just_pressed[slot] = pressed_edge;
         slot_inputs.just_released[slot] = released_edge;

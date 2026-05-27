@@ -912,8 +912,9 @@ pub fn load_ship_catalog(mut commands: Commands) {
     info!("ship catalog: {} entries", ships.len());
     info!("------------------------------------------------------------");
     info!("CONTROLS");
-    info!("  P1 — Arrow keys (turn / thrust),  Z fire,  X special");
-    info!("  P2 — W A S D    (thrust / turn),  G fire,  H special");
+    info!("  P1 — Arrow keys (turn / thrust),  R-Ctrl fire,  R-Shift special");
+    info!("  P2 — W A D      (thrust / turn),  Z fire,  L-Shift special");
+    info!("  ULTIMATE — hold turn-L + turn-R + thrust + fire + special together");
     info!("  Tab / Shift+Tab        — cycle P1 to next/prev ship");
     info!("  ` (backtick) / Shift+` — cycle P2 to next/prev ship");
     info!("  Digits 1..0            — direct-pick P1 (Shift/Ctrl = banks 11-20, 21-25)");

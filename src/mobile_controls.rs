@@ -104,8 +104,15 @@ impl Plugin for MobileControlsPlugin {
     }
 }
 
-const BTN_SIZE: f32 = 78.0;
-const BTN_MARGIN: f32 = 14.0;
+// Compact "Nintendo gamepad" sizing: a small directional cross on
+// the left, a face-button diamond on the right. Kept deliberately
+// little so the buttons don't swallow the play area on a phone.
+const DPAD_BTN: f32 = 46.0;
+const FACE_BTN: f32 = 50.0;
+const ULT_BTN: f32 = 42.0;
+const CHIP_BTN: f32 = 34.0;
+const BTN_MARGIN: f32 = 16.0;
+const PAD_GAP: f32 = 10.0;
 const BTN_ALPHA: f32 = 0.32;
 
 fn spawn_touch_controls(mut commands: Commands) {
@@ -119,7 +126,11 @@ fn spawn_touch_controls(mut commands: Commands) {
     // or not, so make it as unobtrusive as possible.
     let toggle_color = Color::srgba(0.4, 0.4, 0.4, 0.22);
 
-    // Bottom-left cluster: turn-left, turn-right, thrust.
+    // ---- Left: directional cross (D-pad) ----
+    // Thrust on top, turn-left / turn-right below it, arranged as a
+    // little cross so the thumb rocks between them like a real pad.
+    let dpad_w = DPAD_BTN * 2.0 + PAD_GAP;
+    let dpad_h = DPAD_BTN * 2.0 + PAD_GAP;
     commands
         .spawn((
             TouchButtonCluster,
@@ -127,40 +138,115 @@ fn spawn_touch_controls(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 bottom: Val::Px(BTN_MARGIN),
                 left: Val::Px(BTN_MARGIN),
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(10.0),
+                width: Val::Px(dpad_w),
+                height: Val::Px(dpad_h),
                 ..default()
             },
         ))
-        .with_children(|row| {
-            for action in [TouchAction::Left, TouchAction::Right, TouchAction::Thrust] {
-                spawn_btn(row, action, dpad_color);
-            }
+        .with_children(|pad| {
+            // ▲ thrust — top-center
+            spawn_gamepad_btn(
+                pad,
+                TouchAction::Thrust,
+                dpad_color,
+                DPAD_BTN,
+                10.0,
+                Val::Px(0.0),
+                Val::Px((dpad_w - DPAD_BTN) * 0.5),
+                Val::Auto,
+                Val::Auto,
+                20.0,
+            );
+            // ◀ turn-left — bottom-left
+            spawn_gamepad_btn(
+                pad,
+                TouchAction::Left,
+                dpad_color,
+                DPAD_BTN,
+                10.0,
+                Val::Auto,
+                Val::Px(0.0),
+                Val::Auto,
+                Val::Px(0.0),
+                20.0,
+            );
+            // ▶ turn-right — bottom-right
+            spawn_gamepad_btn(
+                pad,
+                TouchAction::Right,
+                dpad_color,
+                DPAD_BTN,
+                10.0,
+                Val::Auto,
+                Val::Auto,
+                Val::Px(0.0),
+                Val::Px(0.0),
+                20.0,
+            );
         });
 
-    // Bottom-right cluster: fire, special. Offset further left so it
-    // clears the HUD column (220 px wide on the right edge).
+    // ---- Right: face-button diamond ----
+    // FIRE (A) and SPEC (B) as the two round main buttons, ULT as a
+    // smaller accent above them. Offset left of the HUD column
+    // (~220 px on the right edge) so it isn't hidden behind it.
+    let face_w = FACE_BTN * 2.0 + PAD_GAP;
+    let face_h = FACE_BTN + ULT_BTN + PAD_GAP;
     commands
         .spawn((
             TouchButtonCluster,
             Node {
                 position_type: PositionType::Absolute,
                 bottom: Val::Px(BTN_MARGIN),
-                right: Val::Px(230.0),
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(10.0),
+                right: Val::Px(200.0),
+                width: Val::Px(face_w),
+                height: Val::Px(face_h),
                 ..default()
             },
         ))
-        .with_children(|row| {
-            spawn_btn(row, TouchAction::Fire, fire_color);
-            spawn_btn(row, TouchAction::Special, spec_color);
+        .with_children(|face| {
+            // ULT — accent, top-center (round)
+            spawn_gamepad_btn(
+                face,
+                TouchAction::Ultimate,
+                ult_color,
+                ULT_BTN,
+                ULT_BTN * 0.5,
+                Val::Px(0.0),
+                Val::Px((face_w - ULT_BTN) * 0.5),
+                Val::Auto,
+                Val::Auto,
+                13.0,
+            );
+            // SPEC (B) — bottom-left (round)
+            spawn_gamepad_btn(
+                face,
+                TouchAction::Special,
+                spec_color,
+                FACE_BTN,
+                FACE_BTN * 0.5,
+                Val::Auto,
+                Val::Px(0.0),
+                Val::Auto,
+                Val::Px(0.0),
+                15.0,
+            );
+            // FIRE (A) — bottom-right (round)
+            spawn_gamepad_btn(
+                face,
+                TouchAction::Fire,
+                fire_color,
+                FACE_BTN,
+                FACE_BTN * 0.5,
+                Val::Auto,
+                Val::Auto,
+                Val::Px(0.0),
+                Val::Px(0.0),
+                15.0,
+            );
         });
 
-    // Top-center cluster: ULTIMATE + the two class-cycle buttons
-    // flanking it. Bigger / brighter ULT in the middle so it's
-    // unmistakable; the smaller << / >> chips beside it cycle P1's
-    // ship class (Tab / Shift+Tab equivalent).
+    // ---- Top-center: class-cycle chips (Tab / Shift+Tab) ----
+    let chip_w = CHIP_BTN * 2.0 + PAD_GAP;
     commands
         .spawn((
             TouchButtonCluster,
@@ -169,58 +255,100 @@ fn spawn_touch_controls(mut commands: Commands) {
                 top: Val::Px(BTN_MARGIN),
                 left: Val::Percent(50.0),
                 margin: UiRect {
-                    left: Val::Px(-130.0),
+                    left: Val::Px(-chip_w * 0.5),
                     ..default()
                 },
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(8.0),
-                align_items: AlignItems::Center,
+                width: Val::Px(chip_w),
+                height: Val::Px(CHIP_BTN),
                 ..default()
             },
         ))
         .with_children(|row| {
-            spawn_btn_sized(row, TouchAction::CyclePrev, cycle_color, 56.0, 44.0);
-            spawn_btn_sized(row, TouchAction::Ultimate, ult_color, 120.0, 58.0);
-            spawn_btn_sized(row, TouchAction::CycleNext, cycle_color, 56.0, 44.0);
+            spawn_gamepad_btn(
+                row,
+                TouchAction::CyclePrev,
+                cycle_color,
+                CHIP_BTN,
+                8.0,
+                Val::Px(0.0),
+                Val::Px(0.0),
+                Val::Auto,
+                Val::Auto,
+                15.0,
+            );
+            spawn_gamepad_btn(
+                row,
+                TouchAction::CycleNext,
+                cycle_color,
+                CHIP_BTN,
+                8.0,
+                Val::Px(0.0),
+                Val::Auto,
+                Val::Px(0.0),
+                Val::Auto,
+                15.0,
+            );
         });
 
-    // Toggle knob — tiny "+" button in the top-left that's
-    // ALWAYS visible. Tap once to reveal the rest of the touch
-    // UI, tap again to hide. Sized small enough to barely
-    // intrude on the play area.
+    // Toggle knob — tiny "+" button in the top-left that's ALWAYS
+    // visible (not in any cluster). Tap to reveal/hide the rest.
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
             top: Val::Px(BTN_MARGIN),
             left: Val::Px(BTN_MARGIN),
+            width: Val::Px(30.0),
+            height: Val::Px(30.0),
             ..default()
         })
         .with_children(|root| {
-            spawn_btn_sized(root, TouchAction::ToggleButtons, toggle_color, 30.0, 30.0);
+            spawn_gamepad_btn(
+                root,
+                TouchAction::ToggleButtons,
+                toggle_color,
+                30.0,
+                8.0,
+                Val::Px(0.0),
+                Val::Px(0.0),
+                Val::Auto,
+                Val::Auto,
+                18.0,
+            );
         });
 }
 
-fn spawn_btn(parent: &mut ChildSpawnerCommands, action: TouchAction, color: Color) {
-    spawn_btn_sized(parent, action, color, BTN_SIZE, BTN_SIZE);
-}
-
-fn spawn_btn_sized(
+/// Spawn a single absolutely-positioned gamepad button inside its
+/// cluster. `radius` rounds the corners (set to half the size for a
+/// circular face button); `top/left/right/bottom` are insets from the
+/// cluster box (`Val::Auto` to leave an edge unpinned).
+#[allow(clippy::too_many_arguments)]
+fn spawn_gamepad_btn(
     parent: &mut ChildSpawnerCommands,
     action: TouchAction,
     color: Color,
-    w: f32,
-    h: f32,
+    size: f32,
+    radius: f32,
+    top: Val,
+    left: Val,
+    right: Val,
+    bottom: Val,
+    font: f32,
 ) {
     parent
         .spawn((
             Button,
             Node {
-                width: Val::Px(w),
-                height: Val::Px(h),
+                position_type: PositionType::Absolute,
+                width: Val::Px(size),
+                height: Val::Px(size),
+                top,
+                left,
+                right,
+                bottom,
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 border: UiRect::all(Val::Px(2.0)),
-                border_radius: BorderRadius::all(Val::Px(14.0)),
+                border_radius: BorderRadius::all(Val::Px(radius)),
                 ..default()
             },
             BackgroundColor(color),
@@ -231,7 +359,7 @@ fn spawn_btn_sized(
         .with_children(|btn| {
             btn.spawn((
                 Text::new(action.label()),
-                TextFont::from_font_size(22.0),
+                TextFont::from_font_size(font),
                 TextColor(Color::srgba(1.0, 1.0, 1.0, 0.95)),
             ));
         });
