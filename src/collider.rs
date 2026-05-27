@@ -328,17 +328,22 @@ fn draw_debug_gizmos(
     debug_on: Res<DebugCollider>,
     mut gizmos: Gizmos,
     ships: Query<(&Position, &Rotation, &ShipClass)>,
+    camera: Query<&Transform, With<Camera2d>>,
     colliders: Res<ShipColliders>,
 ) {
     if !debug_on.0 {
         return;
     }
+    // Match the wrapped frame the sprites render in so the outlines
+    // sit on top of the ships rather than at their raw arena coords.
+    let focus = camera.single().ok().map(|t| t.translation.truncate());
     for (pos, rot, class) in &ships {
+        let center = focus.map_or(pos.0, |f| crate::physics::nearest_image(pos.0, f));
         // Facing arrow — short line out the nose of the ship.
         let forward = Vec2::new(-rot.sin, rot.cos);
-        gizmos.line_2d(pos.0, pos.0 + forward * 40.0, Color::srgb(0.4, 1.0, 0.4));
+        gizmos.line_2d(center, center + forward * 40.0, Color::srgb(0.4, 1.0, 0.4));
         // Centre dot.
-        gizmos.circle_2d(pos.0, 2.0, Color::srgb(1.0, 1.0, 0.4));
+        gizmos.circle_2d(center, 2.0, Color::srgb(1.0, 1.0, 0.4));
 
         // Collider outline — rotated polygon if we have one, else a
         // fallback circle so the user knows we're using a circle.
@@ -349,7 +354,7 @@ fn draw_debug_gizmos(
                     Vec2::new(
                         p.x * rot.cos - p.y * rot.sin,
                         p.x * rot.sin + p.y * rot.cos,
-                    ) + pos.0
+                    ) + center
                 })
                 .collect();
             for i in 0..rotated.len() {
@@ -358,7 +363,7 @@ fn draw_debug_gizmos(
                 gizmos.line_2d(a, b, Color::srgb(1.0, 0.5, 0.0));
             }
         } else {
-            gizmos.circle_2d(pos.0, 22.0, Color::srgb(1.0, 0.3, 0.3));
+            gizmos.circle_2d(center, 22.0, Color::srgb(1.0, 0.3, 0.3));
         }
     }
 }

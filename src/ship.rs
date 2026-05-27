@@ -4905,7 +4905,7 @@ fn tick_beams(
     mut commands: Commands,
     time: Res<Time<Physics>>,
     spatial: avian2d::prelude::SpatialQuery,
-    mut beams: Query<(Entity, &mut Beam, &mut Transform, &mut Sprite)>,
+    mut beams: Query<(Entity, &mut Beam, &mut Transform, &mut Sprite), Without<Camera2d>>,
     owners: Query<(&Ship, &Position, &Rotation)>,
     ship_pos: Query<(Entity, &Ship, &Position), Without<Invisible>>,
     asteroid_pos: Query<&Position, With<Asteroid>>,
@@ -4913,11 +4913,15 @@ fn tick_beams(
     shields: Query<&ShieldActive>,
     ship_class_of: Query<&Ship>,
     hypers: Query<&crate::ultimate::HyperActive>,
+    camera: Query<&Transform, With<Camera2d>>,
     assets: Res<AssetServer>,
 ) {
     use avian2d::prelude::SpatialQueryFilter;
     use bevy::math::Dir2;
     let dt = time.delta_secs();
+    // Render the beam in the camera's wrapped frame so it stays
+    // glued to the (offset-rendered) firer near an arena edge.
+    let focus = camera.single().ok().map(|t| t.translation.truncate());
     for (beam_entity, mut beam, mut beam_xf, mut beam_sprite) in &mut beams {
         let Ok((owner_ship, owner_pos, owner_rot)) = owners.get(beam.owner) else {
             commands.entity(beam_entity).despawn();
@@ -5016,7 +5020,9 @@ fn tick_beams(
         // missing). Sprite default y-up axis, custom_size = (w, len)
         // means we rotate by atan2(dy, dx) - π/2 to align long-axis
         // with the world direction.
-        let midpoint = world_origin + world_dir * (hit_t * 0.5);
+        let render_origin =
+            focus.map_or(world_origin, |f| crate::physics::nearest_image(world_origin, f));
+        let midpoint = render_origin + world_dir * (hit_t * 0.5);
         let angle = world_dir.y.atan2(world_dir.x) - std::f32::consts::FRAC_PI_2;
         beam_xf.translation = midpoint.extend(0.3);
         beam_xf.rotation = Quat::from_rotation_z(angle);
@@ -5043,13 +5049,15 @@ fn tick_tractors(
     mut commands: Commands,
     time: Res<Time<Physics>>,
     spatial: avian2d::prelude::SpatialQuery,
-    mut tractors: Query<(Entity, &mut TractorBeam, &mut Transform, &mut Sprite)>,
+    mut tractors: Query<(Entity, &mut TractorBeam, &mut Transform, &mut Sprite), Without<Camera2d>>,
     owners: Query<(&Ship, &Position, &Rotation)>,
     ships_for_filter: Query<&Ship, Without<Invisible>>,
     mut ship_state: Query<(&Position, &mut LinearVelocity, &Mass), With<Ship>>,
+    camera: Query<&Transform, With<Camera2d>>,
 ) {
     use avian2d::prelude::SpatialQueryFilter;
     let dt = time.delta_secs();
+    let focus = camera.single().ok().map(|t| t.translation.truncate());
     for (tractor_entity, mut tractor, mut tractor_xf, mut sprite) in &mut tractors {
         let Ok((owner_ship, owner_pos, owner_rot)) = owners.get(tractor.owner) else {
             commands.entity(tractor_entity).despawn();
@@ -5105,8 +5113,16 @@ fn tick_tractors(
             world_origin + Vec2::Y * tractor.range
         };
 
-        let mid = (world_origin + hit_endpoint) * 0.5;
-        let delta = hit_endpoint - world_origin;
+        // Render in the camera's wrapped frame: image the origin near
+        // the focus, then place the endpoint via minimum-image so the
+        // beam spans the short way across the seam instead of stretching
+        // back across the whole arena.
+        let render_origin =
+            focus.map_or(world_origin, |f| crate::physics::nearest_image(world_origin, f));
+        let rel = crate::physics::min_image(hit_endpoint - world_origin);
+        let render_endpoint = render_origin + rel;
+        let mid = (render_origin + render_endpoint) * 0.5;
+        let delta = rel;
         let len = delta.length().max(1.0);
         let angle = delta.y.atan2(delta.x) - std::f32::consts::FRAC_PI_2;
         tractor_xf.translation = mid.extend(0.3);

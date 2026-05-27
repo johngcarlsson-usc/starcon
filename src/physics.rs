@@ -25,6 +25,29 @@ use bevy_ggrs::GgrsSchedule;
 /// end up on the wrong side of the arena facing outward.
 pub const ARENA_HALF_EXTENT: f32 = 1500.0;
 
+/// Full wrap period on each axis — the arena is a torus of this size.
+pub const ARENA_SIZE: f32 = ARENA_HALF_EXTENT * 2.0;
+
+/// Minimum-image convention: wrap a displacement to the shortest
+/// equivalent vector on the torus (into `[-half, half]` per axis).
+/// This is the only correct notion of "the vector from A to B" when
+/// space wraps — two ships on opposite edges are actually adjacent.
+pub fn min_image(delta: Vec2) -> Vec2 {
+    Vec2::new(
+        delta.x - ARENA_SIZE * (delta.x / ARENA_SIZE).round(),
+        delta.y - ARENA_SIZE * (delta.y / ARENA_SIZE).round(),
+    )
+}
+
+/// The periodic image of `pos` nearest to `focus`. Rendering draws
+/// every wrappable entity in the copy of the torus closest to the
+/// camera, so a ship crossing an edge slides in from the opposite
+/// side instead of teleporting — and the camera (which shares the
+/// same `focus`) never jerks to chase the jump.
+pub fn nearest_image(pos: Vec2, focus: Vec2) -> Vec2 {
+    focus - min_image(focus - pos)
+}
+
 pub struct PhysicsPlugin;
 
 impl Plugin for PhysicsPlugin {

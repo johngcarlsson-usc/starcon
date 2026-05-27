@@ -143,6 +143,7 @@ impl Plugin for StarfieldPlugin {
                     handle_zoom_input,
                     handle_pinch_zoom,
                     smooth_zoom_scale,
+                    apply_toroidal_render_offset,
                     tick_starfield_parallax,
                     tick_zoom_stars,
                 )
@@ -200,13 +201,33 @@ fn tick_starfield_parallax(
     let Ok(cam) = cameras.single() else { return };
     let cam_xy = cam.translation.truncate();
     for (star, mut xf) in &mut stars {
-        // world_pos = anchor + cam_pos * (1 - parallax).
-        //   parallax=1 → world_pos = anchor (world-fixed).
-        //   parallax=0 → world_pos = anchor + cam (camera-locked).
-        let render = star.anchor + cam_xy * (1.0 - star.parallax);
+        // Screen offset from the camera = anchor - cam·parallax:
+        //   parallax=0 → offset = anchor (star locked to camera).
+        //   parallax=1 → offset = anchor - cam (star world-fixed).
+        // The camera focus is now continuous (it can drift far past
+        // the arena as ships lap the torus), so tile the offset into
+        // a window around the camera — each star wraps individually
+        // at the tile edge (off-screen for normal zoom), keeping the
+        // field populated no matter how far the focus has travelled.
+        let offset = star.anchor - cam_xy * star.parallax;
+        let tiled = wrap_to_tile(offset, STAR_TILE);
+        let render = cam_xy + tiled;
         xf.translation.x = render.x;
         xf.translation.y = render.y;
     }
+}
+
+/// Tile size for the parallax starfield — wraps each star into
+/// `[-STAR_TILE/2, STAR_TILE/2]` around the camera. Matches the
+/// spawn spread (`2 * STAR_AREA_HALF`) so density is unchanged.
+const STAR_TILE: f32 = STAR_AREA_HALF * 2.0;
+
+/// Wrap a vector into `[-tile/2, tile/2]` on each axis.
+fn wrap_to_tile(v: Vec2, tile: f32) -> Vec2 {
+    Vec2::new(
+        v.x - tile * (v.x / tile).round(),
+        v.y - tile * (v.y / tile).round(),
+    )
 }
 
 const ZOOM_STEP: f32 = 1.05;
@@ -293,10 +314,16 @@ fn handle_zoom_input(
     // a dozen or so. These animate in their own system and live
     // through the duration of the tween.
     let n = (3.0 + delta_total.abs() * 2.0).round() as i32;
+    // Spawn around the camera, not the world origin — the focus
+    // follows the ships and can sit far from (0,0).
+    let cam_xy = cameras
+        .single()
+        .map(|(t, _)| t.translation.truncate())
+        .unwrap_or(Vec2::ZERO);
     for _ in 0..n {
         let start_r = 60.0 + fastrand::f32() * 240.0;
         let theta = fastrand::f32() * std::f32::consts::TAU;
-        let pos = Vec2::new(theta.cos() * start_r, theta.sin() * start_r);
+        let pos = cam_xy + Vec2::new(theta.cos() * start_r, theta.sin() * start_r);
         // Outward when zooming in (feels like flying forward),
         // inward when zooming out.
         let radial_speed =
@@ -370,21 +397,27 @@ fn smooth_zoom_scale(
 fn tick_zoom_stars(
     mut commands: Commands,
     time: Res<Time>,
+    cameras: Query<&Transform, (With<Camera2d>, Without<ZoomStar>)>,
     mut q: Query<(Entity, &mut ZoomStar, &mut Transform, &mut Sprite)>,
 ) {
     let dt = time.delta_secs();
+    let cam_xy = cameras
+        .single()
+        .map(|t| t.translation.truncate())
+        .unwrap_or(Vec2::ZERO);
     for (entity, mut star, mut xf, mut sprite) in &mut q {
         star.remaining_s -= dt;
         if star.remaining_s <= 0.0 {
             commands.entity(entity).despawn();
             continue;
         }
-        // Move radially. With AngularDamping=0 / no physics we just
-        // integrate the position directly.
+        // Move radially out from the camera centre. With no physics
+        // we integrate the position directly.
         let pos = xf.translation.truncate();
-        let r = pos.length();
+        let rel = pos - cam_xy;
+        let r = rel.length();
         if r > 0.1 {
-            let dir = pos / r;
+            let dir = rel / r;
             let new_pos = pos + dir * star.radial_speed * dt;
             xf.translation = new_pos.extend(xf.translation.z);
         }
@@ -516,16 +549,32 @@ fn follow_ships_with_camera(
         }
     }
 
-    // Aggregate ship positions.
+    let Ok((mut cam_xf, mut projection)) = cameras.single_mut() else {
+        return;
+    };
+
+    // The camera position doubles as a CONTINUOUS focus point that we
+    // unwrap every ship around (minimum-image). Keeping it continuous
+    // — never re-wrapped into the canonical arena — is what makes the
+    // wrap seamless: two ships flying together stay in one unwrapped
+    // frame, so when one crosses the edge its image stays right next
+    // to the other and the camera glides instead of jerking. The
+    // render-offset pass (`apply_toroidal_render_offset`) draws every
+    // body in this same frame, and the starfield tiles around it, so
+    // the unbounded focus is invisible.
+    let focus = cam_xf.translation.truncate();
+
+    // Aggregate ship positions in the focus-relative unwrapped frame.
     let mut count = 0usize;
     let mut center = Vec2::ZERO;
     let mut min = Vec2::splat(f32::INFINITY);
     let mut max = Vec2::splat(f32::NEG_INFINITY);
     for p in &ships {
+        let img = crate::physics::nearest_image(p.0, focus);
         count += 1;
-        center += p.0;
-        min = min.min(p.0);
-        max = max.max(p.0);
+        center += img;
+        min = min.min(img);
+        max = max.max(img);
     }
     if count == 0 {
         return;
@@ -538,29 +587,13 @@ fn follow_ships_with_camera(
     let Ok(window) = windows.single() else { return };
     let win = Vec2::new(window.width().max(1.0), window.height().max(1.0));
 
-    // Pad the bounding box so the ships don't sit at the screen
-    // edges, then choose the scale that fits the longer dimension.
-    // 500 wu is generous — when ships are close you still see a
-    // big chunk of arena around them.
+    // Pad the bounding box so the ships sit in the central zone, not
+    // at the screen edges, then choose the scale that fits the longer
+    // dimension. 500 wu is generous — when ships are close you still
+    // see a big chunk of arena around them.
     const PAD_WU: f32 = 500.0;
     let needed = span + Vec2::splat(PAD_WU * 2.0);
-    let scale_x = needed.x / win.x;
-    let scale_y = needed.y / win.y;
-    let raw_scale = scale_x.max(scale_y).clamp(SCALE_MIN, SCALE_MAX);
-
-    // Light hysteresis: zoom out the moment the bbox would clip,
-    // zoom in once the bbox has shrunk by more than 10 %. The lerp
-    // below smooths the actual scale change so small frame-to-
-    // frame raw_scale wobble doesn't translate into visible
-    // jitter even with the tight 10 % band.
-    let cur = zoom_state.target_scale;
-    let target_scale = if raw_scale > cur {
-        raw_scale * 1.05
-    } else if raw_scale < cur * 0.90 {
-        raw_scale * 1.05
-    } else {
-        cur
-    };
+    let raw_scale = (needed.x / win.x).max(needed.y / win.y).clamp(SCALE_MIN, SCALE_MAX);
 
     // Snap conditions: either a 0→N transition was missed
     // somehow, or `pending_initial_snap` was set by
@@ -574,46 +607,69 @@ fn follow_ships_with_camera(
         zoom_state.pending_initial_snap = false;
     }
 
-    // On snap, use a *tight* framing (small PAD_WU equivalent)
-    // because the player explicitly wants "the smallest bounding
-    // box because the game is starting". We recompute against a
-    // smaller padding so the camera snap doesn't inherit the
-    // generous mid-game padding.
+    // On snap, use a *tight* framing (small padding) because the
+    // player wants the smallest bounding box at match start.
     let snap_scale = {
         const SNAP_PAD_WU: f32 = 200.0;
         let needed_tight = span + Vec2::splat(SNAP_PAD_WU * 2.0);
-        let sx = needed_tight.x / win.x;
-        let sy = needed_tight.y / win.y;
-        sx.max(sy).clamp(SCALE_MIN, SCALE_MAX)
+        (needed_tight.x / win.x)
+            .max(needed_tight.y / win.y)
+            .clamp(SCALE_MIN, SCALE_MAX)
     };
 
     let dt = time.delta_secs();
     let blend = if snap { 1.0 } else { (4.0 * dt).min(1.0) };
 
-    if let Ok((mut cam_xf, mut projection)) = cameras.single_mut() {
-        if snap {
-            // Direct assign — no lerp — so the very first rendered
-            // frame already has camera + scale fitted to the bbox.
-            // Lerp can leave the first frame at a stale pose if
-            // the centroid is far from the camera's prior
-            // position (e.g. after the cinematic exited at a
-            // wide framing).
-            cam_xf.translation.x = center.x;
-            cam_xf.translation.y = center.y;
-            if let Projection::Orthographic(ref mut ortho) = *projection {
-                ortho.scale = snap_scale;
-            }
-        } else {
-            cam_xf.translation.x += (center.x - cam_xf.translation.x) * blend;
-            cam_xf.translation.y += (center.y - cam_xf.translation.y) * blend;
+    if snap {
+        // Direct assign — no lerp — so the very first rendered frame
+        // already has camera + scale fitted to the bbox. Re-wrap the
+        // centroid into the canonical arena cell here (only on snap)
+        // so the continuous focus resets each match instead of
+        // accumulating drift over a long session. The offset pass
+        // (which runs after us) re-images every body around this
+        // focus, so the framing is identical regardless of cell.
+        let c = crate::physics::min_image(center);
+        cam_xf.translation.x = c.x;
+        cam_xf.translation.y = c.y;
+        if let Projection::Orthographic(ref mut ortho) = *projection {
+            ortho.scale = snap_scale;
+        }
+        zoom_state.target_scale = snap_scale;
+    } else {
+        cam_xf.translation.x += (center.x - cam_xf.translation.x) * blend;
+        cam_xf.translation.y += (center.y - cam_xf.translation.y) * blend;
+        // Continuous zoom: track the exact fit-scale every frame (no
+        // hysteresis dead-band) so the view tightens smoothly as the
+        // ships close and widens as they separate. The two lerps
+        // (here + `smooth_zoom_scale`) keep it from feeling twitchy.
+        let cur = zoom_state.target_scale;
+        zoom_state.target_scale = cur + (raw_scale - cur) * blend;
+    }
+}
+
+/// Draw every physics body at its periodic image nearest the camera
+/// focus, so wraparound is seamless. Runs in `Update` after the
+/// follow/zoom systems have settled the camera for the frame, and
+/// after Avian's (FixedUpdate) position→transform sync — so it has
+/// the last word on each body's render translation. Skipped during
+/// the Ultimate cinematic, which stages the camera and ships in raw
+/// arena coordinates.
+fn apply_toroidal_render_offset(
+    ultimate: Option<Res<crate::ultimate::UltimateState>>,
+    camera: Query<&Transform, With<Camera2d>>,
+    mut bodies: Query<(&Position, &mut Transform), Without<Camera2d>>,
+) {
+    if let Some(u) = ultimate {
+        if u.phase != crate::ultimate::UltimatePhase::Idle {
+            return;
         }
     }
-    let final_target = if snap { snap_scale } else { target_scale };
-    if snap {
-        zoom_state.target_scale = final_target;
-    } else {
-        let cur = zoom_state.target_scale;
-        zoom_state.target_scale = cur + (final_target - cur) * blend;
+    let Ok(cam) = camera.single() else { return };
+    let focus = cam.translation.truncate();
+    for (pos, mut xf) in &mut bodies {
+        let img = crate::physics::nearest_image(pos.0, focus);
+        xf.translation.x = img.x;
+        xf.translation.y = img.y;
     }
 }
 
