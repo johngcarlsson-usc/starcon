@@ -73,13 +73,6 @@ pub enum AbilityKind {
     /// a battery refill.
     ModifyCrew { delta: i32 },
 
-    /// Top off the firer's battery to `Battery::max`. Canonical Pkunk
-    /// taunt (refunds the activation drain). The dispatcher's
-    /// battery-gate already deducted `special_drain` before this fires;
-    /// since the canonical effect is "net no cost, full batt", we just
-    /// set current=max.
-    RefillBattery,
-
     /// Add a fixed `amount` to battery (clamped to max), NOT full. The
     /// dispatcher treats this as a recharge: it is never battery-gated
     /// and never drains, so it works even at 0 battery — the Pkunk taunt
@@ -631,10 +624,6 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
         AbilityKind::ModifyCrew { delta } => {
             ctx.crew.current = (ctx.crew.current + delta).clamp(0, ctx.crew.max);
             info!("P{} crew {:+} → {}", slot, delta, ctx.crew.current);
-        }
-        AbilityKind::RefillBattery => {
-            ctx.batt.current = ctx.batt.max;
-            info!("P{} battery refilled", slot);
         }
         AbilityKind::AddBattery { amount } => {
             ctx.batt.current = (ctx.batt.current + amount).min(ctx.batt.max);

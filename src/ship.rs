@@ -2082,13 +2082,15 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                         impulse: 8.0 * SC2_VEL_SCALE * 7.0, // mass≈7
                     },
                     // ThraddashFlame: Damage=2, Frames=39 ≈ 3.9 s.
+                    // Bigger + brighter so the afterburner fireball
+                    // trail is clearly visible (was a faint small square).
                     AbilityKind::SpawnDamageZone {
-                        offset: Vec2::new(0.0, -18.0),
-                        radius: 18.0,
+                        offset: Vec2::new(0.0, -24.0),
+                        radius: 28.0,
                         damage_per_sec: 8.0,
                         duration_s: 3.9,
                         source_self: true,
-                        color: Color::srgba(1.0, 0.5, 0.1, 0.5),
+                        color: Color::srgba(1.0, 0.55, 0.1, 0.85),
                     },
                 ]),
                 cooldown_s: 1.0 / 20.0,
@@ -2170,7 +2172,11 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             for i in 0..16 {
                 let theta = (i as f32) * std::f32::consts::TAU / 16.0;
                 let dir = Vec2::new(theta.cos(), theta.sin());
-                fried_barrels.push(Barrel { local_pos: dir * 16.0, direction: dir });
+                // Spawn the ring well clear of the hull so the 16
+                // fireballs don't overlap each other (and the ship) at
+                // spawn — overlapping dynamic shots get blasted apart by
+                // the solver, scattering the ring before it reads.
+                fried_barrels.push(Barrel { local_pos: dir * 36.0, direction: dir });
             }
             Some(ShipAbilities {
                 primary: AbilitySpec {
@@ -2190,9 +2196,9 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                         barrels: fried_barrels,
                         random_spread_rad: 0.0,
                         speed: fried_speed,
-                        lifetime: fried_life,
-                        color: Color::srgb(1.0, 1.0, 1.0),
-                        sprite_size: 8.0,
+                        lifetime: fried_life * 1.6,
+                        color: Color::srgb(1.0, 0.7, 0.3),
+                        sprite_size: 14.0,
                         sprite_path: Some("ships/kohma/sprites/shot_b01.png".into()),
                         homing_turn_rate: 0.0,
                         is_limpet: false,
