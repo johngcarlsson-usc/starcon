@@ -686,25 +686,28 @@ fn handle_setup_buttons(
                     base, state.target_humans, state.target_ai, state.target_humans
                 );
                 info!("netplay: opening matchbox socket → {}", url);
-                // Build the socket with an explicit ICE config: Google
-                // STUN for the fast path, plus a free public TURN relay
-                // (OpenRelay) so peers behind symmetric NAT / CGNAT /
-                // mobile networks — where STUN-only hole-punching fails —
-                // can still connect by relaying through the TURN server.
-                // Same-machine tabs connect via host candidates and never
-                // needed this; remote peers usually do.
+                // matchbox 0.14 gathers ICE candidates NON-trickle: it
+                // waits for the browser to FINISH gathering before it
+                // sends the offer/answer (see
+                // `wait_for_ice_gathering_complete` in matchbox_socket).
+                // So every UNREACHABLE ICE server stalls the entire
+                // connection until the browser times out gathering on it
+                // — that's why listing dead public TURN servers made
+                // connections take ~2 minutes. We therefore list only
+                // fast, reachable STUN servers: gathering finishes in
+                // ~1s and the peer connects immediately. To support
+                // symmetric-NAT peers later, add a TURN server you
+                // actually control (a reachable one won't stall
+                // gathering); a dead public one will.
                 let socket = MatchboxSocket::from(
                     WebRtcSocketBuilder::new(url)
                         .ice_server(RtcIceServerConfig {
                             urls: vec![
                                 "stun:stun.l.google.com:19302".to_string(),
                                 "stun:stun1.l.google.com:19302".to_string(),
-                                "turn:openrelay.metered.ca:80".to_string(),
-                                "turn:openrelay.metered.ca:443".to_string(),
-                                "turn:openrelay.metered.ca:443?transport=tcp".to_string(),
                             ],
-                            username: Some("openrelayproject".to_string()),
-                            credential: Some("openrelayproject".to_string()),
+                            username: None,
+                            credential: None,
                         })
                         .add_channel(ChannelConfig::unreliable()),
                 );
