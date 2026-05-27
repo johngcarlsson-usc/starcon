@@ -2723,13 +2723,12 @@ fn apply_player_input(
         let rot_sin = rot.sin;
         let input = slot_inputs.held[ship.player_slot.min(3)];
 
-        let dir = if input.pressed(input::INPUT_LEFT) {
-            1.0
-        } else if input.pressed(input::INPUT_RIGHT) {
-            -1.0
-        } else {
-            0.0
-        };
+        // Analog turn axis: keyboard is ±1.0 (bang-bang), the touch
+        // stick supplies proportional values in between for fine, slow
+        // turns. `target_omega` scales linearly with it, so a small
+        // stick tilt yields a slow rotation and full deflection hits
+        // the ship's normal max turn rate.
+        let dir = input.turn_f32().clamp(-1.0, 1.0);
         let target_omega = dir * derived.target_omega;
 
         let mode = angular_override
@@ -2738,7 +2737,7 @@ fn apply_player_input(
 
         // Edge detection done in-system so it's robust against the
         // Bevy ButtonInput-vs-FixedUpdate timing race.
-        let has_input_now = dir != 0.0;
+        let has_input_now = dir.abs() > 1e-3;
         let just_released = !has_input_now && last_turn.had_input;
         last_turn.had_input = has_input_now;
 

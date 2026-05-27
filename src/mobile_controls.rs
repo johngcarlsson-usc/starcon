@@ -106,9 +106,12 @@ impl Plugin for MobileControlsPlugin {
 // was; the knob rides inside the base.
 const STICK_BASE: f32 = 150.0;
 const STICK_KNOB: f32 = 72.0;
-/// Stick deflection (0..1 per axis) past which a direction registers.
-/// Below this the stick reads as centred (no input).
+/// Stick magnitude (0..1) below which it reads as centred (no input).
 const STICK_DEADZONE: f32 = 0.3;
+/// Stick angle off the vertical (forward) axis at which the turn rate
+/// saturates to the ship's maximum. Smaller leans turn proportionally
+/// slower, giving fine control near centre.
+const STICK_FULL_TURN_DEG: f32 = 30.0;
 
 // Compact "Nintendo gamepad" sizing: a small directional cross on
 // the left, a face-button diamond on the right. Kept deliberately
@@ -443,12 +446,27 @@ fn drive_virtual_input(
     // `Visibility::Hidden`, so without this guard a drag in the bottom-
     // left corner would steer P1 even while the controls are hidden.
     let mut stick = 0u8;
+    let mut turn = 0.0_f32;
     if visible.0 {
         for state in &sticks {
-            let d = state.delta;
-            if d.x < -STICK_DEADZONE {
+            let d = state.delta; // -1..1 per axis, y-up
+            if d.length() <= STICK_DEADZONE {
+                continue;
+            }
+            // Proportional turn: angle of the stick off the vertical
+            // (forward) axis, saturating at STICK_FULL_TURN_DEG. So a
+            // small lean gives a slow turn — the "cue to turn slowly" —
+            // and ~30° off (or more) gives the ship's full turn rate.
+            // Sign matches the `dir` convention (push right → −, a
+            // right turn).
+            let angle_off = d.x.atan2(d.y); // 0 = straight up, + = right
+            turn = (-angle_off / STICK_FULL_TURN_DEG.to_radians()).clamp(-1.0, 1.0);
+            // Digital bits for systems that still read them (Supox
+            // strafe, ultimate chord, post-ultimate coasting). Thrust
+            // engages when the stick is pushed forward of centre.
+            if turn > 0.15 {
                 stick |= INPUT_LEFT;
-            } else if d.x > STICK_DEADZONE {
+            } else if turn < -0.15 {
                 stick |= INPUT_RIGHT;
             }
             if d.y > STICK_DEADZONE {
@@ -456,6 +474,7 @@ fn drive_virtual_input(
             }
         }
     }
+    virt.turn = turn;
     // Edges for the stick bits (Inertial-mode steering watches the
     // turn-key release), diffed against last frame's stick state.
     let stick_pressed = stick & !*last_stick;

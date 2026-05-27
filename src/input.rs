@@ -39,11 +39,23 @@ pub const INPUT_ULTIMATE_CHORD: u8 =
 )]
 pub struct PlayerInput {
     pub buttons: u8,
+    /// Analog turn axis, quantised to `[-100, 100]` (= −1.0..=1.0 via
+    /// `turn_f32`). Sign matches the digital `dir` convention in
+    /// `apply_player_input`: +1 = full turn-left, −1 = full turn-right.
+    /// Keyboard players are bang-bang (±100 / 0); the touch analog
+    /// stick fills in the in-between values for fine, slow turns. Rides
+    /// inside `PlayerInput` so it crosses the network and rolls back
+    /// like every other input bit.
+    pub turn: i8,
 }
 
 impl PlayerInput {
     pub fn pressed(&self, mask: u8) -> bool {
         self.buttons & mask != 0
+    }
+    /// Analog turn as a float in `[-1.0, 1.0]`.
+    pub fn turn_f32(&self) -> f32 {
+        self.turn as f32 / 100.0
     }
 }
 
@@ -113,6 +125,10 @@ pub struct VirtualInput {
     /// edges each frame.
     pub cycle_next_just_pressed: bool,
     pub cycle_prev_just_pressed: bool,
+    /// Analog turn from the on-screen stick, in `[-1.0, 1.0]` (+1 =
+    /// full left, −1 = full right). OR'd into player 1's input as the
+    /// analog turn axis. `0.0` when the stick is centred or absent.
+    pub turn: f32,
 }
 
 fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
@@ -173,7 +189,16 @@ pub fn read_local_input(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput
             buttons |= mask;
         }
     }
-    PlayerInput { buttons }
+    // Keyboard steering is bang-bang: a held turn key is full deflection
+    // (sign matches the `dir` convention — LEFT = +1, RIGHT = −1).
+    let turn = if buttons & INPUT_LEFT != 0 {
+        100
+    } else if buttons & INPUT_RIGHT != 0 {
+        -100
+    } else {
+        0
+    };
+    PlayerInput { buttons, turn }
 }
 
 /// Same as `read_local_input` but also OR's in the virtual touch
@@ -188,6 +213,14 @@ pub fn read_local_input_with_virtual(
     if slot == 0 {
         if let Some(v) = virt {
             input.buttons |= v.held.buttons;
+            // If the analog stick is deflected it OWNS the turn axis
+            // (overriding the keyboard's bang-bang value) so a phone
+            // player gets proportional, fine-grained steering. The
+            // digital LEFT/RIGHT bits the stick also sets keep
+            // bit-driven systems (Supox strafe, etc.) working.
+            if v.turn.abs() > f32::EPSILON {
+                input.turn = (v.turn.clamp(-1.0, 1.0) * 100.0) as i8;
+            }
         }
     }
     input
@@ -205,7 +238,7 @@ pub fn read_local_just_pressed(keys: &ButtonInput<KeyCode>, slot: usize) -> Play
             buttons |= mask;
         }
     }
-    PlayerInput { buttons }
+    PlayerInput { buttons, turn: 0 }
 }
 
 pub fn read_local_just_pressed_with_virtual(
@@ -234,7 +267,7 @@ pub fn read_local_just_released(keys: &ButtonInput<KeyCode>, slot: usize) -> Pla
             buttons |= mask;
         }
     }
-    PlayerInput { buttons }
+    PlayerInput { buttons, turn: 0 }
 }
 
 pub struct InputPlugin;
@@ -315,8 +348,8 @@ pub fn gather_slot_inputs(
                 let edge_release = !cur.buttons & prev.buttons;
                 (
                     cur,
-                    PlayerInput { buttons: edge_press },
-                    PlayerInput { buttons: edge_release },
+                    PlayerInput { buttons: edge_press, turn: 0 },
+                    PlayerInput { buttons: edge_release, turn: 0 },
                 )
             }
         } else {
