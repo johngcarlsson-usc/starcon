@@ -619,7 +619,19 @@ pub(crate) fn spawn_damage_zone(
     damage_per_sec: f32,
     lifetime: f32,
     color: Color,
+    sprite: Option<Handle<Image>>,
 ) {
+    // With a sprite (e.g. the Thraddash fireball) we tint+size it;
+    // otherwise fall back to a plain coloured disc.
+    let sprite = match sprite {
+        Some(image) => Sprite {
+            image,
+            color,
+            custom_size: Some(Vec2::splat(radius * 2.0)),
+            ..default()
+        },
+        None => Sprite::from_color(color, Vec2::splat(radius * 2.0)),
+    };
     commands.spawn((
         DamageZone {
             radius,
@@ -627,7 +639,7 @@ pub(crate) fn spawn_damage_zone(
             lifetime,
             source,
         },
-        Sprite::from_color(color, Vec2::splat(radius * 2.0)),
+        sprite,
         Transform::from_translation(pos.extend(0.2)),
         // Physics-native overlap detection. `Sensor` means Avian
         // tracks collisions for events but applies no impulse — the
@@ -2090,7 +2102,8 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                         damage_per_sec: 8.0,
                         duration_s: 3.9,
                         source_self: true,
-                        color: Color::srgba(1.0, 0.55, 0.1, 0.85),
+                        color: Color::srgba(1.0, 0.8, 0.5, 0.95),
+                        sprite_path: Some("ui/fireball.png"),
                     },
                 ]),
                 cooldown_s: 1.0 / 20.0,
@@ -2197,9 +2210,9 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                         random_spread_rad: 0.0,
                         speed: fried_speed,
                         lifetime: fried_life * 1.6,
-                        color: Color::srgb(1.0, 0.7, 0.3),
-                        sprite_size: 14.0,
-                        sprite_path: Some("ships/kohma/sprites/shot_b01.png".into()),
+                        color: Color::srgb(1.0, 0.85, 0.5),
+                        sprite_size: 18.0,
+                        sprite_path: Some("ui/fireball.png".into()),
                         homing_turn_rate: 0.0,
                         is_limpet: false,
                         recoil_impulse: 0.0,
@@ -2293,8 +2306,8 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                     initial_angle_offset: std::f32::consts::PI,
                     initial_speed: 33.0 * SC2_VEL_SCALE,
                     sprite_path: Some("ships/chebr/sprites/shot_c_00_tga.png".into()),
-                    sprite_size: 14.0,
-                    color: Color::srgb(0.7, 0.8, 1.0),
+                    sprite_size: 24.0,
+                    color: Color::srgb(0.8, 0.9, 1.0),
                     // .ini Special Armour=3 → survives 3 hits.
                     hp: 3,
                     lifetime_s: 15.0,
@@ -4491,6 +4504,7 @@ fn tick_shofixti_glory(
                     1_000_000.0,
                     0.12,
                     Color::srgba(1.0, 0.6, 0.2, 0.55),
+                    None,
                 );
                 info!("P{} GLORY DEVICE detonates", ship.player_slot + 1);
             }

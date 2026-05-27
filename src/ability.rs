@@ -174,6 +174,9 @@ pub enum AbilityKind {
         duration_s: f32,
         source_self: bool,
         color: Color,
+        /// Optional sprite for the zone (e.g. a fireball). `None` draws
+        /// a plain coloured disc.
+        sprite_path: Option<&'static str>,
     },
 
     /// Spawn an owner-attached damage zone — like `SpawnDamageZone`
@@ -695,6 +698,7 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
             duration_s,
             source_self,
             color,
+            sprite_path,
         } => {
             let world_offset = Vec2::new(
                 offset.x * ctx.rot.cos - offset.y * ctx.rot.sin,
@@ -708,6 +712,7 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
                 *damage_per_sec,
                 *duration_s,
                 *color,
+                sprite_path.map(|p| ctx.assets.load(p)),
             );
         }
         AbilityKind::SpawnAttachedDamageZone {

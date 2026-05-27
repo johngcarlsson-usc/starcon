@@ -3124,6 +3124,7 @@ fn tick_shofixti_nova(
         2000.0,
         SHOSC_NOVA_S,
         Color::srgba(1.0, 0.95, 0.6, 0.55),
+        None,
     );
 
     // The Scout sacrifices itself in canon — set crew to 0 so the
@@ -4720,6 +4721,7 @@ fn tick_thraddash_burn(
     time: Res<Time<Physics>>,
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
+    assets: Res<AssetServer>,
     mut ships: Query<(&Position, &Rotation, &mut crate::ship::ShipPhysicsDerived), With<crate::ship::Ship>>,
 ) {
     if state.variant != UltimateVariant::Thraddash
@@ -4753,7 +4755,8 @@ fn tick_thraddash_burn(
         THRADDASH_FLAME_RADIUS,
         THRADDASH_FLAME_DPS,
         THRADDASH_FLAME_LIFE_S,
-        Color::srgba(1.0, 0.55, 0.20, 0.55),
+        Color::srgba(1.0, 0.8, 0.5, 0.95),
+        Some(assets.load("ui/fireball.png")),
     );
 }
 
