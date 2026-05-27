@@ -1683,8 +1683,13 @@ fn exit_cinematic(
             // Earthling keeps its blast velocity after the
             // cinematic; PostUltimateCoasting lets cap_velocity
             // and apply_player_input know not to snap it back.
+            // `try_insert` because on the reset/class-cycle path
+            // `teardown_match` may despawn this ship in the same
+            // state transition — `get_entity` still sees it (the
+            // despawn is only queued), so a plain `insert` would
+            // panic when the despawn flushes first.
             if state.variant == UltimateVariant::Earthling {
-                e.insert(PostUltimateCoasting);
+                e.try_insert(PostUltimateCoasting);
             }
             // Drop the Mmrnmhrm-active marker so normal abilities
             // resume + restore the ship's original scale on the
@@ -1692,7 +1697,7 @@ fn exit_cinematic(
             if state.variant == UltimateVariant::Mmrnmhrm {
                 e.remove::<MmrxfActive>();
                 if let Some(orig) = state.mmrxf_orig_scale {
-                    e.insert(MmrxfNeedsRestore { orig });
+                    e.try_insert(MmrxfNeedsRestore { orig });
                 }
             }
         }

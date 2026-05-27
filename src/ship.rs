@@ -2022,9 +2022,12 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                     random_spread_rad: 0.0,
                     speed: 28.0 * SC2_VEL_SCALE,
                     lifetime: (2.8 * SC2_RANGE_SCALE) / (28.0 * SC2_VEL_SCALE),
-                    color: Color::srgb(1.0, 0.6, 0.3),
-                    sprite_size: 8.0,
-                    sprite_path: Some("ships/ilwav/sprites/shot_a01.png".into()),
+                    // The extracted shot_a01 is essentially blank (mean
+                    // alpha ~0.003), so render a solid coloured bolt
+                    // instead — short-range orange "fire breath".
+                    color: Color::srgb(1.0, 0.55, 0.2),
+                    sprite_size: 12.0,
+                    sprite_path: None,
                     homing_turn_rate: 0.0,
                     is_limpet: false,
                     recoil_impulse: 0.0,
@@ -4611,6 +4614,14 @@ fn handle_projectile_hits(
     mut deriveds: Query<&mut ShipPhysicsDerived>,
     assets: Res<AssetServer>,
 ) {
+    // Entities already despawned during THIS event pass. A fast-firing
+    // ship (Ilwrath) can land two shots on the same target in one frame,
+    // producing two CollisionStart events for the same entities; without
+    // this guard the second event would despawn an already-gone entity
+    // (panic) and double-apply damage. We skip any event touching an
+    // entity we've already removed, and despawn each at most once.
+    let mut gone: bevy::platform::collections::HashSet<Entity> =
+        bevy::platform::collections::HashSet::default();
     for event in reader.read() {
         let (proj_entity, other_entity) = if projectiles.get(event.collider1).is_ok() {
             (event.collider1, event.collider2)
@@ -4619,6 +4630,10 @@ fn handle_projectile_hits(
         } else {
             continue;
         };
+
+        if gone.contains(&proj_entity) || gone.contains(&other_entity) {
+            continue;
+        }
 
         let proj = match projectiles.get(proj_entity) {
             Ok(p) => p,
@@ -4665,8 +4680,12 @@ fn handle_projectile_hits(
         // just blinking out.
         if let Ok(pos) = asteroids_q.get(other_entity) {
             spawn_asteroid_explosion(&mut commands, &assets, pos.0, 24.0);
-            commands.entity(other_entity).despawn();
-            commands.entity(proj_entity).despawn();
+            if gone.insert(other_entity) {
+                commands.entity(other_entity).try_despawn();
+            }
+            if gone.insert(proj_entity) {
+                commands.entity(proj_entity).try_despawn();
+            }
             continue;
         }
 
@@ -4688,10 +4707,14 @@ fn handle_projectile_hits(
                 .unwrap_or(1.0);
             let dmg = ((proj.damage as f32 * factor).round() as i32).max(0);
             sat.armour = (sat.armour - dmg).max(0);
-            commands.entity(proj_entity).despawn();
+            if gone.insert(proj_entity) {
+                commands.entity(proj_entity).try_despawn();
+            }
             if sat.armour <= 0 {
                 spawn_asteroid_explosion(&mut commands, &assets, sat_pos.0, 18.0);
-                commands.entity(other_entity).despawn();
+                if gone.insert(other_entity) {
+                    commands.entity(other_entity).try_despawn();
+                }
             }
             continue;
         }
@@ -4732,7 +4755,9 @@ fn handle_projectile_hits(
                     derived.speed_max
                 );
             }
-            commands.entity(proj_entity).despawn();
+            if gone.insert(proj_entity) {
+                commands.entity(proj_entity).try_despawn();
+            }
             continue;
         }
 
@@ -4766,7 +4791,9 @@ fn handle_projectile_hits(
                 if factor < 1.0 { " [shielded]" } else { "" }
             );
         }
-        commands.entity(proj_entity).despawn();
+        if gone.insert(proj_entity) {
+            commands.entity(proj_entity).try_despawn();
+        }
     }
 }
 
