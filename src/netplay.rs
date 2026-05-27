@@ -686,28 +686,34 @@ fn handle_setup_buttons(
                     base, state.target_humans, state.target_ai, state.target_humans
                 );
                 info!("netplay: opening matchbox socket → {}", url);
-                // matchbox 0.14 gathers ICE candidates NON-trickle: it
-                // waits for the browser to FINISH gathering before it
-                // sends the offer/answer (see
-                // `wait_for_ice_gathering_complete` in matchbox_socket).
-                // So every UNREACHABLE ICE server stalls the entire
-                // connection until the browser times out gathering on it
-                // — that's why listing dead public TURN servers made
-                // connections take ~2 minutes. We therefore list only
-                // fast, reachable STUN servers: gathering finishes in
-                // ~1s and the peer connects immediately. To support
-                // symmetric-NAT peers later, add a TURN server you
-                // actually control (a reachable one won't stall
-                // gathering); a dead public one will.
+                // matchbox 0.14 gathers ICE NON-trickle: each side waits
+                // for the browser to FINISH gathering before it sends its
+                // offer/answer (`wait_for_ice_gathering_complete`, with no
+                // timeout cap). So an UNREACHABLE ICE server stalls the
+                // whole connection ~39.5 s per side (the STUN/TURN
+                // transaction timeout) — listing the UDP OpenRelay TURN
+                // endpoints (which this network blocks) is what made
+                // connects take ~2 minutes.
+                //
+                // This network can't pair on STUN alone, so we DO need a
+                // relay — but only over TCP/443 (looks like HTTPS, rarely
+                // blocked, and it's the endpoint that actually carried the
+                // connection). Keeping just STUN + that one TURN URL means
+                // gathering finishes fast AND the relay is available.
+                //
+                // OpenRelay's free static creds are best-effort; for a
+                // reliable + fast relay, stand up your own coturn and swap
+                // the URL/creds here.
                 let socket = MatchboxSocket::from(
                     WebRtcSocketBuilder::new(url)
                         .ice_server(RtcIceServerConfig {
                             urls: vec![
                                 "stun:stun.l.google.com:19302".to_string(),
                                 "stun:stun1.l.google.com:19302".to_string(),
+                                "turn:openrelay.metered.ca:443?transport=tcp".to_string(),
                             ],
-                            username: None,
-                            credential: None,
+                            username: Some("openrelayproject".to_string()),
+                            credential: Some("openrelayproject".to_string()),
                         })
                         .add_channel(ChannelConfig::unreliable()),
                 );
