@@ -907,7 +907,12 @@ impl Plugin for ShipPlugin {
         )
         .add_systems(
             Update,
-            (swap_rotation_frame, update_overlay_sprites, tick_invisible_visual),
+            (
+                swap_rotation_frame,
+                update_overlay_sprites,
+                tick_invisible_visual,
+                draw_shield_rings,
+            ),
         );
     }
 }
@@ -4416,6 +4421,25 @@ fn tick_alary_turrets(
     }
 }
 
+/// Draw a pulsing energy ring around any ship that currently has a
+/// `ShieldActive` (Yehat force field, Alary absorbance shield, …) so
+/// the shield is actually visible. Drawn as a gizmo in the camera's
+/// wrapped frame so it lines up with the offset-rendered sprite.
+fn draw_shield_rings(
+    time: Res<Time>,
+    mut gizmos: Gizmos,
+    camera: Query<&Transform, With<Camera2d>>,
+    ships: Query<&Position, (With<Ship>, With<ShieldActive>)>,
+) {
+    let focus = camera.single().ok().map(|t| t.translation.truncate());
+    let pulse = 46.0 + 4.0 * (time.elapsed_secs() * 6.0).sin();
+    for pos in &ships {
+        let c = focus.map_or(pos.0, |f| crate::physics::nearest_image(pos.0, f));
+        gizmos.circle_2d(c, pulse, Color::srgba(0.45, 0.78, 1.0, 0.7));
+        gizmos.circle_2d(c, pulse - 3.0, Color::srgba(0.7, 0.9, 1.0, 0.35));
+    }
+}
+
 /// Shofixti Glory Device — three `special` presses to detonate. Each
 /// press arms a stage; the third spawns the range-13 suicide blast
 /// (a `DamageZone` with no source exemption, so it kills the Shofixti
@@ -5223,6 +5247,7 @@ fn tick_beams(
 fn tick_tractors(
     mut commands: Commands,
     time: Res<Time<Physics>>,
+    assets: Res<AssetServer>,
     spatial: avian2d::prelude::SpatialQuery,
     mut tractors: Query<(Entity, &mut TractorBeam, &mut Transform, &mut Sprite), Without<Camera2d>>,
     owners: Query<(&Ship, &Position, &Rotation)>,
@@ -5269,12 +5294,13 @@ fn tick_tractors(
             }
         }
 
-        let hit_endpoint = if let Some((target_e, target_pos, _)) = best {
+        let target_pos = best.map(|(_, p, _)| p);
+        if let Some((target_e, tp, _)) = best {
             // Apply the force as a velocity nudge toward the owner.
             // Δv = force_per_tick / target_mass — heavy ships drift
             // less per tick (correct Newtonian behaviour).
             if let Ok((_, mut vel, mass)) = ship_state.get_mut(target_e) {
-                let to_owner = world_origin - target_pos;
+                let to_owner = world_origin - tp;
                 let len = to_owner.length();
                 if len > 1e-3 {
                     let dir = to_owner / len;
@@ -5282,28 +5308,23 @@ fn tick_tractors(
                     vel.0 += dir * (tractor.force_per_tick / m);
                 }
             }
-            target_pos
-        } else {
-            // No target → sprite shows the full range as a faint hint.
-            world_origin + Vec2::Y * tractor.range
-        };
+        }
 
-        // Render in the camera's wrapped frame: image the origin near
-        // the focus, then place the endpoint via minimum-image so the
-        // beam spans the short way across the seam instead of stretching
-        // back across the whole arena.
-        let render_origin =
-            focus.map_or(world_origin, |f| crate::physics::nearest_image(world_origin, f));
-        let rel = crate::physics::min_image(hit_endpoint - world_origin);
-        let render_endpoint = render_origin + rel;
-        let mid = (render_origin + render_endpoint) * 0.5;
-        let delta = rel;
-        let len = delta.length().max(1.0);
-        let angle = delta.y.atan2(delta.x) - std::f32::consts::FRAC_PI_2;
-        tractor_xf.translation = mid.extend(0.3);
-        tractor_xf.rotation = Quat::from_rotation_z(angle);
-        sprite.custom_size = Some(Vec2::new(tractor.width * 2.0, len));
-        sprite.color = tractor.color;
+        // Visual: the gravity field grips the TARGET — draw a pulsing
+        // disc around it, not a beam line spanning the whole arena (the
+        // old long-line / full-range fallback). Hidden when there's no
+        // target to grip.
+        if let Some(tp) = target_pos {
+            let center = focus.map_or(tp, |f| crate::physics::nearest_image(tp, f));
+            let pulse = 90.0 + 10.0 * (time.elapsed_secs() * 8.0).sin();
+            tractor_xf.translation = center.extend(0.3);
+            tractor_xf.rotation = Quat::IDENTITY;
+            sprite.image = assets.load("ui/joystick_base.png");
+            sprite.custom_size = Some(Vec2::splat(pulse));
+            sprite.color = Color::srgba(0.55, 0.85, 1.0, 0.30);
+        } else {
+            sprite.custom_size = Some(Vec2::ZERO);
+        }
 
         tractor.remaining -= dt;
         if tractor.remaining <= 0.0 {
@@ -5884,16 +5905,19 @@ fn tick_chmmr_satellites(
     const ORBITAL_RATE: f32 = 0.6;
     /// Distance from the Avatar's center to a satellite's center.
     const ORBIT_RADIUS: f32 = 100.0;
-    /// Auto-zap range (world units). Canon: 4 * 40 = 160 wu, but
-    /// SC2_RANGE_SCALE makes that play right at our arena scale.
-    const ZAP_RANGE: f32 = 4.0 * SC2_RANGE_SCALE;
+    /// Auto-zap range (world units). Widened from the literal canon
+    /// 4·40 so the short-range satellite lasers actually reach a nearby
+    /// opponent and read as "the satellites are shooting."
+    const ZAP_RANGE: f32 = 8.0 * SC2_RANGE_SCALE;
     /// Crew damage per zap.
     const ZAP_DAMAGE: i32 = 1;
     /// Visual flash lifetime (seconds). Short so it doesn't lag
     /// behind the satellite as it orbits.
-    const ZAP_FLASH_S: f32 = 0.15;
-    /// Cooldown between successive zaps (canon: 250 SC2 frames).
-    const ZAP_RECHARGE_S: f32 = 250.0 / 20.0;
+    const ZAP_FLASH_S: f32 = 0.12;
+    /// Cooldown between successive zaps. The literal 250-frame canon
+    /// (12.5 s) made the satellites essentially never fire; this is the
+    /// responsive auto-laser cadence the design intends.
+    const ZAP_RECHARGE_S: f32 = 0.5;
 
     for (sat_entity, mut sat, mut xf, mut sat_pos) in &mut sats {
         // Owner death → satellite dies.
