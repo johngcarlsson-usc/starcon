@@ -220,6 +220,50 @@ pub struct LobbyRequest {
 #[derive(Resource, Default, Debug, Clone)]
 pub struct SignalingOverride(pub Option<String>);
 
+/// Optional override for the WebRTC TURN relay, from the browser URL's
+/// `?turn=`, `?turn_user=`, `?turn_cred=` query params. Lets you point
+/// at your own (or a signed-up metered.ca) TURN server WITHOUT a client
+/// rebuild — paste creds into the URL and reload. When `turn_url` is
+/// unset we fall back to the best-effort public OpenRelay endpoints.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct IceOverride {
+    pub turn_url: Option<String>,
+    pub turn_user: Option<String>,
+    pub turn_cred: Option<String>,
+}
+
+/// Build the ICE server list for the matchbox socket. Always includes
+/// Google STUN (fast srflx). For TURN: if the URL provided an override
+/// we use exactly that; otherwise we use OpenRelay over UDP — those are
+/// the endpoints that actually relayed for the test network. We
+/// deliberately OMIT OpenRelay's TCP/443 endpoint: this network can't
+/// reach it, and because matchbox gathers ICE non-trickle (waits for
+/// gathering to finish), an unreachable server stalls every connect
+/// ~39.5 s per side. Listing only reachable servers keeps connects
+/// fast.
+fn build_ice_config(over: &IceOverride) -> RtcIceServerConfig {
+    let mut urls = vec![
+        "stun:stun.l.google.com:19302".to_string(),
+        "stun:stun1.l.google.com:19302".to_string(),
+    ];
+    if let Some(turn) = &over.turn_url {
+        urls.push(turn.clone());
+        RtcIceServerConfig {
+            urls,
+            username: over.turn_user.clone(),
+            credential: over.turn_cred.clone(),
+        }
+    } else {
+        urls.push("turn:openrelay.metered.ca:80".to_string());
+        urls.push("turn:openrelay.metered.ca:443".to_string());
+        RtcIceServerConfig {
+            urls,
+            username: Some("openrelayproject".to_string()),
+            credential: Some("openrelayproject".to_string()),
+        }
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 fn pick_signaling_url(over: &SignalingOverride) -> String {
     if let Some(url) = &over.0 {
@@ -240,28 +284,39 @@ fn pick_signaling_url(over: &SignalingOverride) -> String {
 /// and stuffs any `?signal=...` value into `SignalingOverride`.
 /// On native it's a no-op (no browser URL to read).
 #[cfg(target_arch = "wasm32")]
-fn capture_signal_override(mut over: ResMut<SignalingOverride>) {
+fn capture_signal_override(
+    mut over: ResMut<SignalingOverride>,
+    mut ice: ResMut<IceOverride>,
+) {
     let Some(window) = web_sys::window() else { return };
     let Ok(location) = window.location().search() else { return };
     let q = location.trim_start_matches('?');
+    let decode = |rest: &str| -> String {
+        js_sys::decode_uri_component(rest)
+            .map(|v| v.as_string().unwrap_or_else(|| rest.to_string()))
+            .unwrap_or_else(|_| rest.to_string())
+    };
     for pair in q.split('&') {
         if let Some(rest) = pair.strip_prefix("signal=") {
-            // URL-decode minimally — the chars we care about
-            // (wss://, ws://, : / .) all survive verbatim.
-            let decoded = js_sys::decode_uri_component(rest)
-                .map(|v| v.as_string().unwrap_or_else(|| rest.to_string()))
-                .unwrap_or_else(|_| rest.to_string());
+            let decoded = decode(rest);
             info!("netplay: signaling override from URL: {}", decoded);
             over.0 = Some(decoded);
-            return;
+        } else if let Some(rest) = pair.strip_prefix("turn=") {
+            let decoded = decode(rest);
+            info!("netplay: TURN override from URL: {}", decoded);
+            ice.turn_url = Some(decoded);
+        } else if let Some(rest) = pair.strip_prefix("turn_user=") {
+            ice.turn_user = Some(decode(rest));
+        } else if let Some(rest) = pair.strip_prefix("turn_cred=") {
+            ice.turn_cred = Some(decode(rest));
         }
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn capture_signal_override(_over: ResMut<SignalingOverride>) {
+fn capture_signal_override(_over: ResMut<SignalingOverride>, _ice: ResMut<IceOverride>) {
     // On native, the override can be set via env or CLI later;
-    // for now no-op so the default URL is used.
+    // for now no-op so the defaults are used.
 }
 
 /// Live lobby state. Owns the matchbox socket while we're in
@@ -412,6 +467,7 @@ impl Plugin for NetplayPlugin {
             .init_resource::<LobbyRequest>()
             .init_resource::<LobbyState>()
             .init_resource::<SignalingOverride>()
+            .init_resource::<IceOverride>()
             .add_systems(Startup, capture_signal_override)
             .add_systems(OnEnter(AppState::LobbyOnline), (reset_lobby, spawn_lobby_ui))
             .add_systems(OnExit(AppState::LobbyOnline), (despawn_lobby_ui, drop_socket))
@@ -641,6 +697,7 @@ fn handle_setup_buttons(
     mut commands: Commands,
     mut state: ResMut<LobbyState>,
     signal_override: Res<SignalingOverride>,
+    ice_override: Res<IceOverride>,
     interactions: Query<(&Interaction, &SetupAction), Changed<Interaction>>,
 ) {
     for (interaction, action) in &interactions {
@@ -686,35 +743,11 @@ fn handle_setup_buttons(
                     base, state.target_humans, state.target_ai, state.target_humans
                 );
                 info!("netplay: opening matchbox socket → {}", url);
-                // matchbox 0.14 gathers ICE NON-trickle: each side waits
-                // for the browser to FINISH gathering before it sends its
-                // offer/answer (`wait_for_ice_gathering_complete`, with no
-                // timeout cap). So an UNREACHABLE ICE server stalls the
-                // whole connection ~39.5 s per side (the STUN/TURN
-                // transaction timeout) — listing the UDP OpenRelay TURN
-                // endpoints (which this network blocks) is what made
-                // connects take ~2 minutes.
-                //
-                // This network can't pair on STUN alone, so we DO need a
-                // relay — but only over TCP/443 (looks like HTTPS, rarely
-                // blocked, and it's the endpoint that actually carried the
-                // connection). Keeping just STUN + that one TURN URL means
-                // gathering finishes fast AND the relay is available.
-                //
-                // OpenRelay's free static creds are best-effort; for a
-                // reliable + fast relay, stand up your own coturn and swap
-                // the URL/creds here.
+                let ice = build_ice_config(&ice_override);
+                info!("netplay: ICE servers: {:?}", ice.urls);
                 let socket = MatchboxSocket::from(
                     WebRtcSocketBuilder::new(url)
-                        .ice_server(RtcIceServerConfig {
-                            urls: vec![
-                                "stun:stun.l.google.com:19302".to_string(),
-                                "stun:stun1.l.google.com:19302".to_string(),
-                                "turn:openrelay.metered.ca:443?transport=tcp".to_string(),
-                            ],
-                            username: Some("openrelayproject".to_string()),
-                            credential: Some("openrelayproject".to_string()),
-                        })
+                        .ice_server(ice)
                         .add_channel(ChannelConfig::unreliable()),
                 );
                 commands.insert_resource(socket);
