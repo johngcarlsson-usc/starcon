@@ -2476,7 +2476,7 @@ fn tick_beam_trails(
     for (e, mut trail, mut xf) in &mut q {
         trail.remaining_s -= dt;
         if trail.remaining_s <= 0.0 {
-            commands.entity(e).despawn();
+            commands.entity(e).try_despawn();
             continue;
         }
         let frac = (trail.remaining_s / trail.total_s).clamp(0.0, 1.0);
@@ -2773,7 +2773,7 @@ fn tick_blast_trails(
     for (e, mut trail, mut xf) in &mut q {
         trail.remaining_s -= dt;
         if trail.remaining_s <= 0.0 {
-            commands.entity(e).despawn();
+            commands.entity(e).try_despawn();
             continue;
         }
         let frac = (trail.remaining_s / trail.total_s).clamp(0.0, 1.0);

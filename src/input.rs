@@ -22,12 +22,16 @@ pub const INPUT_ULTIMATE: u8 = 1 << 5;
 /// stick's world direction and thrusts that way. See
 /// `apply_player_input`.
 pub const INPUT_ABSOLUTE: u8 = 1 << 6;
+/// "Backward" — there's no reverse thrust in this game, so this key is
+/// otherwise inert; it exists purely as the safe third key of the
+/// ultimate chord (down-arrow for P1, S for P2, …).
+pub const INPUT_BACKWARD: u8 = 1 << 7;
 
-/// Holding turn-left + turn-right + thrust + fire + special together
-/// fires the ultimate. The on-screen gamepad uses its own ULT button
-/// instead of this chord.
-pub const INPUT_ULTIMATE_CHORD: u8 =
-    INPUT_LEFT | INPUT_RIGHT | INPUT_THRUST | INPUT_FIRE | INPUT_SPECIAL;
+/// Holding turn-left + turn-right + backward together fires the
+/// ultimate. Deliberately NOT fire/special — pressing those would
+/// trigger the ship's actual weapons (e.g. Arilou would warp away)
+/// before the cinematic. The on-screen gamepad uses its own ULT button.
+pub const INPUT_ULTIMATE_CHORD: u8 = INPUT_LEFT | INPUT_RIGHT | INPUT_BACKWARD;
 
 #[repr(C)]
 #[derive(
@@ -158,24 +162,26 @@ fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
     // matter when more than one human is at the same keyboard.
     match slot {
         // P1 lives entirely on the RIGHT of the keyboard: arrow
-        // cluster to steer, and the `.` / `/` keys (just left of the
-        // arrows) to fire — roomier than the cramped R-Ctrl/R-Shift.
+        // cluster to steer, and the `/` (fire) / `.` (special) keys
+        // just left of the arrows. Down-arrow is the inert "backward"
+        // key used only for the ultimate chord.
         0 => &[
             (KeyCode::ArrowLeft, INPUT_LEFT),
             (KeyCode::ArrowRight, INPUT_RIGHT),
             (KeyCode::ArrowUp, INPUT_THRUST),
-            (KeyCode::Period, INPUT_FIRE),
-            (KeyCode::Slash, INPUT_SPECIAL),
+            (KeyCode::ArrowDown, INPUT_BACKWARD),
+            (KeyCode::Slash, INPUT_FIRE),
+            (KeyCode::Period, INPUT_SPECIAL),
         ],
         // P2 lives entirely on the LEFT: WAD to steer, Z + L-Shift
-        // (both bottom-left) to fire. Keeps the two hot-seat players
-        // at opposite ends of the keyboard. We deliberately avoid
-        // Left-Ctrl for fire: with W as thrust, Ctrl+W would close
-        // the browser tab (a shortcut the page can't suppress).
+        // (both bottom-left) to fire, S as the inert "backward" key for
+        // the ultimate chord. We avoid Left-Ctrl for fire: with W as
+        // thrust, Ctrl+W would close the browser tab.
         1 => &[
             (KeyCode::KeyA, INPUT_LEFT),
             (KeyCode::KeyD, INPUT_RIGHT),
             (KeyCode::KeyW, INPUT_THRUST),
+            (KeyCode::KeyS, INPUT_BACKWARD),
             (KeyCode::KeyZ, INPUT_FIRE),
             (KeyCode::ShiftLeft, INPUT_SPECIAL),
         ],
@@ -183,6 +189,7 @@ fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
             (KeyCode::KeyJ, INPUT_LEFT),
             (KeyCode::KeyL, INPUT_RIGHT),
             (KeyCode::KeyI, INPUT_THRUST),
+            (KeyCode::KeyK, INPUT_BACKWARD),
             (KeyCode::KeyN, INPUT_FIRE),
             (KeyCode::KeyM, INPUT_SPECIAL),
         ],
@@ -190,6 +197,7 @@ fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
             (KeyCode::Numpad4, INPUT_LEFT),
             (KeyCode::Numpad6, INPUT_RIGHT),
             (KeyCode::Numpad8, INPUT_THRUST),
+            (KeyCode::Numpad2, INPUT_BACKWARD),
             (KeyCode::Numpad0, INPUT_FIRE),
             (KeyCode::NumpadEnter, INPUT_SPECIAL),
         ],

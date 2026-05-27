@@ -953,9 +953,9 @@ pub fn load_ship_catalog(mut commands: Commands) {
     info!("ship catalog: {} entries", ships.len());
     info!("------------------------------------------------------------");
     info!("CONTROLS");
-    info!("  P1 — Arrow keys (turn / thrust),  . fire,  / special");
+    info!("  P1 — Arrow keys (turn / thrust),  / fire,  . special");
     info!("  P2 — W A D      (thrust / turn),  Z fire,  L-Shift special");
-    info!("  ULTIMATE — hold turn-L + turn-R + thrust + fire + special together");
+    info!("  ULTIMATE — hold turn-L + turn-R + backward (Down for P1, S for P2)");
     info!("  Tab / Shift+Tab        — cycle P1 to next/prev ship");
     info!("  ` (backtick) / Shift+` — cycle P2 to next/prev ship");
     info!("  Digits 1..0            — direct-pick P1 (Shift/Ctrl = banks 11-20, 21-25)");
@@ -1166,34 +1166,34 @@ pub fn teardown_match(
     asteroids: Query<Entity, With<Asteroid>>,
 ) {
     for e in &ships {
-        commands.entity(e).despawn();
+        commands.entity(e).try_despawn();
     }
     for e in &projectiles {
-        commands.entity(e).despawn();
+        commands.entity(e).try_despawn();
     }
     for e in &damage_zones {
-        commands.entity(e).despawn();
+        commands.entity(e).try_despawn();
     }
     for e in &attached_zones {
-        commands.entity(e).despawn();
+        commands.entity(e).try_despawn();
     }
     for e in &beams {
-        commands.entity(e).despawn();
+        commands.entity(e).try_despawn();
     }
     for e in &tractors {
-        commands.entity(e).despawn();
+        commands.entity(e).try_despawn();
     }
     for e in &sub_entities {
-        commands.entity(e).despawn();
+        commands.entity(e).try_despawn();
     }
     for e in &overlays {
-        commands.entity(e).despawn();
+        commands.entity(e).try_despawn();
     }
     for e in &satellites {
-        commands.entity(e).despawn();
+        commands.entity(e).try_despawn();
     }
     for e in &asteroids {
-        commands.entity(e).despawn();
+        commands.entity(e).try_despawn();
     }
 }
 
@@ -3504,7 +3504,7 @@ fn update_overlay_sprites(
     use std::f32::consts::{PI, TAU};
     for (overlay_entity, overlay, mut sprite, mut transform) in &mut overlays {
         let Ok((parent_pos, parent_rot)) = parents.get(overlay.parent) else {
-            commands.entity(overlay_entity).despawn();
+            commands.entity(overlay_entity).try_despawn();
             continue;
         };
         let n = overlay.frames.len();
@@ -3693,7 +3693,7 @@ fn tick_projectile_lifetime(
     for (entity, mut proj) in &mut q {
         proj.lifetime -= dt;
         if proj.lifetime <= 0.0 {
-            commands.entity(entity).despawn();
+            commands.entity(entity).try_despawn();
         }
     }
 }
@@ -3887,7 +3887,7 @@ fn tick_chebr_crystal(
                             CollisionEventsEnabled,
                         ));
                     }
-                    commands.entity(crystal_entity).despawn();
+                    commands.entity(crystal_entity).try_despawn();
                     info!("chebr crystal shatter: {} chaotic shards", n_shards);
                 }
             }
@@ -4315,7 +4315,7 @@ fn tick_alary_mirv(
                 CollisionEventsEnabled,
             ));
         }
-        commands.entity(t_entity).despawn();
+        commands.entity(t_entity).try_despawn();
         info!("alary MIRV split into 5 warheads");
     }
 }
@@ -4646,7 +4646,7 @@ fn tick_damage_zones(
         }
         zone.lifetime -= dt;
         if zone.lifetime <= 0.0 {
-            commands.entity(zone_entity).despawn();
+            commands.entity(zone_entity).try_despawn();
         }
     }
 }
@@ -5093,7 +5093,7 @@ fn tick_attached_damage_zones(
     ) in &mut zones
     {
         let Ok((owner_ship, owner_pos, owner_rot)) = owners.get(zone.owner) else {
-            commands.entity(zone_entity).despawn();
+            commands.entity(zone_entity).try_despawn();
             continue;
         };
         let world_offset = Vec2::new(
@@ -5131,7 +5131,7 @@ fn tick_attached_damage_zones(
 
         zone.lifetime -= dt;
         if zone.lifetime <= 0.0 {
-            commands.entity(zone_entity).despawn();
+            commands.entity(zone_entity).try_despawn();
         }
     }
 }
@@ -5168,7 +5168,7 @@ fn tick_beams(
     let focus = camera.single().ok().map(|t| t.translation.truncate());
     for (beam_entity, mut beam, mut beam_xf, mut beam_sprite) in &mut beams {
         let Ok((owner_ship, owner_pos, owner_rot)) = owners.get(beam.owner) else {
-            commands.entity(beam_entity).despawn();
+            commands.entity(beam_entity).try_despawn();
             continue;
         };
         let world_origin = owner_pos.0
@@ -5239,7 +5239,7 @@ fn tick_beams(
             // through but we kaboom the rock + despawn here.
             if let Ok(ast_pos) = asteroid_pos.get(target) {
                 spawn_asteroid_explosion(&mut commands, &assets, ast_pos.0, 24.0);
-                commands.entity(target).despawn();
+                commands.entity(target).try_despawn();
             } else if let Ok(target_ship) = ship_class_of.get(target) {
                 let invisible_or_friendly = target_ship.player_slot == owner_ship.player_slot
                     || ship_pos.get(target).is_err();
@@ -5280,7 +5280,7 @@ fn tick_beams(
 
         beam.remaining -= dt;
         if beam.remaining <= 0.0 {
-            commands.entity(beam_entity).despawn();
+            commands.entity(beam_entity).try_despawn();
         }
     }
 }
@@ -5305,7 +5305,7 @@ fn tick_tractors(
     let focus = camera.single().ok().map(|t| t.translation.truncate());
     for (tractor_entity, mut tractor, mut tractor_xf, mut sprite) in &mut tractors {
         let Ok((owner_ship, owner_pos, owner_rot)) = owners.get(tractor.owner) else {
-            commands.entity(tractor_entity).despawn();
+            commands.entity(tractor_entity).try_despawn();
             continue;
         };
         let world_origin = owner_pos.0
@@ -5373,7 +5373,7 @@ fn tick_tractors(
 
         tractor.remaining -= dt;
         if tractor.remaining <= 0.0 {
-            commands.entity(tractor_entity).despawn();
+            commands.entity(tractor_entity).try_despawn();
         }
     }
 }
@@ -5424,7 +5424,7 @@ fn tick_sub_entities(
     for (sub_entity, mut sub, sub_pos, mut sub_vel, mut ai) in &mut subs {
         sub.remaining_s -= dt;
         if sub.remaining_s <= 0.0 || sub.hp <= 0 {
-            commands.entity(sub_entity).despawn();
+            commands.entity(sub_entity).try_despawn();
             continue;
         }
         let owner_slot = ships.get(sub.owner).ok().map(|(_, s, _)| s.player_slot);
@@ -5561,7 +5561,7 @@ fn handle_sub_entity_collisions(
                     other_ship.player_slot + 1,
                     crew_drain
                 );
-                commands.entity(sub_entity).despawn();
+                commands.entity(sub_entity).try_despawn();
             }
             SubEntityAi::DriftAndCollect {
                 owner_slot,
@@ -5576,7 +5576,7 @@ fn handle_sub_entity_collisions(
                         other_ship.player_slot + 1,
                         crew_value
                     );
-                    commands.entity(sub_entity).despawn();
+                    commands.entity(sub_entity).try_despawn();
                 }
                 // Enemy contact: no effect, pod keeps drifting.
             }

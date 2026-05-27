@@ -431,7 +431,7 @@ fn tick_zoom_stars(
     for (entity, mut star, mut xf, mut sprite) in &mut q {
         star.remaining_s -= dt;
         if star.remaining_s <= 0.0 {
-            commands.entity(entity).despawn();
+            commands.entity(entity).try_despawn();
             continue;
         }
         // Move radially out from the camera centre. With no physics

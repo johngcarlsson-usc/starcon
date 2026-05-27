@@ -386,7 +386,7 @@ fn destroy_zero_crew_ships(
     for (entity, ship, crew) in &q {
         if crew.current <= 0 {
             info!("ship destroyed: P{} ({})", ship.player_slot + 1, ship.stats.name);
-            commands.entity(entity).despawn();
+            commands.entity(entity).try_despawn();
         }
     }
 }
