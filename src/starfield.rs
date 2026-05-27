@@ -128,12 +128,25 @@ pub enum CameraFollowMode {
     Manual,
 }
 
+/// Per-ship "which periodic image are we framing this ship in" memory,
+/// so the auto-follow camera's unwrap choice is sticky frame-to-frame.
+/// Without it, two ships near the half-arena separation flip the
+/// minimum-image centroid back and forth every frame; with it, the
+/// camera holds one framing (tolerating a slightly larger bounding box)
+/// until a clearly tighter one is available. Keyed by ship `Entity`;
+/// rebuilt every frame so dead ships drop out automatically.
+#[derive(Resource, Default)]
+pub struct CameraUnwrap {
+    images: bevy::platform::collections::HashMap<Entity, Vec2>,
+}
+
 pub struct StarfieldPlugin;
 
 impl Plugin for StarfieldPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ZoomState>()
             .init_resource::<CameraFollowMode>()
+            .init_resource::<CameraUnwrap>()
             .add_systems(Startup, setup_starfield)
             .add_systems(
                 Update,
@@ -536,7 +549,8 @@ fn follow_ships_with_camera(
     mode: Res<CameraFollowMode>,
     ultimate: Option<Res<crate::ultimate::UltimateState>>,
     mut zoom_state: ResMut<ZoomState>,
-    ships: Query<&Position, With<Ship>>,
+    mut unwrap: ResMut<CameraUnwrap>,
+    ships: Query<(Entity, &Position), With<Ship>>,
     windows: Query<&Window>,
     mut cameras: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
 ) {
@@ -564,20 +578,64 @@ fn follow_ships_with_camera(
     // the unbounded focus is invisible.
     let focus = cam_xf.translation.truncate();
 
-    // Aggregate ship positions in the focus-relative unwrapped frame.
-    let mut count = 0usize;
+    // For every ship we hold two candidate images: the "sticky" one
+    // (continuous with last frame's choice) and the "fresh" minimum-
+    // image one (tightest possible around the focus). We commit to the
+    // sticky framing — even when its bounding box is a little larger —
+    // and only switch to fresh when fresh is tighter by a clear margin.
+    // That deliberate tolerance is the fix for the half-arena flip-flop:
+    // when two ships hover near maximum separation, the camera stops
+    // snapping back and forth every frame and instead holds one framing,
+    // re-jumping once only when the zoom payoff is genuinely worth it.
+    let mut entries: Vec<(Entity, Vec2, Vec2)> = Vec::new(); // (e, sticky, fresh)
+    let mut s_min = Vec2::splat(f32::INFINITY);
+    let mut s_max = Vec2::splat(f32::NEG_INFINITY);
+    let mut f_min = Vec2::splat(f32::INFINITY);
+    let mut f_max = Vec2::splat(f32::NEG_INFINITY);
+    for (e, p) in &ships {
+        let prev = unwrap
+            .images
+            .get(&e)
+            .copied()
+            .unwrap_or_else(|| crate::physics::nearest_image(p.0, focus));
+        let sticky = crate::physics::nearest_image(p.0, prev);
+        let fresh = crate::physics::nearest_image(p.0, focus);
+        s_min = s_min.min(sticky);
+        s_max = s_max.max(sticky);
+        f_min = f_min.min(fresh);
+        f_max = f_max.max(fresh);
+        entries.push((e, sticky, fresh));
+    }
+    if entries.is_empty() {
+        return;
+    }
+    let count = entries.len();
+    let sticky_extent = (s_max - s_min).max_element();
+    let fresh_extent = (f_max - f_min).max_element();
+
+    // Adopt the tighter fresh framing only when it helps by more than
+    // HYSTERESIS_WU — otherwise tolerate the slightly bigger sticky box
+    // for continuity. The safety valve forces fresh if the sticky box
+    // has grown so wide that a body could approach the half-arena point
+    // (beyond which the render offset's own image would flip).
+    const HYSTERESIS_WU: f32 = 700.0;
+    let force_fresh = sticky_extent > crate::physics::ARENA_SIZE * 0.85;
+    let use_fresh = force_fresh || fresh_extent + HYSTERESIS_WU < sticky_extent;
+    // A genuine reframe (the images actually move to the other side) —
+    // we snap the camera straight there rather than pan, so it can't
+    // glide through intermediate poses where a ship pops across.
+    let reframed = use_fresh && (sticky_extent - fresh_extent) > 1.0;
+
     let mut center = Vec2::ZERO;
     let mut min = Vec2::splat(f32::INFINITY);
     let mut max = Vec2::splat(f32::NEG_INFINITY);
-    for p in &ships {
-        let img = crate::physics::nearest_image(p.0, focus);
-        count += 1;
+    unwrap.images.clear();
+    for (e, sticky, fresh) in &entries {
+        let img = if use_fresh { *fresh } else { *sticky };
+        unwrap.images.insert(*e, img);
         center += img;
         min = min.min(img);
         max = max.max(img);
-    }
-    if count == 0 {
-        return;
     }
     center /= count as f32;
     let span = (max - min).max(Vec2::splat(200.0));
@@ -618,23 +676,35 @@ fn follow_ships_with_camera(
     };
 
     let dt = time.delta_secs();
-    let blend = if snap { 1.0 } else { (4.0 * dt).min(1.0) };
+    let blend = (4.0 * dt).min(1.0);
 
     if snap {
         // Direct assign — no lerp — so the very first rendered frame
         // already has camera + scale fitted to the bbox. Re-wrap the
         // centroid into the canonical arena cell here (only on snap)
         // so the continuous focus resets each match instead of
-        // accumulating drift over a long session. The offset pass
-        // (which runs after us) re-images every body around this
-        // focus, so the framing is identical regardless of cell.
+        // accumulating drift over a long session, shifting the stored
+        // images by the same whole-arena step so they stay consistent
+        // with the wrapped focus.
         let c = crate::physics::min_image(center);
+        let shift = c - center;
+        for img in unwrap.images.values_mut() {
+            *img += shift;
+        }
         cam_xf.translation.x = c.x;
         cam_xf.translation.y = c.y;
         if let Projection::Orthographic(ref mut ortho) = *projection {
             ortho.scale = snap_scale;
         }
         zoom_state.target_scale = snap_scale;
+    } else if reframed {
+        // Deliberate reframe: jump the camera to the new centroid in one
+        // step (the "significant zoom improvement" the framing committed
+        // to), but still ease the scale so the zoom-in glides.
+        cam_xf.translation.x = center.x;
+        cam_xf.translation.y = center.y;
+        let cur = zoom_state.target_scale;
+        zoom_state.target_scale = cur + (raw_scale - cur) * blend;
     } else {
         cam_xf.translation.x += (center.x - cam_xf.translation.x) * blend;
         cam_xf.translation.y += (center.y - cam_xf.translation.y) * blend;
