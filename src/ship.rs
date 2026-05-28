@@ -1249,13 +1249,27 @@ pub fn spawn_match(
 /// Either way, changing a class triggers an immediate `AppState::
 /// Resetting` so the new ship spawns *now*, not on the next rematch.
 /// Lets you test ship behaviours without waiting for one to die.
+///
+/// **Disabled in online play.** The .ini-driven class roster is set in
+/// the lobby UI before the match; mid-match keyboard hotkeys would
+/// only mutate the local peer's `MatchConfig` (it isn't synced over
+/// the wire), which would desync the ship — and worse, since both
+/// peers route Tab/digits to "slot 0" the keypress on the guest swaps
+/// the *host's* character locally, exactly the symptom the user hit.
 fn class_picker_input(
     keys: Res<ButtonInput<KeyCode>>,
     virt: Res<crate::input::VirtualInput>,
     mut config: ResMut<MatchConfig>,
     mut next_state: ResMut<NextState<crate::AppState>>,
     current_state: Res<State<crate::AppState>>,
+    session: Option<Res<bevy_ggrs::Session<crate::netplay::Config>>>,
 ) {
+    // Online: classes are negotiated in the lobby, not via hotkeys.
+    // Bail before reading any keys so a stray Tab can't damage the
+    // local-only MatchConfig either.
+    if session.is_some() {
+        return;
+    }
     const P1_DIGITS: [KeyCode; 10] = [
         KeyCode::Digit1,
         KeyCode::Digit2,
