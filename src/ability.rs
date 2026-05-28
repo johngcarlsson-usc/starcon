@@ -524,7 +524,7 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
             );
         }
         AbilityKind::GrantInvisibility { duration_s } => {
-            ctx.commands.entity(ctx.entity).insert(Invisible {
+            ctx.commands.entity(ctx.entity).try_insert(Invisible {
                 remaining: *duration_s,
             });
             info!("P{} cloaked", slot);
@@ -533,14 +533,14 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
             duration_s,
             conversion,
         } => {
-            ctx.commands.entity(ctx.entity).insert(DamageToBattery {
+            ctx.commands.entity(ctx.entity).try_insert(DamageToBattery {
                 remaining: *duration_s,
                 conversion: *conversion,
             });
             info!("P{} fortitude up", slot);
         }
         AbilityKind::ToggleMode => {
-            ctx.commands.entity(ctx.entity).insert(ModeToggleRequest);
+            ctx.commands.entity(ctx.entity).try_insert(ModeToggleRequest);
             info!("P{} mode toggle requested", slot);
         }
         AbilityKind::SpawnSubEntity {
@@ -606,7 +606,7 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
             damage_per_tick,
             duration_s,
         } => {
-            ctx.commands.entity(ctx.entity).insert(PointDefenseActive {
+            ctx.commands.entity(ctx.entity).try_insert(PointDefenseActive {
                 remaining: *duration_s,
                 range: *range,
                 damage_per_tick: *damage_per_tick,
@@ -618,7 +618,7 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
             duration_s,
             damage_factor,
         } => {
-            ctx.commands.entity(ctx.entity).insert(ShieldActive {
+            ctx.commands.entity(ctx.entity).try_insert(ShieldActive {
                 remaining: *duration_s,
                 damage_factor: *damage_factor,
             });

@@ -698,7 +698,7 @@ impl Plugin for UltimatePlugin {
         // etc.) and `UltimateState.player_entity` are NOT
         // cleared by `ship::teardown_match`. Without an explicit
         // abort, subsequent cinematic ticks try to write to
-        // `commands.entity(despawned_ship).insert(HyperActive)`
+        // `commands.entity(despawned_ship).try_insert(HyperActive)`
         // which panics, freezing the frame.
         .add_systems(OnEnter(crate::AppState::Resetting), abort_cinematic_on_reset)
         .init_resource::<MmrxfUnleashedSprite>()
@@ -1271,7 +1271,7 @@ fn hyper_trigger(
                         ship.player_slot, // SAME slot — shares input
                         &ship_colliders,
                     ) {
-                        commands.entity(clone_entity).insert(PkunkClone {
+                        commands.entity(clone_entity).try_insert(PkunkClone {
                             remaining_s: PKUNK_FORMATION_S,
                             total_s: PKUNK_FORMATION_S,
                             reveal_at_pan_t: reveal_at,
@@ -1288,7 +1288,7 @@ fn hyper_trigger(
                             .get(class.code())
                             .map(|s| (s.crew_max / 2).max(1))
                             .unwrap_or(5);
-                        commands.entity(clone_entity).insert(crate::ship::Crew {
+                        commands.entity(clone_entity).try_insert(crate::ship::Crew {
                             current: half,
                             max: half,
                         });
@@ -1349,7 +1349,7 @@ fn hyper_trigger(
             }
             // Mark the ship as Mmrxf-ultimate-active so the normal
             // dispatch path skips its primary + special.
-            commands.entity(entity).insert(MmrxfActive);
+            commands.entity(entity).try_insert(MmrxfActive);
             state.mmrxf_laser_cooldown_s = 0.0;
             state.mmrxf_missile_cooldown_s = 0.0;
         }
@@ -3202,7 +3202,7 @@ fn tick_slylandro_storm(
             }
             lin.0 = Vec2::ZERO;
             ang.0 = 0.0;
-            commands.entity(asteroid).insert(SlylandroLaunched {
+            commands.entity(asteroid).try_insert(SlylandroLaunched {
                 owner: firer,
                 damage: SLYP_ASTEROID_DAMAGE,
                 remaining_s: SLYP_ARMED_LIFE_S,

@@ -36,6 +36,99 @@ pub struct ShipStats {
     pub weapon_range: f32,
     pub weapon_damage: i32,
     pub description: String,
+    /// Parsed `[AI3_Default]` block — drives `tick_ai_pilots` when this
+    /// ship is `AiControlled`. See `AiTactics` for the canon-derived
+    /// tactic library.
+    pub ai: AiTactics,
+}
+
+/// Named weapon tactic from the original `.ini` `[AI3_Default]` block
+/// (see `shp*.ini` `Weapon=` field). Decides when the AI fires its
+/// primary. The canon library has more entries than we implement in v1
+/// — anything unrecognised falls back to `Homing` (the generous
+/// "shoot if target is roughly in front" default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiWeaponTactic {
+    /// Fire only when the target is dead-centre in a very narrow cone
+    /// and inside `Weapon_Range`. High-precision (Orz cannon, Ilwrath).
+    Precedence,
+    /// Fire when the target is roughly forward and in range. Trusts the
+    /// projectile's homing to finish the job (Earthling, Mycon, Spathi).
+    Homing,
+    /// Fire when the target is in a medium-narrow forward cone, in
+    /// range. (Spathi follow-up shot, Vuxin, Druuge, Melnorme.)
+    Narrow,
+    /// Just fire — every tick the cooldown allows. Used for
+    /// always-on / auto-aim weapons (Arilou halo, Slylandro lightning,
+    /// Umgah cone) and field-of-effect attackers.
+    Field,
+    /// Fire when the target is in range; the projectile is then
+    /// fire-and-forget (Kohr-Ah blades, Chenjesu crystal).
+    Launched,
+    /// Anything we don't recognise yet — behaves like `Homing` so the
+    /// AI still does *something* sensible while we expand the library.
+    Default,
+}
+
+impl Default for AiWeaponTactic {
+    fn default() -> Self { AiWeaponTactic::Default }
+}
+
+/// Named special tactic from the `.ini` `Special=` (and chained
+/// `Special2`/`3`/`4`) field. The AI runs each one in order each tick;
+/// the FIRST that says "go" triggers the special this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiSpecialTactic {
+    /// Trigger when in danger — incoming projectile detected OR crew is
+    /// running low. Earthling point-defense, Yehat shield, Arilou
+    /// teleport, Kohr-Ah blade-spin, Utwig ricochet, Alary grow.
+    Defense,
+    /// Trigger when the nearest enemy is inside `Special_Range`. Shofixti
+    /// nova, Vuxin limpet, Syreen song, Androsynth Blazer, Thraddash
+    /// afterburner, Melnorme confusion ray.
+    Proximity,
+    /// Trigger when battery has charged past `BattRecharge`. Pkunk Phase
+    /// Shift, Druuge auto-recharge, Slylandro probe drone.
+    Battery,
+    /// Trigger when the enemy is FAR (outside `Special_Range`). Chmmr
+    /// satellites — long-range area denial.
+    NoProximity,
+    /// Trigger only when the firer is ALSO pressing fire — Orz marine
+    /// launch chord (handled by `tick_orz_turret`; tactic here is a
+    /// no-op since the Orz AI gets a dedicated steering override).
+    PlusFire,
+    /// Skip this special. Used by classes whose special isn't
+    /// AI-friendly (Supox 4-way thrust).
+    None,
+    /// Unrecognised — skip. We grow the library as needed.
+    Default,
+}
+
+impl Default for AiSpecialTactic {
+    fn default() -> Self { AiSpecialTactic::Default }
+}
+
+/// Parsed `[AI3_Default]` block for one ship. Lives in `ShipStats` so
+/// the AI never has to touch the `.ini` again at runtime.
+#[derive(Debug, Clone, Default)]
+pub struct AiTactics {
+    pub weapon: AiWeaponTactic,
+    /// Up to four chained specials, evaluated in order. First that
+    /// fires wins this tick.
+    pub specials: Vec<AiSpecialTactic>,
+    /// Range threshold for `Proximity` / `NoProximity` (world units).
+    /// `None` = use the weapon's range as a fallback.
+    pub special_range: Option<f32>,
+    /// Range threshold for the weapon tactic (world units). Overrides
+    /// the `.ini`'s `[Weapon] Range` when present.
+    pub weapon_range: Option<f32>,
+    /// 1/N gate for the special (only triggers 1 frame in N when its
+    /// condition would otherwise fire) — keeps low-cost specials from
+    /// firing every tick.
+    pub special_freq: u32,
+    /// Floor on battery before the AI will even consider its special
+    /// (canon `BattRecharge=`). Defaults to 0 (no floor).
+    pub batt_floor: i32,
 }
 
 impl ShipStats {
@@ -86,7 +179,81 @@ impl ShipStats {
             weapon_range: weapon.map(|w| g::<f32>(w, "Range")).unwrap_or(0.0),
             weapon_damage: weapon.map(|w| g::<i32>(w, "Damage")).unwrap_or(0),
             description: txt_str.to_string(),
+            ai: parse_ai_tactics(&ini),
         })
+    }
+}
+
+/// Parse the `[AI3_Default]` block into our internal `AiTactics`.
+/// Tolerant of misspellings + spacing (the original `.ini`s have a
+/// few — e.g. `Feild`, `Weapon_Vecolity`). Unknown tactic names fall
+/// back to `Default`, which the AI treats as "do nothing fancy."
+fn parse_ai_tactics(ini: &Ini) -> AiTactics {
+    let Some(sec) = ini.section(Some("AI3_Default")) else {
+        return AiTactics::default();
+    };
+    fn norm(s: &str) -> String {
+        s.trim().to_ascii_lowercase()
+    }
+    fn weapon(name: &str) -> AiWeaponTactic {
+        match norm(name).as_str() {
+            "precedence" => AiWeaponTactic::Precedence,
+            "homing" => AiWeaponTactic::Homing,
+            "narrow" => AiWeaponTactic::Narrow,
+            "field" | "feild" => AiWeaponTactic::Field,
+            "launched" => AiWeaponTactic::Launched,
+            _ => AiWeaponTactic::Default,
+        }
+    }
+    fn special(name: &str) -> AiSpecialTactic {
+        match norm(name).as_str() {
+            "defense" => AiSpecialTactic::Defense,
+            "proximity" => AiSpecialTactic::Proximity,
+            "battery" | "max_battery" => AiSpecialTactic::Battery,
+            "no_proximity" => AiSpecialTactic::NoProximity,
+            "plus_fire" => AiSpecialTactic::PlusFire,
+            "none" => AiSpecialTactic::None,
+            _ => AiSpecialTactic::Default,
+        }
+    }
+    let weapon_t = sec
+        .get("Weapon")
+        .map(weapon)
+        .unwrap_or(AiWeaponTactic::Default);
+    let mut specials = Vec::new();
+    for k in ["Special", "Special2", "Special3", "Special4"] {
+        if let Some(v) = sec.get(k) {
+            let t = special(v);
+            if t != AiSpecialTactic::Default && t != AiSpecialTactic::None {
+                specials.push(t);
+            }
+        }
+    }
+    // `Special_Range` / `Weapon_Range` are in SC2 range-units (scale ×40).
+    let special_range = sec
+        .get("Special_Range")
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .map(|r| r * 40.0);
+    let weapon_range = sec
+        .get("Weapon_Range")
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .map(|r| r * 40.0);
+    let special_freq = sec
+        .get("SpecialFreq")
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(1);
+    let batt_floor = sec
+        .get("BattRecharge")
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .unwrap_or(0);
+    AiTactics {
+        weapon: weapon_t,
+        specials,
+        special_range,
+        weapon_range,
+        special_freq,
+        batt_floor,
     }
 }
 
@@ -555,7 +722,7 @@ fn auto_add_rollback(
     if world.get::<bevy_ggrs::Rollback>(ctx.entity).is_some() {
         return;
     }
-    world.commands().entity(ctx.entity).insert(bevy_ggrs::Rollback);
+    world.commands().entity(ctx.entity).try_insert(bevy_ggrs::Rollback);
 }
 
 /// In-flight projectile. Owner is tracked so we can ignore self-hits.
@@ -1060,7 +1227,7 @@ pub fn spawn_match(
         // `tick_ai_pilots` drives them instead, plus
         // `dispatch_primary` force-fires their guns.
         if slot_cfg.kind == PlayerKind::Ai {
-            commands.entity(entity).insert(crate::ai::AiControlled);
+            commands.entity(entity).try_insert(crate::ai::AiControlled);
         }
     }
 
@@ -3407,12 +3574,12 @@ fn process_mode_toggle_requests(
 ) {
     for (entity, mut modes) in &mut q {
         if modes.modes.is_empty() {
-            commands.entity(entity).remove::<ModeToggleRequest>();
+            commands.entity(entity).try_remove::<ModeToggleRequest>();
             continue;
         }
         modes.current = (modes.current + 1) % modes.modes.len();
         info!("mode toggled → {}", modes.modes[modes.current].name);
-        commands.entity(entity).remove::<ModeToggleRequest>();
+        commands.entity(entity).try_remove::<ModeToggleRequest>();
     }
 }
 
@@ -3463,7 +3630,7 @@ fn tick_ship_modes(
             *derived = new_derived;
             *mass = Mass(new_mass);
             frames.frames = new_frames;
-            commands.entity(entity).insert(new_abilities);
+            commands.entity(entity).try_insert(new_abilities);
             info!(
                 "mode applied: {} (speed_max={:.0}, mass={:.1}, thrust_locked={})",
                 modes.modes[idx].name,
@@ -4151,7 +4318,7 @@ fn tick_meltr_charge(
                     // now that it's flying — heavy released shots
                     // should impart impulse on the target like every
                     // other projectile.
-                    commands.entity(shot_entity).remove::<Sensor>();
+                    commands.entity(shot_entity).try_remove::<Sensor>();
                 }
                 info!(
                     "meltr release: charge {:.0}%, dmg {}, range {:.0}",
@@ -5186,7 +5353,7 @@ fn tick_shield(
     for (entity, mut shield) in &mut q {
         shield.remaining -= dt;
         if shield.remaining <= 0.0 {
-            commands.entity(entity).remove::<ShieldActive>();
+            commands.entity(entity).try_remove::<ShieldActive>();
             info!("shield down");
         }
     }
@@ -5304,7 +5471,7 @@ fn tick_point_defense(
         }
 
         if beam.remaining <= 0.0 {
-            commands.entity(firer_entity).remove::<PointDefenseActive>();
+            commands.entity(firer_entity).try_remove::<PointDefenseActive>();
             info!("P{} point defense offline", firer.player_slot + 1);
         }
     }
@@ -5647,7 +5814,7 @@ fn tick_invisible(
     for (e, mut inv) in &mut q {
         inv.remaining -= dt;
         if inv.remaining <= 0.0 {
-            commands.entity(e).remove::<Invisible>();
+            commands.entity(e).try_remove::<Invisible>();
         }
     }
 }
@@ -5662,7 +5829,7 @@ fn tick_damage_to_battery(
     for (e, mut d) in &mut q {
         d.remaining -= dt;
         if d.remaining <= 0.0 {
-            commands.entity(e).remove::<DamageToBattery>();
+            commands.entity(e).try_remove::<DamageToBattery>();
         }
     }
 }
@@ -6057,7 +6224,7 @@ fn tick_mycon_plasma_birth(
             .custom_size
             .map(|s| s.x)
             .unwrap_or(16.0);
-        commands.entity(entity).insert(MyconPlasmaPulse {
+        commands.entity(entity).try_insert(MyconPlasmaPulse {
             start_pos: pos.0,
             max_damage: proj.damage,
             // 60 SC2 range units × 40 = 2400 wu, same as the
@@ -6150,7 +6317,7 @@ fn spawn_chmmr_satellites(
                 CollisionEventsEnabled,
             ));
         }
-        commands.entity(ship_entity).remove::<NeedsChmmrSatellites>();
+        commands.entity(ship_entity).try_remove::<NeedsChmmrSatellites>();
     }
 }
 
@@ -6454,7 +6621,7 @@ fn tick_kohma_blade(
             // passive-tick system below handles the slow-homing /
             // stop-on-no-target logic from canon.
             if let Some(blade) = carrier.current.take() {
-                commands.entity(blade).insert(KohrAhBladePassive {
+                commands.entity(blade).try_insert(KohrAhBladePassive {
                     launch_speed: blade_velocity,
                 });
             }
