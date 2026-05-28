@@ -325,10 +325,10 @@ fn dispatch_primary(
         if cd.0 > 0.0 {
             continue;
         }
-        // Pkunk clones auto-fire continuously, and AI ships fire
-        // every cooldown. Otherwise read the local input for
-        // this player_slot.
-        let force_fire = pkunk_clone.is_some() || ai.is_some();
+        // Pkunk clones auto-fire continuously; everyone else (humans
+        // AND AI) must press the fire bit on their slot.
+        let _ = ai;
+        let force_fire = pkunk_clone.is_some();
         if !force_fire {
             if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) {
                 continue;

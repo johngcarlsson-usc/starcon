@@ -1227,7 +1227,9 @@ pub fn spawn_match(
         // `tick_ai_pilots` drives them instead, plus
         // `dispatch_primary` force-fires their guns.
         if slot_cfg.kind == PlayerKind::Ai {
-            commands.entity(entity).try_insert(crate::ai::AiControlled);
+            commands
+                .entity(entity)
+                .try_insert((crate::ai::AiControlled, crate::ai::AiBrain::default()));
         }
     }
 
@@ -2858,7 +2860,7 @@ fn load_rotation_frames(
 ///     proportional controller chasing the commanded target rate.
 ///     Either-direction recovery falls out naturally — see the
 ///     `AngularControl` doc-comment.
-fn apply_player_input(
+pub(crate) fn apply_player_input(
     slot_inputs: Res<input::SlotInputs>,
     angular_override: Res<AngularControlOverride>,
     time: Res<Time<Physics>>,
@@ -2903,14 +2905,10 @@ fn apply_player_input(
             thrust.0 = Vec2::ZERO;
             continue;
         }
-        // AI-driven ship — `tick_ai_pilots` (running .after this
-        // system) overwrites thrust + angular velocity, so don't
-        // bother computing player input for this entity. Reading
-        // the local keymap for an AI slot would also leak its
-        // owner's actual key presses into the AI ship.
-        if ai.is_some() {
-            continue;
-        }
+        // AI-driven ships now write virtual button-presses to
+        // SlotInputs (in `tick_ai_pilots`, which runs `.before` this
+        // system), so we process their inputs the same way as a human's.
+        let _ = ai;
 
         // Post-ultimate coasting: ship is over-speed. Player still
         // steers (normal angular control), but THRUST is reinterpreted
@@ -3878,7 +3876,7 @@ pub(crate) fn spawn_sub_entity(
 // Per-projectile lifetime falls out of canonical `range / velocity`
 // (the original Missile constructor takes a range and dies at d >= range).
 pub const SC2_VEL_SCALE: f32 = 9.6;
-const SC2_RANGE_SCALE: f32 = 40.0;
+pub const SC2_RANGE_SCALE: f32 = 40.0;
 pub fn sc2_turning(t: f32) -> f32 {
     (std::f32::consts::TAU / 16.0) / (t + 1.0) / 0.050
 }
@@ -4364,10 +4362,7 @@ fn tick_orz_turret(
             &mut Battery,
             &ShipPhysicsDerived,
         ),
-        (
-            Without<crate::ultimate::HyperActive>,
-            Without<crate::ai::AiControlled>,
-        ),
+        Without<crate::ultimate::HyperActive>,
     >,
     sub_entities: Query<&SubEntity>,
     mut overlays: Query<&mut OverlaySprite>,
@@ -4574,13 +4569,12 @@ fn tick_alary_mirv(
             state.cooldown_s -= dt;
         }
 
-        let fire_held =
-            ai.is_some() || slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        let _ = ai; // AI now drives via SlotInputs like a player.
+        let fire_held = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
         let was_held = state.last_fire_held;
         state.last_fire_held = fire_held;
         let just_pressed = fire_held && !was_held;
-        // Humans launch one torpedo per press; the AI just holds fire.
-        let want_launch = if ai.is_some() { fire_held } else { just_pressed };
+        let want_launch = just_pressed;
 
         if want_launch && state.cooldown_s <= 0.0 {
             if batt.current < weapon_drain {
