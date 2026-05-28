@@ -7229,25 +7229,15 @@ impl Default for Planet {
             radius: 100.0, // PLAN_S0x sprites are 200×200 → ~100 px radius
             gravity_range: 720.0,   // scale_range(18)
             gravity_mindist: 240.0, // scale_range(6)
-            gravity_accel: 800.0,
-            // ----------------- canon derivation -----------------
-            // server.ini [Planet]: GravityForce = 1.5 (SC2 units).
-            // mhelpers.cpp:     scale_acceleration(a, 0)
-            //                     = a × distance_ratio / time_ratio²
-            //                     = a × 0.48 / 50ms / 50ms
-            //                     = a × 1.92e-4 TW-px / ms².
-            // mcbodies.cpp:144: per-tick Δv = frame_time × force × sr
-            //                     = 50ms × (1.5 × 1.92e-4) × sr
-            //                     ≈ 0.0144 TW-px/ms · sr at peak.
-            // 20 game-frames/sec → peak acceleration ≈ 288 wu/s²
-            //   (1 wu = 1 TW-px in our world).
-            // We run a bit hotter than canon (800 vs 288) so the well
-            // is a real tactical thing in our smaller arena (3000 wu
-            // vs canon's 3840). The user's "make it stronger" request
-            // after the previous corner-placement experiment landed
-            // here — close enough to canon that slingshots feel right,
-            // strong enough that a stalled ship gets pulled in
-            // visibly.
+            gravity_accel: 1100.0,
+            // server.ini [Planet] gravity_force scaled through
+            // mhelpers.cpp::scale_acceleration gives a canon peak of
+            // ~288 wu/s² at the surface. We run ~4× hotter (1100) so the
+            // well is unmistakable when a ship actually enters its
+            // range — important because we keep the planet off-centre
+            // (vs canon's always-centre placement), so engagements
+            // around it are rarer and need to land harder when they
+            // happen. Easy to dial up or down if it overshoots again.
             whip_mult: 1.5, // 1 + GravityWhip(0.5)
         }
     }
@@ -7263,17 +7253,21 @@ pub fn spawn_planet(commands: &mut Commands, assets: &AssetServer, rng: &mut cra
     let planet = Planet::default();
     let visual = planet.radius * 2.0;
     let frame = 1 + rng.usize_range(0..3); // PLAN_S01..03
-    // Canon (`mmain.cpp:init_objects`) places the planet at `map_size/2` —
-    // dead centre of the arena. The whole point of a gravity well is to
-    // be a tactical hazard / opportunity in the *middle* of the fight;
-    // pushing it to a random corner (as we briefly did) made the well
-    // effectively invisible since most engagements happen mid-arena. Tiny
-    // random translation (±60 wu) for visual variety, otherwise dead
-    // centre.
-    let pos = Vec2::new(
-        (rng.f32() - 0.5) * 120.0,
-        (rng.f32() - 0.5) * 120.0,
-    );
+    // Canon places the planet at the arena centre, but canon also
+    // randomises ship spawns each match — so any given match might have
+    // ships nowhere near the planet, others might have them right next
+    // to it. Our spawns are FIXED at the compass points, so a centre
+    // planet would consistently suck both fixed-position ships into the
+    // well every match. Keep the planet off-centre / randomly placed in
+    // a quadrant so the well is a *sometimes-encountered hazard*, not a
+    // guaranteed gameplay obstacle that swallows the same spawns every
+    // round.
+    use std::f32::consts::{FRAC_PI_4, PI};
+    let quadrant = rng.usize_range(0..4) as f32;
+    let jitter = (rng.f32() - 0.5) * (PI / 6.0); // ±30°
+    let theta = quadrant * (PI / 2.0) + FRAC_PI_4 + jitter;
+    let r = 1100.0 + rng.f32() * 200.0; // 1100..1300 wu from origin
+    let pos = Vec2::new(theta.cos() * r, theta.sin() * r);
     commands.spawn((
         Sprite {
             image: assets.load(format!("ui/planet_{:02}.png", frame)),
