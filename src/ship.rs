@@ -1234,15 +1234,15 @@ impl Plugin for ShipPlugin {
         );
         // Planet gravity nudges LinearVelocity; run it before the speed
         // cap so the whip-boosted cap is honoured the same tick.
-        // `tick_planet_grind` drains crew while a ship is *touching* the
-        // planet, on top of the one-shot CollisionStart damage from
-        // `tick_planet_contact` — gravity-pinned ships die.
+        // `tick_planet_contact` deals the canon `ceil(crew/3)` per fresh
+        // collision — there's no continuous "grind" damage in canon and
+        // we matched that, so a stuck ship just sits there at low crew
+        // until physics bounces it off into another contact.
         app.add_systems(
             bevy_ggrs::GgrsSchedule,
             (
                 apply_planet_gravity.before(cap_velocity),
                 tick_planet_contact,
-                tick_planet_grind,
             ),
         );
         // Orz turret + marines own their input handling; must run AFTER
@@ -7229,15 +7229,17 @@ impl Default for Planet {
             radius: 100.0, // PLAN_S0x sprites are 200×200 → ~100 px radius
             gravity_range: 720.0,   // scale_range(18)
             gravity_mindist: 240.0, // scale_range(6)
-            gravity_accel: 1100.0,
-            // server.ini [Planet] gravity_force scaled through
-            // mhelpers.cpp::scale_acceleration gives a canon peak of
-            // ~288 wu/s² at the surface. We run ~4× hotter (1100) so the
-            // well is unmistakable when a ship actually enters its
-            // range — important because we keep the planet off-centre
-            // (vs canon's always-centre placement), so engagements
-            // around it are rarer and need to land harder when they
-            // happen. Easy to dial up or down if it overshoots again.
+            gravity_accel: 288.0,
+            // server.ini [Planet] GravityForce = 1.5 through
+            // `mhelpers.cpp::scale_acceleration`:
+            //   force·dist_ratio / time_ratio²
+            //   = 1.5 × 0.48 / 50ms / 50ms = 2.88e-4 TW-px/ms²
+            // mcbodies.cpp:144 per game-tick Δv = frame_time·force·sr
+            //   = 50ms × 2.88e-4 × sr ≈ 0.0144 TW-px/ms · sr
+            // 20 game-frames/sec → peak ≈ 288 wu/s² (1 wu = 1 TW-px).
+            // Use the canon value directly; ships still feel it as a
+            // real slingshot because our smaller arena (3000 vs 3840)
+            // means the same absolute pull covers more of the map.
             whip_mult: 1.5, // 1 + GravityWhip(0.5)
         }
     }
@@ -7285,50 +7287,11 @@ pub fn spawn_planet(commands: &mut Commands, assets: &AssetServer, rng: &mut cra
         Friction::new(0.0),
         Position(pos),
         CollisionEventsEnabled,
-        // Continuous contact list — `tick_planet_grind` drains crew per
-        // tick from every ship still touching the planet, so a ship that
-        // gets pulled in by gravity and pinned against the surface
-        // actually dies instead of sitting forever taking a single
-        // CollisionStart's chunk of damage.
+        // Avian needs this on the planet for collision-event delivery.
         CollidingEntities::default(),
         planet,
     ));
     info!("spawned planet at ({:.0}, {:.0})", pos.x, pos.y);
-}
-
-/// Continuous "you're grinding against the planet" damage. The one-shot
-/// `tick_planet_contact` deals a chunk on the moment of contact; this
-/// pass drains a steady DPS on top, so a ship gravity-pinned against
-/// the surface dies instead of perpetually contacting the planet.
-fn tick_planet_grind(
-    time: Res<Time<Physics>>,
-    planets: Query<&CollidingEntities, With<Planet>>,
-    mut crews: Query<&mut Crew, With<Ship>>,
-    shields: Query<&ShieldActive>,
-) {
-    /// Crew per second while touching the planet. A ship dragged in and
-    /// pinned dies in a few seconds; a slingshot brush that releases on
-    /// its own only costs a crew or two. Earlier 12/s was insta-kill on
-    /// low-crew classes (Shofixti, Pkunk) the moment they touched down.
-    const PLANET_GRIND_DPS: f32 = 3.0;
-    let dt = time.delta_secs();
-    if dt <= 0.0 {
-        return;
-    }
-    for colliders in &planets {
-        for &e in colliders.0.iter() {
-            let Ok(mut crew) = crews.get_mut(e) else { continue };
-            if crew.current <= 0 {
-                continue;
-            }
-            let factor = shields.get(e).map(|s| s.damage_factor).unwrap_or(1.0);
-            let amount = PLANET_GRIND_DPS * dt * factor;
-            let dmg = amount.ceil() as i32; // ceil → still ticks at < 1 dmg/s
-            if dmg > 0 {
-                crew.current = (crew.current - dmg).max(0);
-            }
-        }
-    }
 }
 
 /// Pull every dynamic body toward each planet, inverse-square with distance
@@ -7426,15 +7389,17 @@ fn tick_planet_contact(
         // Ship hit. Grazing the planet's surface costs crew (shield-aware).
         let Ok(ship) = ships.get(other_e) else { continue; };
         let Ok(mut crew) = crews.get_mut(other_e) else { continue; };
-        // Grazing damage on first contact — modest single-crew tap so a
-        // brush isn't immediately fatal (the original Planet::inflict_damage
-        // dealt 1 dmg vs the ship's armour; for low-crew classes like
-        // Shofixti the previous "crew/8 min 2" was an insta-kill on touch).
+        // Canon `Planet::inflict_damage` (`mcbodies.cpp:121`): for a
+        // ship, damage = ceil(crew/3). Once per CollisionStart, not
+        // per tick — a ship pinned against the planet doesn't keep
+        // taking damage from "the same touch." Each separate bounce
+        // is its own contact and gets its own chunk.
         let factor = shields.get(other_e).map(|s| s.damage_factor).unwrap_or(1.0);
-        let dmg = ((1.0 * factor).round() as i32).max(0);
+        let base = (crew.current + 2) / 3; // integer ceil(crew/3)
+        let dmg = ((base as f32 * factor).round() as i32).max(0);
         if dmg > 0 {
             crew.current = (crew.current - dmg).max(0);
-            info!("P{} grazed the planet: -{} crew", ship.player_slot + 1, dmg);
+            info!("P{} hit the planet: -{} crew", ship.player_slot + 1, dmg);
         }
     }
 }
