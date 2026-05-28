@@ -1,28 +1,34 @@
 //! Data-driven AI pilot.
 //!
-//! Each ship's `.ini` `[AI3_Default]` block names the **weapon tactic**
-//! (when to press FIRE) and a chain of **special tactics** (when to
-//! press SPECIAL), parsed into `crate::ship::AiTactics` at load time.
-//! This system turns those tactics — plus per-tick context (target
-//! position, incoming projectiles, battery, etc.) — into virtual
-//! button-presses on `SlotInputs`, exactly as if the slot had a
-//! keyboard player. The existing input pipeline (`apply_player_input`,
-//! `dispatch_primary`, `tick_orz_turret`, …) then handles everything
-//! else, so per-ship mechanics (Orz turret aim, Pkunk shields, …) come
-//! along for free.
+//! Each ship's `.ini` `[AI3_Default]` block names the weapon + special
+//! tactics, parsed into `crate::ship::AiTactics` at load time. This
+//! system turns those tactics — plus per-tick context (target,
+//! incoming projectiles, battery, crew) — into virtual button-presses
+//! on `SlotInputs`, so the existing input pipeline drives the AI
+//! identically to a human.
 //!
-//! The library implemented here covers the eight most-common tactic
-//! names in the canon `.ini`s (`Precedence`, `Homing`, `Narrow`,
-//! `Field`, `Launched` for the weapon; `Defense`, `Proximity`,
-//! `Battery` for the special). Unrecognised tactics fall back to a
-//! sensible default so every ship plays at least competently.
+//! Beyond the raw tactic dispatch, this version layers in:
+//!   - **Difficulty tiers** (Easy / Medium / Hard) via the
+//!     `AiDifficulty` resource. Each tier scales reaction time, aim
+//!     jitter, special eagerness, retreat threshold, and prediction.
+//!   - **Per-class engagement range** — every class has an optimal
+//!     orbit radius and the AI maintains it (close to target if far,
+//!     hold position if at range). Spathi runs the other way and
+//!     fires its BUTT missile backward.
+//!   - **Lead-the-target** — on Medium/Hard the firing direction is
+//!     biased to where the target WILL be at projectile-impact time,
+//!     so a moving target gets shot in front of, not at.
+//!   - **Retreat** — at ≤25% crew the AI breaks off, faces away,
+//!     thrusts to escape, and only re-engages once crew is back above
+//!     ~50% (which it usually isn't — most ships can't heal — so this
+//!     is effectively "die running" for the badly-wounded).
 //!
 //! Determinism: runs in `GgrsSchedule` after the input producer and
-//! before any consumer; uses only rollback-tracked state plus a
-//! deterministic per-ship counter for the `SpecialFreq` 1/N gate.
-//! No RNG, so it replays identically.
+//! before any consumer; uses only rollback-tracked state. The
+//! `SpecialFreq` 1/N gate uses a per-ship counter (no RNG), so this
+//! still replays identically across peers.
 
-use avian2d::prelude::{LinearVelocity, Position, Rotation};
+use avian2d::prelude::{LinearVelocity, Physics, Position, Rotation};
 use bevy::prelude::*;
 
 use crate::input::{self, PlayerInput, SlotInputs};
@@ -35,64 +41,171 @@ use crate::ship::{
 #[derive(Component, Debug)]
 pub struct AiControlled;
 
-/// Per-ship AI runtime state. Edge-detect, gates, cooldowns. Inserted
-/// alongside `AiControlled` in `spawn_match`.
+/// Global difficulty preset. `Resource` so the settings menu can swap
+/// it live. Defaults to Medium — the same opponents you'd expect on
+/// the original SC2 default difficulty.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiDifficulty {
+    Easy,
+    Medium,
+    Hard,
+}
+
+impl Default for AiDifficulty {
+    fn default() -> Self {
+        AiDifficulty::Medium
+    }
+}
+
+/// Per-tier knob bundle. Constructed from `AiDifficulty::tuning()`
+/// each tick; cheap (it's just six scalars + a bool).
+#[derive(Debug, Clone, Copy)]
+struct AiTuning {
+    /// How tight (radians) we tolerate the firing solution before
+    /// committing to FIRE. Easy adds extra jitter so even Precedence
+    /// tactic effectively becomes Narrow.
+    aim_jitter_rad: f32,
+    /// Multiplier on the special-tactic trigger conditions; >1 means
+    /// the AI uses its special more eagerly (Hard), <1 means it
+    /// hoards (Easy). Combined with the per-class `SpecialFreq`.
+    special_eagerness: f32,
+    /// Crew fraction at which retreat kicks in. Easy: 50% (timid),
+    /// Medium: 25%, Hard: 20% (commits longer).
+    retreat_threshold: f32,
+    /// Should the AI lead its shots based on target velocity? Easy:
+    /// no (shoot where the target IS); Medium/Hard: yes.
+    predict_lead: bool,
+}
+
+impl AiDifficulty {
+    fn tuning(self) -> AiTuning {
+        match self {
+            AiDifficulty::Easy => AiTuning {
+                aim_jitter_rad: 0.25, // ~14° wobble
+                special_eagerness: 0.4,
+                retreat_threshold: 0.50,
+                predict_lead: false,
+            },
+            AiDifficulty::Medium => AiTuning {
+                aim_jitter_rad: 0.06, // ~3.5°
+                special_eagerness: 1.0,
+                retreat_threshold: 0.25,
+                predict_lead: true,
+            },
+            AiDifficulty::Hard => AiTuning {
+                aim_jitter_rad: 0.0,
+                special_eagerness: 1.5,
+                retreat_threshold: 0.20,
+                predict_lead: true,
+            },
+        }
+    }
+}
+
+/// Per-ship AI runtime state. Edge-detect, gates, retreat memory.
 #[derive(Component, Debug, Default)]
 pub struct AiBrain {
-    /// Last frame's button bits — used to compute the just_pressed /
-    /// just_released edges we write to `SlotInputs`.
     pub last_buttons: u8,
-    /// Frame counter for the `SpecialFreq` 1/N gate (a `Special` with
-    /// `SpecialFreq=3` only fires every third eligible frame). Wraps
-    /// at u32::MAX; we only look at it modulo `freq`.
     pub special_tick_counter: u32,
+    /// Currently in "retreat" mode — flipped on at low crew, off again
+    /// when crew has recovered through the upper hysteresis threshold.
+    /// Most ships can't regenerate crew so once it flips on it stays
+    /// on for the rest of the engagement.
+    pub retreating: bool,
+    /// Pseudo-random per-ship phase used by aim jitter. Increments
+    /// each tick and feeds into a deterministic hash so the jitter
+    /// looks varied without an RNG dependency.
+    pub jitter_phase: u32,
+    /// Time (seconds) accumulated since this ship's last
+    /// "turn-and-burst" moment (Spathi). Drives the periodic flip.
+    pub burst_timer_s: f32,
+    /// True if the Spathi is currently in the brief turn-around
+    /// portion of run-and-burst (facing target to fire primary).
+    pub bursting: bool,
 }
 
 pub struct AiPlugin;
 
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
-        // Run after the input producer (so we see the latest non-AI slots)
-        // and before any consumer (apply_player_input, dispatch_primary,
-        // tick_orz_turret) so our virtual button-presses drive the same
-        // tick.
-        app.add_systems(
-            bevy_ggrs::GgrsSchedule,
-            tick_ai_pilots
-                .after(crate::input::SlotInputProducerSet)
-                .before(crate::ship::apply_player_input)
-                .run_if(in_state(crate::AppState::InMatch)),
-        );
+        app.init_resource_if_absent::<AiDifficulty>()
+            .add_systems(
+                bevy_ggrs::GgrsSchedule,
+                tick_ai_pilots
+                    .after(crate::input::SlotInputProducerSet)
+                    .before(crate::ship::apply_player_input)
+                    .run_if(in_state(crate::AppState::InMatch)),
+            );
     }
 }
 
-/// How close (radians) the firing direction must be to the target
-/// bearing before each weapon tactic fires.
+/// Init the resource only if no startup code has already set it.
+trait InitIfAbsent {
+    fn init_resource_if_absent<R: Resource + Default>(&mut self) -> &mut Self;
+}
+impl InitIfAbsent for App {
+    fn init_resource_if_absent<R: Resource + Default>(&mut self) -> &mut Self {
+        if !self.world().contains_resource::<R>() {
+            self.init_resource::<R>();
+        }
+        self
+    }
+}
+
 const PRECEDENCE_CONE: f32 = 0.12; // ~7°
 const NARROW_CONE: f32 = 0.40; // ~23°
 const HOMING_CONE: f32 = 1.05; // ~60°
 const DEFAULT_CONE: f32 = 0.70; // ~40°
 
-/// Stop thrusting if the target is closer than this (don't ram).
 const STANDOFF_DISTANCE: f32 = 80.0;
-/// Don't bother thrusting unless we're within this much of pointing
-/// at the target — going full throttle sideways wastes momentum.
 const THRUST_BEARING_TOLERANCE: f32 = std::f32::consts::FRAC_PI_2 * 0.85;
-/// "Crew is running low" threshold for `Defense` — at or below 1/3 of
-/// max we treat the ship as in danger.
-const LOW_CREW_FRACTION: f32 = 1.0 / 3.0;
-/// Range within which a hostile projectile counts as "incoming" for
-/// the `Defense` tactic.
+const LOW_CREW_FRACTION_BASE: f32 = 1.0 / 3.0;
 const INCOMING_RADIUS_WU: f32 = 280.0;
-/// Dot-product threshold for "this projectile is heading at me" —
-/// 0.4 ≈ within 66° of straight at us.
 const INCOMING_DOT: f32 = 0.4;
-/// Tolerance for "the Orz turret is aimed at the target" (radians).
 const ORZ_TURRET_TOLERANCE: f32 = 0.08;
 
+/// Hysteresis upper bound for retreat: once retreating, only re-engage
+/// once crew is back above this fraction of max. Most ships can't
+/// regen, so this is mostly aspirational ("die running").
+const RETREAT_RECOVER_FRACTION: f32 = 0.50;
+
+/// Generic "the projectile we fire goes this fast" used for lead
+/// computation. Real ships range 50-150 SC2 = 480-1440 wu/s; the
+/// average is ~1100. Hardcoding this for the lead estimate is fine —
+/// lead is approximate, not analytic.
+const ASSUMED_PROJ_SPEED: f32 = 1100.0;
+
+/// Optimal orbit radius per class, world units. Picked from canon
+/// engagement habits: kite classes (Spathi, Druuge, Slylandro) want
+/// long range; brawlers (Zfp, Andgu, Shofixti) want point-blank;
+/// most ships sit at ~70% of their weapon range for safety.
+fn optimal_range(class: ShipClass) -> f32 {
+    match class {
+        // Long-range / kite classes.
+        ShipClass::Spael => 500.0, // run at this distance, BUTT does the rest
+        ShipClass::Druma => 700.0, // recoil cannon best at standoff
+        ShipClass::Chmav => 600.0, // tractor's only useful in close, but laser long
+        ShipClass::Meltr => 600.0, // charged plasma reaches far
+        ShipClass::Slypr => 250.0, // lightning is short-range, but drift handles distance
+        ShipClass::Chebr => 550.0, // crystal launcher
+        ShipClass::Kohma => 600.0, // saw blades fly forever
+        // Brawler / ram classes.
+        ShipClass::Shosc => 120.0, // glory device wants point-blank
+        ShipClass::Zfpst => 120.0, // tongue is range 2 SC2 = 80 wu
+        ShipClass::Umgdr => 100.0, // anti-grav cone is right ahead
+        ShipClass::Andgu => 200.0, // Blazer ram works close
+        // Midrange default — about 60% of typical weapon range.
+        _ => 380.0,
+    }
+}
+
 fn tick_ai_pilots(
+    difficulty: Res<AiDifficulty>,
     mut slot_inputs: ResMut<SlotInputs>,
-    targets: Query<(Entity, &Ship, &Position), Without<crate::ultimate::HyperActive>>,
+    targets: Query<
+        (Entity, &Ship, &Position, &LinearVelocity),
+        Without<crate::ultimate::HyperActive>,
+    >,
     mut pilots: Query<
         (
             Entity,
@@ -108,17 +221,20 @@ fn tick_ai_pilots(
         With<AiControlled>,
     >,
     projectiles: Query<(&Projectile, &Position, &LinearVelocity)>,
+    time: Res<Time<Physics>>,
 ) {
     use std::f32::consts::FRAC_PI_2;
+    let tuning = difficulty.tuning();
+    let dt = time.delta_secs();
     for (entity, ship, class, pos, rot, batt, crew, mut brain, turret) in &mut pilots {
         let slot = ship.player_slot.min(3);
+        brain.burst_timer_s += dt;
+        brain.jitter_phase = brain.jitter_phase.wrapping_add(1);
 
-        // 1) Pick a target — nearest live non-friendly ship in the
-        //    minimum-image arena (so a wrap-side opponent is correctly
-        //    treated as close).
-        let Some((target_pos_world, _target_e)) = nearest_enemy(entity, ship.player_slot, pos.0, &targets)
+        // 1) Pick a target — nearest live non-friendly ship (min-image).
+        let Some((target_pos_world, target_vel_world)) =
+            nearest_enemy(entity, ship.player_slot, pos.0, &targets)
         else {
-            // No targets — write a neutral input and bail.
             write_input(&mut slot_inputs, slot, &mut brain, 0);
             continue;
         };
@@ -127,11 +243,22 @@ fn tick_ai_pilots(
         let bearing = to_target.y.atan2(to_target.x) - FRAC_PI_2;
         let current_heading = rot.sin.atan2(rot.cos);
 
-        // 2) Orz takes a fully dedicated control loop — its turret has
-        //    to track the target, not the hull, so the normal "face
-        //    target then fire" doesn't apply. The marine launch chord
-        //    is intentionally not modelled in v1 (it's a future tuning
-        //    pass).
+        // 2) Retreat hysteresis — drop into retreat at the difficulty's
+        //    threshold, only leave it when crew is fully restored
+        //    (effectively "never" for ships without regen).
+        let crew_frac = (crew.current as f32) / (ship.stats.crew_max.max(1) as f32);
+        if brain.retreating {
+            if crew_frac >= RETREAT_RECOVER_FRACTION {
+                brain.retreating = false;
+            }
+        } else if crew_frac <= tuning.retreat_threshold {
+            brain.retreating = true;
+        }
+
+        // 3) Orz takes a fully dedicated control loop (turret tracking,
+        //    fire when aligned). Skip the generic path entirely. Note:
+        //    the Orz body doesn't ship-rotate while special is held, so
+        //    retreat doesn't apply — it's stationary by design.
         if *class == ShipClass::Orzne {
             let bits = orz_ai_input(
                 turret,
@@ -144,50 +271,108 @@ fn tick_ai_pilots(
             continue;
         }
 
-        // 3) Steering. Default: face the target; thrust when roughly
-        //    on-bearing AND not point-blank. Per-class overrides go
-        //    here when a ship can't be flown like that (none today
-        //    beyond Orz above; Spathi/Druuge/Arilou play fine with
-        //    "face + fire" because their odd mechanics are encoded
-        //    elsewhere — Spathi's BUTT missile is the *special*, not
-        //    the primary; Druuge's recoil is just physics; Arilou's
-        //    halo is `Field` so it fires regardless of aim).
-        let steer_err = wrap_pi(bearing - current_heading);
-        let want_left = steer_err > 0.02; // ~1°
-        let want_right = steer_err < -0.02;
-        let want_thrust = steer_err.abs() < THRUST_BEARING_TOLERANCE && distance > STANDOFF_DISTANCE;
+        // 4) Aim leading — predict where the target will be at the
+        //    moment our shot arrives, so a moving target gets shot in
+        //    front of, not at. Easy disables this so it's beatable by
+        //    strafing.
+        let lead_pos = if tuning.predict_lead {
+            let tof = distance / ASSUMED_PROJ_SPEED;
+            target_pos_world + target_vel_world * tof
+        } else {
+            target_pos_world
+        };
+        let to_lead = crate::physics::min_image(lead_pos - pos.0);
+        let lead_bearing = to_lead.y.atan2(to_lead.x) - FRAC_PI_2;
+        // Add aim jitter — deterministic per-ship-and-tick wobble so
+        // Easy AI misses on purpose without an RNG dependency.
+        let jitter = jitter_angle(brain.jitter_phase, slot) * tuning.aim_jitter_rad;
+        let aim_bearing = lead_bearing + jitter;
 
-        // 4) Weapon decision — does the firing direction line up well
-        //    enough for this tactic to commit to firing?
-        let firing_err = steer_err; // most ships fire forward; Spathi's
-        // backward shot is its SPECIAL volley, not the primary.
+        // 5) Spathi run-and-burst (canon `shpspael.cpp`):
+        //    default = face AWAY (back to target) and run, so BUTT
+        //    missile (special) flies backward into the opponent;
+        //    every ~3 seconds spin around briefly and fire primary.
+        let spathi_run = *class == ShipClass::Spael;
+        let spathi_burst_window = 0.45; // seconds spent facing target
+        let spathi_run_window = 2.6; // seconds spent running between bursts
+        if spathi_run {
+            let cycle = spathi_run_window + spathi_burst_window;
+            let phase = brain.burst_timer_s % cycle;
+            brain.bursting = phase >= spathi_run_window;
+        }
+
+        // 6) Desired heading. Retreat overrides everything except Spathi
+        //    (which already faces away by default and just keeps doing so).
+        let desired_heading = if brain.retreating || spathi_run && !brain.bursting {
+            // Run away — bearing + π.
+            wrap_pi(aim_bearing + std::f32::consts::PI)
+        } else {
+            aim_bearing
+        };
+        let steer_err = wrap_pi(desired_heading - current_heading);
+
+        // 7) Orbit steering. If at the optimal range, hold; if too far,
+        //    close in; if too close, stop thrusting (the natural drift
+        //    + opponent movement will open the gap). Retreating ships
+        //    just thrust away regardless of distance.
+        let opt = optimal_range(*class);
+        let want_thrust = if brain.retreating {
+            // Always thrust away when retreating.
+            steer_err.abs() < THRUST_BEARING_TOLERANCE
+        } else if spathi_run && !brain.bursting {
+            // Running phase: keep the throttle open so the BUTT
+            // missile fires from a moving platform (harder to dodge).
+            steer_err.abs() < THRUST_BEARING_TOLERANCE && distance < opt * 3.0
+        } else if distance > opt {
+            // Too far — close in.
+            steer_err.abs() < THRUST_BEARING_TOLERANCE && distance > STANDOFF_DISTANCE
+        } else {
+            // At or inside optimal: don't burn fuel chasing.
+            false
+        };
+        let want_left = steer_err > 0.02;
+        let want_right = steer_err < -0.02;
+
+        // 8) Weapon decision. Skip firing while retreating (focus on
+        //    escape); Spathi's BUTT missile fires via SPECIAL even
+        //    while running, so primary skip during run-phase is fine.
         let weapon_range = ai_weapon_range(ship);
         let in_range = distance <= weapon_range;
-        let want_fire = match ship.stats.ai.weapon {
-            AiWeaponTactic::Precedence => firing_err.abs() < PRECEDENCE_CONE && in_range,
-            AiWeaponTactic::Narrow => firing_err.abs() < NARROW_CONE && in_range,
-            AiWeaponTactic::Homing => firing_err.abs() < HOMING_CONE && in_range,
-            AiWeaponTactic::Launched => firing_err.abs() < HOMING_CONE && in_range,
-            // Field-of-effect / auto-aim weapons: just press fire on
-            // every cooldown the dispatcher allows.
-            AiWeaponTactic::Field => true,
-            AiWeaponTactic::Default => firing_err.abs() < DEFAULT_CONE && in_range,
+        let firing_err = steer_err;
+        let want_fire = if brain.retreating {
+            false
+        } else if spathi_run && !brain.bursting {
+            false
+        } else {
+            match ship.stats.ai.weapon {
+                AiWeaponTactic::Precedence => firing_err.abs() < PRECEDENCE_CONE && in_range,
+                AiWeaponTactic::Narrow => firing_err.abs() < NARROW_CONE && in_range,
+                AiWeaponTactic::Homing => firing_err.abs() < HOMING_CONE && in_range,
+                AiWeaponTactic::Launched => firing_err.abs() < HOMING_CONE && in_range,
+                AiWeaponTactic::Field => true,
+                AiWeaponTactic::Default => firing_err.abs() < DEFAULT_CONE && in_range,
+            }
         };
 
-        // 5) Special decision — first eligible tactic in the chain
-        //    wins. `Defense` triggers on incoming projectile or low
-        //    crew; `Proximity` on target inside special_range;
-        //    `Battery` once we've banked enough charge.
+        // 9) Special decision. Defense triggers regardless of retreat
+        //    (shields/teleports are how you SURVIVE retreating).
+        //    Spathi: fires SPECIAL (BUTT missile) continuously while
+        //    running, so add a slot-1 "Back-fire" override.
         let special_range = ship
             .stats
             .ai
             .special_range
             .unwrap_or(weapon_range)
             .max(60.0);
-        let crew_low = (crew.current as f32) <= (ship.stats.crew_max as f32) * LOW_CREW_FRACTION;
+        let crew_low = crew_frac <= LOW_CREW_FRACTION_BASE;
         let incoming = incoming_projectile(entity, ship.player_slot, pos.0, &projectiles);
         let drain_ok = batt.current >= ship.stats.special_drain;
+
         let mut want_special = false;
+        if spathi_run && drain_ok && !brain.bursting {
+            // While running, hammer the BUTT missile.
+            want_special = true;
+        }
         for &t in &ship.stats.ai.specials {
             let trigger = match t {
                 AiSpecialTactic::Defense => drain_ok && (incoming || crew_low),
@@ -203,18 +388,17 @@ fn tick_ai_pilots(
                 break;
             }
         }
-        // `SpecialFreq` gate: only fires every Nth eligible tick so
-        // cheap specials don't continuously trigger. Counter is
-        // per-ship and deterministic across rollback.
         let freq = ship.stats.ai.special_freq.max(1);
         if want_special {
             brain.special_tick_counter = brain.special_tick_counter.wrapping_add(1);
-            if freq > 1 && brain.special_tick_counter % freq != 0 {
+            // Eagerness scales the frequency gate — Hard fires every
+            // 1/(N·1.5) ticks, Easy every 1/(N·0.4). Always 1 minimum.
+            let scaled = ((freq as f32) / tuning.special_eagerness).max(1.0) as u32;
+            if scaled > 1 && brain.special_tick_counter % scaled != 0 {
                 want_special = false;
             }
         }
 
-        // 6) Compose the button mask + write to SlotInputs.
         let mut bits = 0u8;
         if want_left {
             bits |= input::INPUT_LEFT;
@@ -234,28 +418,38 @@ fn tick_ai_pilots(
     }
 }
 
-/// Find the nearest enemy ship on the toroidal arena.
+/// Deterministic ±1 pseudo-jitter from (counter, slot). Cheap hash; no
+/// RNG dependency so the AI replays identically on rollback.
+fn jitter_angle(counter: u32, slot: usize) -> f32 {
+    let h = counter
+        .wrapping_mul(2654435761)
+        .wrapping_add((slot as u32).wrapping_mul(40503));
+    // Map to [-1, 1] via sin of a small angle.
+    ((h & 0xffff) as f32 / 32768.0 - 1.0)
+}
+
 fn nearest_enemy(
     me: Entity,
     me_slot: usize,
     me_pos: Vec2,
-    ships: &Query<(Entity, &Ship, &Position), Without<crate::ultimate::HyperActive>>,
-) -> Option<(Vec2, Entity)> {
-    let mut best: Option<(Vec2, Entity, f32)> = None;
-    for (e, s, p) in ships {
+    ships: &Query<
+        (Entity, &Ship, &Position, &LinearVelocity),
+        Without<crate::ultimate::HyperActive>,
+    >,
+) -> Option<(Vec2, Vec2)> {
+    let mut best: Option<(Vec2, Vec2, f32)> = None;
+    for (e, s, p, v) in ships {
         if e == me || s.player_slot == me_slot {
             continue;
         }
         let d2 = crate::physics::min_image(p.0 - me_pos).length_squared();
         if best.map_or(true, |(_, _, b)| d2 < b) {
-            best = Some((p.0, e, d2));
+            best = Some((p.0, v.0, d2));
         }
     }
-    best.map(|(p, e, _)| (p, e))
+    best.map(|(p, v, _)| (p, v))
 }
 
-/// True if a hostile projectile is heading at this ship within
-/// `INCOMING_RADIUS_WU`. Used by the `Defense` special tactic.
 fn incoming_projectile(
     me: Entity,
     me_slot: usize,
@@ -266,9 +460,6 @@ fn incoming_projectile(
         if proj.owner == me {
             continue;
         }
-        // Same-slot (clones / sub-entities owned by ourselves) skip.
-        // We don't have the projectile's firer's slot here without a
-        // second lookup — INCOMING_DOT + RADIUS catches obvious cases.
         let _ = me_slot;
         let to_me = crate::physics::min_image(me_pos - pos.0);
         let d = to_me.length();
@@ -287,13 +478,6 @@ fn incoming_projectile(
     false
 }
 
-/// Orz Nemesis: aim the turret at the target (hold SPECIAL + turn
-/// keys to rotate the turret), and fire once the turret is on-bearing.
-/// Marine launches (SPECIAL+FIRE chord) are intentionally skipped in
-/// v1 — that's a follow-up. Body steering is also skipped: an Orz that
-/// rotates its hull would shift its turret aim by the same amount, so
-/// keeping the body still while the turret tracks is the simplest
-/// behaviour that actually hits things.
 fn orz_ai_input(
     turret: Option<&OrzTurret>,
     ship_heading: f32,
@@ -304,8 +488,6 @@ fn orz_ai_input(
     let Some(turret) = turret else {
         return 0;
     };
-    // Desired turret angle relative to ship facing — `wrap_pi`'d so
-    // we don't try to rotate the long way round.
     let desired_offset = wrap_pi(target_bearing - ship_heading);
     let err = wrap_pi(desired_offset - turret.offset_rad);
     let aligned = err.abs() < ORZ_TURRET_TOLERANCE;
@@ -313,8 +495,6 @@ fn orz_ai_input(
 
     let mut bits = 0u8;
     if !aligned {
-        // Hold special + press the turn key to rotate the turret. No
-        // ship rotation (special-held suppresses it in tick_orz_turret).
         bits |= input::INPUT_SPECIAL;
         if err > 0.0 {
             bits |= input::INPUT_LEFT;
@@ -322,23 +502,14 @@ fn orz_ai_input(
             bits |= input::INPUT_RIGHT;
         }
     } else if in_range {
-        // Aligned + in range: fire.
         bits |= input::INPUT_FIRE;
     }
-    // Thrust toward the target if we're farther than the standoff.
-    // Orz can't ship-turn under our current scheme, so it'll drift in
-    // its initial direction — acceptable; a quick-fix is to start the
-    // ship facing roughly arena-centre, which `spawn_match` already does.
     if distance > STANDOFF_DISTANCE {
         bits |= input::INPUT_THRUST;
     }
     bits
 }
 
-/// Cone-of-fire range used by every tactic. Prefers the `.ini`'s
-/// `[AI3_Default] Weapon_Range` (scale ×40), falls back to
-/// `[Weapon] Range`, then to a generous 800 wu so AI ships at least
-/// try to engage.
 fn ai_weapon_range(ship: &Ship) -> f32 {
     if let Some(r) = ship.stats.ai.weapon_range {
         return r;
@@ -349,7 +520,6 @@ fn ai_weapon_range(ship: &Ship) -> f32 {
     800.0
 }
 
-/// Wrap an angle into [-π, π].
 fn wrap_pi(mut a: f32) -> f32 {
     use std::f32::consts::{PI, TAU};
     while a > PI {
@@ -361,10 +531,6 @@ fn wrap_pi(mut a: f32) -> f32 {
     a
 }
 
-/// Write the AI's `bits` to `SlotInputs.held[slot]` and compute the
-/// just_pressed / just_released edges against the brain's last frame
-/// so edge-triggered consumers (Orz marine launch, Yehat shield
-/// toggle, etc.) see fresh transitions.
 fn write_input(slot_inputs: &mut SlotInputs, slot: usize, brain: &mut AiBrain, bits: u8) {
     let pressed = bits & !brain.last_buttons;
     let released = !bits & brain.last_buttons;
