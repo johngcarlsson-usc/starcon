@@ -1234,15 +1234,19 @@ impl Plugin for ShipPlugin {
         );
         // Planet gravity nudges LinearVelocity; run it before the speed
         // cap so the whip-boosted cap is honoured the same tick.
-        // `tick_planet_contact` deals the canon `ceil(crew/3)` per fresh
-        // collision — there's no continuous "grind" damage in canon and
-        // we matched that, so a stuck ship just sits there at low crew
-        // until physics bounces it off into another contact.
+        // `tick_planet_contact` deals a per-bounce chunk; `tick_planet_grind`
+        // is the canon-equivalent persistent damage — canon ran its
+        // collide+inflict_damage every frame the ship's sprite overlapped
+        // the planet's, so a pinned ship took repeat hits at 20 Hz.
+        // Avian only fires `CollisionStart` on transitions, so we model
+        // the persistent half as a steady DPS while the ship is in the
+        // planet's CollidingEntities set.
         app.add_systems(
             bevy_ggrs::GgrsSchedule,
             (
                 apply_planet_gravity.before(cap_velocity),
                 tick_planet_contact,
+                tick_planet_grind,
             ),
         );
         // Orz turret + marines own their input handling; must run AFTER
@@ -7294,6 +7298,48 @@ pub fn spawn_planet(commands: &mut Commands, assets: &AssetServer, rng: &mut cra
     info!("spawned planet at ({:.0}, {:.0})", pos.x, pos.y);
 }
 
+/// Per-frame canon-equivalent damage while a ship is touching the
+/// planet. Canon's `Planet::inflict_damage` was called by the per-frame
+/// pixel-overlap test, so a pinned ship was effectively taking
+/// `ceil(crew/3)` damage at 20 Hz — near-instant death. Avian only
+/// fires `CollisionStart` on transitions, so we recreate the persistent
+/// half here: every ship in the planet's `CollidingEntities` loses
+/// `PLANET_PIN_DPS` crew/second. Tuned so a ~16-crew ship that gets
+/// gravity-pinned dies in ~1.5–2 s — fast but not insta, leaving the
+/// player time to thrust away if they catch it. Bounces still cost a
+/// chunk per `CollisionStart` (see `tick_planet_contact`).
+fn tick_planet_grind(
+    time: Res<Time<Physics>>,
+    planets: Query<&CollidingEntities, With<Planet>>,
+    mut crews: Query<&mut Crew, With<Ship>>,
+    shields: Query<&ShieldActive>,
+) {
+    /// Crew per second while touching the planet. 8 means a 16-crew
+    /// ship dies in 2 s of continuous contact; small-crew ships
+    /// (Shofixti, Pkunk at half crew) die in well under 1 s.
+    const PLANET_PIN_DPS: f32 = 8.0;
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    for colliders in &planets {
+        for &e in colliders.0.iter() {
+            let Ok(mut crew) = crews.get_mut(e) else { continue };
+            if crew.current <= 0 {
+                continue;
+            }
+            let factor = shields.get(e).map(|s| s.damage_factor).unwrap_or(1.0);
+            let amount = PLANET_PIN_DPS * dt * factor;
+            // Ceil ensures sub-1-dmg/s ticks still count; rate is
+            // dominated by the constant above anyway.
+            let dmg = amount.ceil() as i32;
+            if dmg > 0 {
+                crew.current = (crew.current - dmg).max(0);
+            }
+        }
+    }
+}
+
 /// Pull every dynamic body toward each planet, inverse-square with distance
 /// (clamped at `gravity_mindist`), out to `gravity_range`. Toroidal: uses the
 /// minimum-image direction so the pull takes the shortest path across the
@@ -7389,17 +7435,25 @@ fn tick_planet_contact(
         // Ship hit. Grazing the planet's surface costs crew (shield-aware).
         let Ok(ship) = ships.get(other_e) else { continue; };
         let Ok(mut crew) = crews.get_mut(other_e) else { continue; };
-        // Canon `Planet::inflict_damage` (`mcbodies.cpp:121`): for a
-        // ship, damage = ceil(crew/3). Once per CollisionStart, not
-        // per tick — a ship pinned against the planet doesn't keep
-        // taking damage from "the same touch." Each separate bounce
-        // is its own contact and gets its own chunk.
+        // Canon `Planet::inflict_damage` (`mcbodies.cpp:121`) ran every
+        // frame the ship's sprite overlapped the planet's — `collide()`
+        // is a per-frame pixel-overlap test, not a "started overlapping"
+        // event like Avian's `CollisionStart`. So canon effectively
+        // dealt `ceil(crew/3)` damage at 20 Hz while in contact, which
+        // means near-instant death when pinned.
+        //
+        // Avian only fires `CollisionStart` once per fresh contact, so
+        // we model the same thing two ways:
+        //   - per-event chunk here (small, just so a clean bounce
+        //     visibly costs crew),
+        //   - continuous grind in `tick_planet_grind` for the pinned
+        //     case (a ship dragged in by gravity and stuck against the
+        //     surface dies in a couple of seconds, like canon).
         let factor = shields.get(other_e).map(|s| s.damage_factor).unwrap_or(1.0);
-        let base = (crew.current + 2) / 3; // integer ceil(crew/3)
-        let dmg = ((base as f32 * factor).round() as i32).max(0);
+        let dmg = ((1.0 * factor).round() as i32).max(0);
         if dmg > 0 {
             crew.current = (crew.current - dmg).max(0);
-            info!("P{} hit the planet: -{} crew", ship.player_slot + 1, dmg);
+            info!("P{} bounced the planet: -{} crew", ship.player_slot + 1, dmg);
         }
     }
 }
