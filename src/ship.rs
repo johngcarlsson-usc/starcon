@@ -731,11 +731,38 @@ fn auto_add_rollback(
 /// without having to remember to add the marker at every spawn
 /// site.
 #[derive(Component, Debug)]
-#[component(on_add = auto_add_rollback)]
+#[component(on_add = projectile_on_add)]
 pub struct Projectile {
     pub owner: Entity,
     pub damage: i32,
     pub lifetime: f32,
+}
+
+/// On-add hook for `Projectile`: tag the entity for rollback **and**
+/// mark it as a `Sensor`. Sensor projectiles still emit `CollisionStart`
+/// events (so damage handling in `handle_projectile_hits` is unaffected),
+/// but apply no physics impulse to either body — so a ship doesn't get
+/// shoved around by its own muzzle output (Zoq-Fot-Pik symptom) and
+/// projectile-vs-ship hits don't transfer linear/angular momentum.
+///
+/// Druuge keeps its intentional recoil: that runs via
+/// `VolleySpec.recoil_impulse` writing `LinearVelocity` directly on the
+/// firer, independent of the Avian contact resolver, so Sensor status
+/// here doesn't affect it.
+fn projectile_on_add(
+    mut world: bevy::ecs::world::DeferredWorld,
+    ctx: bevy::ecs::lifecycle::HookContext,
+) {
+    let need_rb = world.get::<bevy_ggrs::Rollback>(ctx.entity).is_none();
+    let need_sensor = world.get::<Sensor>(ctx.entity).is_none();
+    let mut commands = world.commands();
+    let mut ec = commands.entity(ctx.entity);
+    if need_rb {
+        ec.try_insert(bevy_ggrs::Rollback);
+    }
+    if need_sensor {
+        ec.try_insert(Sensor);
+    }
 }
 
 /// Tracking-projectile state. While present on a projectile, a system
@@ -917,6 +944,17 @@ pub struct OrzTurret {
     /// SC2 frames → 0.2 s, ticked here because primary fire is fully
     /// managed by the Orz system rather than the generic dispatcher).
     pub fire_cooldown_s: f32,
+}
+
+/// Per-ship state for the Slylandro Probe (`shpslypr.cpp`). Canon
+/// behaviour: the probe is ALWAYS thrusting forward; pressing the
+/// thrust key flips the ship 180° (rising edge only) so direction
+/// changes are instant rather than gradual. `tick_slylandro_drift`
+/// detects the rising edge against `last_thrust_held` and writes the
+/// rotation/thrust override after `apply_player_input`.
+#[derive(Component, Debug, Default)]
+pub struct SlylandroDrift {
+    pub last_thrust_held: bool,
 }
 
 /// Per-ship state for Melnorme charge-and-release primary. Continuous
@@ -1112,10 +1150,15 @@ impl Plugin for ShipPlugin {
         );
         // Orz turret + marines own their input handling; must run AFTER
         // apply_player_input so it can clobber the hull's ang_vel when
-        // special is held (rotate the turret, not the ship).
+        // special is held (rotate the turret, not the ship). Slylandro
+        // drift similarly overrides thrust/rotation on rising-edge of
+        // thrust to flip the probe 180°.
         app.add_systems(
             bevy_ggrs::GgrsSchedule,
-            tick_orz_turret.after(apply_player_input),
+            (
+                tick_orz_turret.after(apply_player_input),
+                tick_slylandro_drift.after(apply_player_input),
+            ),
         );
         app.add_systems(
             bevy_ggrs::GgrsSchedule,
@@ -1555,6 +1598,14 @@ fn spawn_ship(
         RigidBody::Dynamic,
         collider,
         Mass(stats.mass),
+        // Ships should never rotate from external impulse — bouncing off
+        // an asteroid or another ship shouldn't spin them, only the
+        // player's own turn input should change angular velocity. Setting
+        // an enormous AngularInertia means τ = J·α → α ≈ 0 for any
+        // collision torque the solver applies. Our Classic-mode steering
+        // writes `AngularVelocity` directly (bypassing torque integration)
+        // so this doesn't break controlled turning.
+        AngularInertia(1.0e10),
         // `Position` is now mandatory because we disabled
         // `PhysicsTransformConfig::transform_to_position` — Avian no
         // longer reads spawn pose from `Transform`, so without an
@@ -1603,6 +1654,9 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Orzne) {
         entity.insert(OrzTurret::default());
+    }
+    if matches!(class, ShipClass::Slypr) {
+        entity.insert(SlylandroDrift::default());
     }
     if matches!(class, ShipClass::Mycpo) {
         // Marker so newly-spawned projectiles owned by Mycon ships
@@ -4561,6 +4615,51 @@ fn tick_orz_turret(
                 break;
             }
         }
+    }
+}
+
+/// Slylandro Probe drift (`shpslypr.cpp::SlylandroProbe::calculate_thrust`).
+///
+/// Canon: the probe is *always* under thrust — there's no coast. Pressing
+/// the thrust key (rising edge only) flips the ship 180° instantly, so
+/// reversing direction is a single keypress, not a slow turn-and-thrust.
+/// The override runs `.after(apply_player_input)` so it gets to override
+/// the per-tick thrust/rotation that the standard input system wrote.
+fn tick_slylandro_drift(
+    slot_inputs: Res<input::SlotInputs>,
+    mut q: Query<
+        (
+            &Ship,
+            &ShipClass,
+            &mut Rotation,
+            &mut AngularVelocity,
+            &mut ConstantLocalForce,
+            &mut SlylandroDrift,
+            &ShipPhysicsDerived,
+        ),
+        Without<crate::ultimate::HyperActive>,
+    >,
+) {
+    use std::f32::consts::PI;
+    for (ship, class, mut rot, mut ang_vel, mut thrust, mut drift, derived) in &mut q {
+        if *class != ShipClass::Slypr {
+            continue;
+        }
+        let input = slot_inputs.held[ship.player_slot.min(3)];
+        let thrust_held = input.pressed(input::INPUT_THRUST);
+        let was_held = drift.last_thrust_held;
+        drift.last_thrust_held = thrust_held;
+        // Rising edge of thrust → instant 180° flip.
+        if thrust_held && !was_held {
+            // Rotate the (sin,cos) by PI: (sin,cos) → (-sin,-cos).
+            let new_angle = rot.sin.atan2(rot.cos) + PI;
+            *rot = Rotation::radians(new_angle);
+            // Reset any spin imparted by collisions so the flip is clean.
+            ang_vel.0 = 0.0;
+        }
+        // Always thrust forward, regardless of input — the probe drifts
+        // continuously, and the player only chooses *which way*.
+        thrust.0 = Vec2::new(0.0, derived.thrust_force);
     }
 }
 
