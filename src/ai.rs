@@ -648,9 +648,22 @@ fn wrap_pi(mut a: f32) -> f32 {
 fn write_input(slot_inputs: &mut SlotInputs, slot: usize, brain: &mut AiBrain, bits: u8) {
     let pressed = bits & !brain.last_buttons;
     let released = !bits & brain.last_buttons;
+    // `apply_player_input` reads the analog `turn` field, not the LEFT /
+    // RIGHT bits directly (the keyboard reader in `input::read_local_input`
+    // mirrors them onto `turn = ±100` for the same reason — touch-stick
+    // analog needed a single source of steering truth). The AI was
+    // sending bits but turn: 0, so apply_player_input saw "no turn
+    // intent" and the ships flew straight no matter what the AI did.
+    let turn: i8 = if bits & input::INPUT_LEFT != 0 {
+        100
+    } else if bits & input::INPUT_RIGHT != 0 {
+        -100
+    } else {
+        0
+    };
     slot_inputs.held[slot] = PlayerInput {
         buttons: bits,
-        turn: 0,
+        turn,
         aim_x: 0,
         aim_y: 0,
     };

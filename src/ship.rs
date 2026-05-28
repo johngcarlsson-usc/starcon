@@ -2324,7 +2324,11 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                         // .ini Special Velocity=35 → 336 u/s.
                         initial_speed: 35.0 * SC2_VEL_SCALE,
                         sprite_path: Some("ships/kzedr/sprites/shot_b01.png".into()),
-                        sprite_size: 14.0,
+                        // shot_b01 is the 100×100 fighter sprite; the
+                        // previous 14-wu custom_size made it look like a
+                        // pixel. ~36 wu reads as a proper smaller-than-
+                        // dreadnought fighter.
+                        sprite_size: 36.0,
                         color: Color::srgb(1.0, 1.0, 1.0),
                         // .ini Special Armour = 1 (effectively one-hit).
                         hp: 1,

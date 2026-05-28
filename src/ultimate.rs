@@ -1735,7 +1735,7 @@ fn exit_cinematic(
         // get_entity returns Err if the entity was despawned out
         // from under us (rematch reset / class switch mid-cinematic).
         if let Ok(mut e) = commands.get_entity(p1) {
-            e.remove::<HyperActive>();
+            e.try_remove::<HyperActive>();
             // Earthling keeps its blast velocity after the
             // cinematic; PostUltimateCoasting lets cap_velocity
             // and apply_player_input know not to snap it back.
@@ -1751,7 +1751,7 @@ fn exit_cinematic(
             // resume + restore the ship's original scale on the
             // next tick via MmrxfNeedsRestore.
             if state.variant == UltimateVariant::Mmrnmhrm {
-                e.remove::<MmrxfActive>();
+                e.try_remove::<MmrxfActive>();
                 if let Some(orig) = state.mmrxf_orig_scale {
                     e.try_insert(MmrxfNeedsRestore { orig });
                 }
@@ -1803,7 +1803,7 @@ fn exit_cinematic(
     // regain cap_velocity clamping + their own input.
     if let Some(opp) = state.chmmr_opponent.take() {
         if let Ok(mut e) = commands.get_entity(opp) {
-            e.remove::<HyperActive>();
+            e.try_remove::<HyperActive>();
         }
     }
     state.chmmr_stage_timer_s = 0.0;
@@ -3369,7 +3369,7 @@ fn tick_slylandro_glow(
             // asteroid sprite renders at its native colour.
             sprite.color = Color::WHITE;
             if let Ok(mut ec) = commands.get_entity(e) {
-                ec.remove::<SlylandroLaunched>();
+                ec.try_remove::<SlylandroLaunched>();
             }
             continue;
         }
@@ -3870,7 +3870,7 @@ pub fn tick_mmrxf_needs_restore(
         xf.scale = restore.orig;
         *vis = Visibility::Inherited;
         if let Ok(mut ec) = commands.get_entity(e) {
-            ec.remove::<MmrxfNeedsRestore>();
+            ec.try_remove::<MmrxfNeedsRestore>();
         }
     }
 }
