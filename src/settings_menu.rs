@@ -36,6 +36,9 @@ enum SettingButton {
     Camera,
     /// Mobile "tilt + absolute aim" control scheme.
     TiltAim,
+    /// AI difficulty: Easy / Medium / Hard. Affects every AI-controlled
+    /// ship in the current match (and the next one).
+    Difficulty,
 }
 
 /// Marks a text node whose contents reflect the live value of a setting.
@@ -128,6 +131,7 @@ fn spawn_settings_ui(mut commands: Commands, mut open: ResMut<SettingsMenuOpen>)
                 spawn_row(panel, SettingButton::Colliders);
                 spawn_row(panel, SettingButton::Camera);
                 spawn_row(panel, SettingButton::TiltAim);
+                spawn_row(panel, SettingButton::Difficulty);
             });
         });
 }
@@ -175,6 +179,7 @@ fn handle_settings_buttons(
     mut camera_mode: ResMut<CameraFollowMode>,
     mut zoom: ResMut<crate::starfield::ZoomState>,
     mut scheme: ResMut<crate::mobile_controls::MobileScheme>,
+    mut difficulty: ResMut<crate::ai::AiDifficulty>,
 ) {
     use crate::mobile_controls::MobileScheme;
     for (interaction, button) in &interactions {
@@ -198,6 +203,14 @@ fn handle_settings_buttons(
                 };
             }
             SettingButton::Colliders => debug_collider.0 = !debug_collider.0,
+            SettingButton::Difficulty => {
+                use crate::ai::AiDifficulty;
+                *difficulty = match *difficulty {
+                    AiDifficulty::Easy => AiDifficulty::Medium,
+                    AiDifficulty::Medium => AiDifficulty::Hard,
+                    AiDifficulty::Hard => AiDifficulty::Easy,
+                };
+            }
             SettingButton::Camera => {
                 // Mirror the `C` key exactly: switching to Manual must
                 // also pin the auto-revert timer to infinity, otherwise
@@ -239,6 +252,7 @@ fn update_setting_labels(
     debug_collider: Res<DebugCollider>,
     camera_mode: Res<CameraFollowMode>,
     scheme: Res<crate::mobile_controls::MobileScheme>,
+    difficulty: Res<crate::ai::AiDifficulty>,
     mut labels: Query<(&SettingValueText, &mut Text)>,
 ) {
     for (label, mut text) in &mut labels {
@@ -269,6 +283,15 @@ fn update_setting_labels(
                     MobileScheme::Absolute => "Aim only",
                 };
                 format!("Steer mode: {v}")
+            }
+            SettingButton::Difficulty => {
+                use crate::ai::AiDifficulty;
+                let v = match *difficulty {
+                    AiDifficulty::Easy => "Easy",
+                    AiDifficulty::Medium => "Medium",
+                    AiDifficulty::Hard => "Hard",
+                };
+                format!("AI: {v}")
             }
             SettingButton::Toggle => continue,
         };

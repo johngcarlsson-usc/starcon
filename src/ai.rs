@@ -179,6 +179,30 @@ const ASSUMED_PROJ_SPEED: f32 = 1100.0;
 /// engagement habits: kite classes (Spathi, Druuge, Slylandro) want
 /// long range; brawlers (Zfp, Andgu, Shofixti) want point-blank;
 /// most ships sit at ~70% of their weapon range for safety.
+/// Range-driven mode selection for ships with `ToggleMode` as their
+/// special (Mmrnmhrm T↔Y, Androsynth normal↔Blazer, etc.). Returns the
+/// mode index the AI WANTS to be in this tick; `tick_ai_pilots`
+/// triggers SPECIAL whenever the actual mode differs. `None` = ship
+/// has no mode-toggle behaviour the AI cares about.
+fn next_state_desired_mode(class: ShipClass, distance: f32, batt: i32) -> Option<usize> {
+    match class {
+        // Mmrnmhrm: Y-form (mode 1) is fast — use it to close. T-form
+        // (mode 0) has the rapid lasers + homing missiles — fight at
+        // close range. Threshold ≈ 400 wu (just under generic optimal).
+        ShipClass::Mmrxf => Some(if distance > 400.0 { 1 } else { 0 }),
+        // Androsynth: Blazer (mode 1) is a high-speed RAM; it has no
+        // weapons + drains battery while active. Switch into it only
+        // when point-blank AND we've got enough charge to commit to a
+        // 1-2 second ramming run. Back to normal (mode 0) when either
+        // condition fails.
+        ShipClass::Andgu => {
+            let want_blazer = distance < 200.0 && batt >= 30;
+            Some(if want_blazer { 1 } else { 0 })
+        }
+        _ => None,
+    }
+}
+
 fn optimal_range(class: ShipClass) -> f32 {
     match class {
         // Long-range / kite classes.
@@ -217,6 +241,7 @@ fn tick_ai_pilots(
             &Crew,
             &mut AiBrain,
             Option<&OrzTurret>,
+            Option<&crate::ship::ShipModes>,
         ),
         With<AiControlled>,
     >,
@@ -226,7 +251,7 @@ fn tick_ai_pilots(
     use std::f32::consts::FRAC_PI_2;
     let tuning = difficulty.tuning();
     let dt = time.delta_secs();
-    for (entity, ship, class, pos, rot, batt, crew, mut brain, turret) in &mut pilots {
+    for (entity, ship, class, pos, rot, batt, crew, mut brain, turret, modes) in &mut pilots {
         let slot = ship.player_slot.min(3);
         brain.burst_timer_s += dt;
         brain.jitter_phase = brain.jitter_phase.wrapping_add(1);
@@ -344,12 +369,29 @@ fn tick_ai_pilots(
         } else if spathi_run && !brain.bursting {
             false
         } else {
+            // For backward-firing tactics, the firer aims AWAY from the
+            // target — the "firing error" is the angle between the
+            // ship's rear and the target.
+            let rear_err = wrap_pi(firing_err + std::f32::consts::PI);
             match ship.stats.ai.weapon {
                 AiWeaponTactic::Precedence => firing_err.abs() < PRECEDENCE_CONE && in_range,
                 AiWeaponTactic::Narrow => firing_err.abs() < NARROW_CONE && in_range,
-                AiWeaponTactic::Homing => firing_err.abs() < HOMING_CONE && in_range,
-                AiWeaponTactic::Launched => firing_err.abs() < HOMING_CONE && in_range,
+                // `Sides` ships (Pkunk triple-cone) fire whenever the
+                // target is anywhere in a generous forward arc — the
+                // three barrels handle the lateral spread.
+                AiWeaponTactic::Homing | AiWeaponTactic::Launched | AiWeaponTactic::Sides => {
+                    firing_err.abs() < HOMING_CONE && in_range
+                }
                 AiWeaponTactic::Field => true,
+                AiWeaponTactic::Mine => firing_err.abs() < HOMING_CONE && in_range,
+                AiWeaponTactic::Back => rear_err.abs() < NARROW_CONE && in_range,
+                AiWeaponTactic::ReserveBattery => {
+                    // Hoard the battery until BattRecharge floor; then
+                    // fire like the generic default.
+                    batt.current >= ship.stats.ai.batt_floor
+                        && firing_err.abs() < DEFAULT_CONE
+                        && in_range
+                }
                 AiWeaponTactic::Default => firing_err.abs() < DEFAULT_CONE && in_range,
             }
         };
@@ -373,15 +415,50 @@ fn tick_ai_pilots(
             // While running, hammer the BUTT missile.
             want_special = true;
         }
+        // Rear-arc angle of the target relative to ship facing — used
+        // by Back tactic and any other "fire from behind" logic.
+        let rear_err = wrap_pi(bearing - current_heading + std::f32::consts::PI);
+        // Mode-toggle ships (`NextState` tactic): pick the desired form
+        // by engagement context, then trigger SPECIAL once whenever the
+        // ship's current `ShipModes.current` doesn't match desired.
+        // `ToggleMode` in `dispatch_special` is edge-only, so holding the
+        // bit through the apply tick still toggles exactly once.
+        let desired_mode = next_state_desired_mode(*class, distance, batt.current);
+        let mode_mismatch = match (modes, desired_mode) {
+            (Some(m), Some(d)) => m.current != d,
+            _ => false,
+        };
+        // `Reserve_Battery` listed in the special chain just GATES the
+        // rest of the chain — until batt is above the floor, no special
+        // fires. (Different from `Battery` which TRIGGERS at the floor.)
+        let reserve_block = ship
+            .stats
+            .ai
+            .specials
+            .iter()
+            .any(|t| matches!(t, AiSpecialTactic::ReserveBattery))
+            && batt.current < ship.stats.ai.batt_floor;
         for &t in &ship.stats.ai.specials {
+            if reserve_block {
+                continue;
+            }
             let trigger = match t {
-                AiSpecialTactic::Defense => drain_ok && (incoming || crew_low),
-                AiSpecialTactic::Proximity => drain_ok && distance <= special_range,
+                AiSpecialTactic::Defense | AiSpecialTactic::Cloak => {
+                    drain_ok && (incoming || crew_low)
+                }
+                AiSpecialTactic::Proximity | AiSpecialTactic::Mine => {
+                    drain_ok && distance <= special_range
+                }
                 AiSpecialTactic::NoProximity => drain_ok && distance > special_range,
                 AiSpecialTactic::Battery => batt.current >= ship.stats.ai.batt_floor,
-                AiSpecialTactic::PlusFire | AiSpecialTactic::None | AiSpecialTactic::Default => {
-                    false
+                AiSpecialTactic::Back => {
+                    drain_ok && distance <= special_range && rear_err.abs() < NARROW_CONE
                 }
+                AiSpecialTactic::NextState => mode_mismatch,
+                AiSpecialTactic::PlusFire
+                | AiSpecialTactic::None
+                | AiSpecialTactic::ReserveBattery
+                | AiSpecialTactic::Default => false,
             };
             if trigger {
                 want_special = true;

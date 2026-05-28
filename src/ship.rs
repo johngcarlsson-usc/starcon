@@ -65,6 +65,22 @@ pub enum AiWeaponTactic {
     /// Fire when the target is in range; the projectile is then
     /// fire-and-forget (Kohr-Ah blades, Chenjesu crystal).
     Launched,
+    /// "Side-firing" weapons — Pkunk's triple cone shoots forward + two
+    /// off-axis at the same time. Same trigger as Homing (wide forward
+    /// arc); the three barrels handle the lateral coverage.
+    Sides,
+    /// Backward-firing weapons (Spathi BUTT missile via primary slot if
+    /// ever flipped; today Spathi has a dedicated steering override).
+    /// Fire when the target is in the rear arc.
+    Back,
+    /// "Drop something behind you" — Androsynth bubble field as the
+    /// primary. Treat as Homing (fire whenever the target is roughly
+    /// forward); the drift on the bubble does the rest.
+    Mine,
+    /// Hoard battery — refuse to fire primary unless batt ≥
+    /// `BattRecharge` floor. Zoq-Fot-Pik uses this on the .ini side
+    /// to save up for the tongue lash.
+    ReserveBattery,
     /// Anything we don't recognise yet — behaves like `Homing` so the
     /// AI still does *something* sensible while we expand the library.
     Default,
@@ -97,6 +113,28 @@ pub enum AiSpecialTactic {
     /// launch chord (handled by `tick_orz_turret`; tactic here is a
     /// no-op since the Orz AI gets a dedicated steering override).
     PlusFire,
+    /// Ilwrath cloak. Same trigger conditions as `Defense` (incoming
+    /// projectile OR low crew) — going invisible IS the defensive move.
+    Cloak,
+    /// "Drop something behind / near" — Androsynth bubble field, Vuxin
+    /// limpet, Thraddash trail-puff. Fires when an enemy is close enough
+    /// that the dropped thing has a chance of catching them, treated like
+    /// `Proximity` with the special_range threshold.
+    Mine,
+    /// Spathi's `Back`: fire SPECIAL (the BUTT missile) whenever the
+    /// target is in the rear arc. Spathi's run-and-burst override
+    /// already handles the Spathi specifically, but other classes can
+    /// reuse this tactic for backward-firing weapons.
+    Back,
+    /// Mode-toggle ships (Mmrnmhrm T↔Y, Androsynth normal↔Blazer, etc.).
+    /// The AI picks a *desired* form based on engagement range and
+    /// fires SPECIAL once when the actual form differs. Single-press
+    /// edge — the ToggleMode ability dispatcher already de-bounces.
+    NextState,
+    /// Hoard battery — don't trigger any special until batt ≥
+    /// `BattRecharge`. Combined with another tactic this just delays
+    /// when that tactic becomes eligible.
+    ReserveBattery,
     /// Skip this special. Used by classes whose special isn't
     /// AI-friendly (Supox 4-way thrust).
     None,
@@ -202,6 +240,11 @@ fn parse_ai_tactics(ini: &Ini) -> AiTactics {
             "narrow" => AiWeaponTactic::Narrow,
             "field" | "feild" => AiWeaponTactic::Field,
             "launched" => AiWeaponTactic::Launched,
+            "sides" => AiWeaponTactic::Sides,
+            "back" | "rear" => AiWeaponTactic::Back,
+            "mine" => AiWeaponTactic::Mine,
+            "reserve_battery" | "reserver_battery" => AiWeaponTactic::ReserveBattery,
+            "hold" => AiWeaponTactic::Narrow, // Meltr "Hold" = charge then fire when aligned.
             _ => AiWeaponTactic::Default,
         }
     }
@@ -212,6 +255,18 @@ fn parse_ai_tactics(ini: &Ini) -> AiTactics {
             "battery" | "max_battery" => AiSpecialTactic::Battery,
             "no_proximity" => AiSpecialTactic::NoProximity,
             "plus_fire" => AiSpecialTactic::PlusFire,
+            "cloak" => AiSpecialTactic::Cloak,
+            "mine" => AiSpecialTactic::Mine,
+            "back" | "rear" => AiSpecialTactic::Back,
+            "next_state" => AiSpecialTactic::NextState,
+            "reserve_battery" | "reserver_battery" => AiSpecialTactic::ReserveBattery,
+            // "Front" / "Sides" / "Homing" / "Launched" / "Precedence" /
+            // "Narrow" used as special tactics in some .inis are really
+            // just aim-cone hints for a chained weapon-style call. We
+            // treat them as `Proximity` (use when in cone of effect).
+            "front" | "sides" | "homing" | "launched" | "precedence" | "narrow" => {
+                AiSpecialTactic::Proximity
+            }
             "none" => AiSpecialTactic::None,
             _ => AiSpecialTactic::Default,
         }
