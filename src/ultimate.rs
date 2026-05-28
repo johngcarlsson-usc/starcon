@@ -561,7 +561,13 @@ pub enum UltimatePhase {
 pub fn is_cinematic_camera_phase(phase: UltimatePhase) -> bool {
     matches!(
         phase,
-        UltimatePhase::DramaticZoomIn | UltimatePhase::DramaticZoomOut
+        UltimatePhase::DramaticZoomIn
+            | UltimatePhase::DramaticZoomOut
+            // Pkunk's clone-reveal pan keeps its bespoke (paused, zoomed)
+            // camera choreography: zoom in on the leader, pan across the
+            // trio, then pull back — all before time resumes.
+            | UltimatePhase::PkunkSummoning
+            | UltimatePhase::PkunkPan
     )
 }
 
@@ -1603,9 +1609,16 @@ fn tick_ultimate_phases(
         let prev_phase = state.phase;
         state.phase_timer_s = 0.0;
         state.phase = match (state.phase, state.variant) {
-            // Zoom-in always hands off to the (still-paused) zoom-out;
-            // only after THAT does the variant's first phase begin, so
-            // time stays frozen until the camera is back to normal.
+            // Pkunk runs its own paused, zoomed-in reveal pan straight
+            // after the zoom-in (no generic zoom-out here — the pan ends
+            // by pulling back to normal itself).
+            (UltimatePhase::DramaticZoomIn, UltimateVariant::Pkunk) => {
+                UltimatePhase::PkunkSummoning
+            }
+            // Everyone else: zoom-in hands off to the (still-paused)
+            // zoom-out; only after THAT does the variant's first phase
+            // begin, so time stays frozen until the camera is back to
+            // normal.
             (UltimatePhase::DramaticZoomIn, _) => UltimatePhase::DramaticZoomOut,
             // Shared entry: variant decides what comes after the zoom-out.
             (UltimatePhase::DramaticZoomOut, UltimateVariant::Arilou) => {
@@ -1625,9 +1638,6 @@ fn tick_ultimate_phases(
             }
             (UltimatePhase::DramaticZoomOut, UltimateVariant::Shofixti) => {
                 UltimatePhase::ShofixtiCharging
-            }
-            (UltimatePhase::DramaticZoomOut, UltimateVariant::Pkunk) => {
-                UltimatePhase::PkunkSummoning
             }
             (UltimatePhase::DramaticZoomOut, UltimateVariant::Slylandro) => {
                 UltimatePhase::SlylandroCharging
@@ -1889,14 +1899,12 @@ fn drive_camera_during_ultimate(
     >,
 ) {
     use std::f32::consts::FRAC_PI_2;
-    // Only the two dramatic beats own the camera. Every other phase —
-    // the paused wind-ups AND the unpaused action — is handed to the
-    // ordinary `follow_ships_with_camera`, so the move plays out at
-    // normal zoom with normal movement (which is what the player wants:
-    // no part of the action happening while zoomed in). Outside the
-    // rotating beats we also force the camera level, undoing the 90°
-    // flourish (and any half-finished tilt if the cinematic was aborted
-    // mid-spin).
+    // Only the dramatic beats + the Pkunk reveal pan own the camera.
+    // Every other phase — paused wind-ups AND the unpaused action — is
+    // handed to the ordinary `follow_ships_with_camera`, so the move
+    // plays out at normal zoom with normal movement. Outside the
+    // cinematic beats we force the camera level, undoing the tilt (and
+    // any half-finished tilt if the cinematic was aborted mid-spin).
     if !is_cinematic_camera_phase(state.phase) {
         if let Ok((mut cam_xf, _)) = cameras.single_mut() {
             if cam_xf.rotation != Quat::IDENTITY {
@@ -1908,53 +1916,111 @@ fn drive_camera_during_ultimate(
     let Some(p1) = state.player_entity else { return };
     let Ok(ship_pos) = ships.get(p1) else { return };
 
-    // `blend` 1.0 = on the ship (zoomed in), 0.0 = original framing.
-    // `angle` is the camera's world tilt this frame — a slow 90° turn
-    // that ramps in with the zoom-in and unwinds with the zoom-out,
-    // purely for flair.
-    let (blend, scale, angle) = match state.phase {
+    // Resolve this frame's camera target position, orthographic scale,
+    // and tilt angle for whichever cinematic beat we're in.
+    let z = cameras
+        .single()
+        .map(|(t, _)| t.translation.z)
+        .unwrap_or(999.0);
+    let (target_pos, scale, angle) = match state.phase {
         UltimatePhase::DramaticZoomIn => {
             let p = (state.phase_timer_s / PHASE_ZOOM_IN_S).clamp(0.0, 1.0);
-            // Hard ease-out so the camera *snaps* toward the ship —
-            // the punch of the dramatic zoom-in.
+            // Hard ease-out so the camera *snaps* toward the ship.
             let eased = 1.0 - (1.0 - p).powi(4);
+            let pos = state.orig_cam_pos.truncate().lerp(ship_pos.0, eased);
+            // 90° tilt ramps in linearly so it reads as a slow roll.
+            // Pkunk is exempt: its zoom-in leads straight into the pan,
+            // so a tilt here would have to snap back.
+            let angle = if state.variant == UltimateVariant::Pkunk {
+                0.0
+            } else {
+                FRAC_PI_2 * p
+            };
             (
-                eased,
+                pos,
                 state.orig_cam_scale * (1.0 - eased) + HYPER_CAM_SCALE * eased,
-                FRAC_PI_2 * eased,
+                angle,
             )
         }
         UltimatePhase::DramaticZoomOut => {
             let p = (state.phase_timer_s / PHASE_ZOOM_OUT_S).clamp(0.0, 1.0);
-            // Ease-out cubic — quick pull-back at the start, settling
-            // smoothly into the original framing.
             let eased = 1.0 - (1.0 - p).powi(3);
+            let pos = ship_pos.0.lerp(state.orig_cam_pos.truncate(), eased);
+            let angle = if state.variant == UltimateVariant::Pkunk {
+                0.0
+            } else {
+                FRAC_PI_2 * (1.0 - p)
+            };
             (
-                1.0 - eased,
+                pos,
                 HYPER_CAM_SCALE * (1.0 - eased) + state.orig_cam_scale * eased,
-                FRAC_PI_2 * (1.0 - eased),
+                angle,
             )
         }
-        // is_cinematic_camera_phase guarantees only the two above.
+        // Pkunk reveal: hold the close-up on the leader while the clones
+        // pop in, then pan across the trio (still zoomed, still frozen).
+        UltimatePhase::PkunkSummoning => (ship_pos.0, HYPER_CAM_SCALE, 0.0),
+        UltimatePhase::PkunkPan => {
+            // Gather leader + live clone positions.
+            let mut positions: Vec<Vec2> = Vec::with_capacity(3);
+            positions.push(ship_pos.0);
+            for &c in &state.pkunk_clones {
+                if let Ok(p) = ships.get(c) {
+                    positions.push(p.0);
+                }
+            }
+            let centroid =
+                positions.iter().copied().sum::<Vec2>() / positions.len().max(1) as f32;
+            let leader = positions.first().copied().unwrap_or(ship_pos.0);
+            let c1 = positions.get(1).copied().unwrap_or(centroid);
+            let c2 = positions.get(2).copied().unwrap_or(centroid);
+            // Five beats across PKUNK_PAN_S: hold leader, pan to clone 1,
+            // pan to clone 2, settle on the centroid, then ZOOM OUT to
+            // the normal framing (the only beat that changes scale).
+            let t = (state.phase_timer_s / PKUNK_PAN_S).clamp(0.0, 1.0);
+            let (pos, scale) = if t < 0.18 {
+                (leader, HYPER_CAM_SCALE)
+            } else if t < 0.42 {
+                let s = ((t - 0.18) / 0.24).clamp(0.0, 1.0);
+                let e = 1.0 - (1.0 - s).powi(3);
+                (leader.lerp(c1, e), HYPER_CAM_SCALE)
+            } else if t < 0.66 {
+                let s = ((t - 0.42) / 0.24).clamp(0.0, 1.0);
+                let e = 1.0 - (1.0 - s).powi(3);
+                (c1.lerp(c2, e), HYPER_CAM_SCALE)
+            } else {
+                // Settle on the centroid AND pull back to the ordinary
+                // framing so the handoff to the live formation is seamless.
+                let s = ((t - 0.66) / 0.34).clamp(0.0, 1.0);
+                let e = 1.0 - (1.0 - s).powi(3);
+                (
+                    c2.lerp(centroid, e),
+                    HYPER_CAM_SCALE * (1.0 - e) + state.orig_cam_scale * e,
+                )
+            };
+            (pos, scale, 0.0)
+        }
+        // is_cinematic_camera_phase guarantees only the beats above.
         _ => return,
     };
 
     if let Ok((mut cam_xf, mut projection)) = cameras.single_mut() {
-        let blended = state
-            .orig_cam_pos
-            .lerp(ship_pos.0.extend(cam_xf.translation.z), blend);
-        cam_xf.translation = blended;
+        cam_xf.translation = target_pos.extend(z);
         cam_xf.rotation = Quat::from_rotation_z(angle);
         if let Projection::Orthographic(ref mut ortho) = *projection {
             ortho.scale = scale;
         }
 
-        // Portrait zip animation: ease portrait_in_t toward 1.0 during
-        // DramaticZoomIn (portrait slides on screen), toward 0.0 during
-        // DramaticZoomOut (it zips back off as time prepares to resume).
+        // Portrait zip animation: slide on during the zoom-in / Pkunk
+        // reveal, slide off during the zoom-out (and anywhere else).
         const ZIP_IN_S: f32 = 0.12;
         const ZIP_OUT_S: f32 = 0.18;
-        let target = if matches!(state.phase, UltimatePhase::DramaticZoomIn) {
+        let target = if matches!(
+            state.phase,
+            UltimatePhase::DramaticZoomIn
+                | UltimatePhase::PkunkSummoning
+                | UltimatePhase::PkunkPan
+        ) {
             1.0
         } else {
             0.0
@@ -2011,16 +2077,16 @@ fn drive_camera_during_ultimate(
                 -half_h_px * y_anchor_frac * scale
             };
 
-            // The camera is tilted by `angle` during these beats, so the
-            // screen axes are rotated in world space. Rotate the portrait's
-            // local screen-offset into world space and spin the portrait
-            // by the same angle so it still reads upright on screen.
+            // The camera may be tilted by `angle`, rotating the screen
+            // axes in world space. Rotate the portrait's screen-offset
+            // into world space and spin the portrait by the same angle so
+            // it still reads upright on screen.
             let rot = Quat::from_rotation_z(angle);
             let local = Vec3::new(x_world, y_world, 0.0);
             let world_offset = rot * local;
-            let z = portrait_xf.translation.z;
+            let pz = portrait_xf.translation.z;
             portrait_xf.translation = cam_xf.translation + world_offset;
-            portrait_xf.translation.z = z;
+            portrait_xf.translation.z = pz;
             portrait_xf.rotation = rot;
             portrait_xf.scale = Vec3::new(w_px * scale, h_px * scale, 1.0);
         }
