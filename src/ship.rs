@@ -3089,10 +3089,12 @@ pub(crate) fn apply_player_input(
             thrust.0 = Vec2::ZERO;
             continue;
         }
-        // AI-driven ships now write virtual button-presses to
-        // SlotInputs (in `tick_ai_pilots`, which runs `.before` this
-        // system), so we process their inputs the same way as a human's.
-        let _ = ai;
+        // AI-driven ships write virtual button-presses to SlotInputs
+        // (in `tick_ai_pilots`, which runs `.before` this system), so
+        // we process their inputs the same way as a human's. We do
+        // peek at the `AiControlled` marker further down to force
+        // Classic-style angular control even when the global override
+        // is Inertial — see the match below.
 
         // Post-ultimate coasting: ship is over-speed. Player still
         // steers (normal angular control), but THRUST is reinterpreted
@@ -3210,6 +3212,18 @@ pub(crate) fn apply_player_input(
         match mode {
             AngularControl::Classic => {
                 // Snap to commanded rate; ignore impulses (SC2 default).
+                ang_vel.0 = target_omega;
+                torque.0 = 0.0;
+            }
+            // AI ships always behave Classic-style, even when the user
+            // has switched the global override to Inertial. Inertial only
+            // resets `ang_vel` on key-press/key-release transitions, so an
+            // AI that's *spinning from a collision* but doesn't currently
+            // want to turn would tumble forever (no damping). Forcing
+            // Classic semantics for AI lets the ship right itself the
+            // next tick the AI isn't holding a turn key. Humans on
+            // Inertial still get the canonical "keep your spin" feel.
+            AngularControl::Inertial if ai.is_some() => {
                 ang_vel.0 = target_omega;
                 torque.0 = 0.0;
             }
