@@ -58,7 +58,13 @@ jobs:
           SHA=$(git rev-parse --short HEAD)
           sed "s|__BUILD_SHA__|${SHA}|g" web/index.html > dist/index.html
           sed "s|__BUILD_SHA__|${SHA}|g" web/manifest.json > dist/manifest.json
-          cp -r assets dist/assets
+          # Copy `assets/` minus the raw Allegro `.dat` archives. Those
+          # live under `assets/legacy-dat/` and exist only as input to
+          # the offline `extract_dat` tool that *generates* the per-ship
+          # PNGs / WAVs the runtime actually loads. Shipping them was
+          # ~19 MB of pure deadweight on every visitor's first page hit.
+          mkdir -p dist/assets
+          rsync -a --exclude='legacy-dat' assets/ dist/assets/
 
       - name: Install binaryen (wasm-opt)
         # Binaryen's wasm-opt -Oz typically halves Bevy wasm sizes (we've
