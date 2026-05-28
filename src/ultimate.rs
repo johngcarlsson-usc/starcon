@@ -1598,7 +1598,7 @@ fn tick_ultimate_phases(
         // bail silently if the ship is gone — the next
         // `abort_cinematic_if_ship_gone` tick will clean up.
         if let Ok(mut e) = commands.get_entity(p1) {
-            e.insert(HyperActive {
+            e.try_insert(HyperActive {
                 forced_ang_vel: spin,
                 beam_width_mult: if beam_visible { 1.0 } else { 0.0 },
             });
@@ -4736,7 +4736,7 @@ pub fn tick_chmmr_ultimate(
         // every FixedUpdate and the slap evaporates instantly.
         // Removed in `exit_cinematic` alongside the Chmmr's own.
         if let Ok(mut ec) = commands.get_entity(opp_entity) {
-            ec.insert(HyperActive {
+            ec.try_insert(HyperActive {
                 forced_ang_vel: 0.0,
                 // 1.0 (not 0.0) — `beam_width_mult` scales the
                 // firer's own beam visuals in `tick_beams`. We
@@ -5062,9 +5062,9 @@ pub fn tick_alary_grow(
     if p >= 1.0 {
         xf.scale = Vec3::new(ALARY_GROW_FACTOR, ALARY_GROW_FACTOR, 1.0);
         if let Ok(mut ec) = commands.get_entity(p1) {
-            ec.insert(AlaryDoubled);
+            ec.try_insert(AlaryDoubled);
             // Alary's spawn collider is circle(40); double it.
-            ec.insert(avian2d::prelude::Collider::circle(80.0));
+            ec.try_insert(avian2d::prelude::Collider::circle(80.0));
         }
         info!("Alary doubled in size (permanent)");
     }

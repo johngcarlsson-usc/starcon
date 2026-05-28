@@ -1099,9 +1099,16 @@ impl Plugin for ShipPlugin {
         );
         // Planet gravity nudges LinearVelocity; run it before the speed
         // cap so the whip-boosted cap is honoured the same tick.
+        // `tick_planet_grind` drains crew while a ship is *touching* the
+        // planet, on top of the one-shot CollisionStart damage from
+        // `tick_planet_contact` — gravity-pinned ships die.
         app.add_systems(
             bevy_ggrs::GgrsSchedule,
-            (apply_planet_gravity.before(cap_velocity), tick_planet_contact),
+            (
+                apply_planet_gravity.before(cap_velocity),
+                tick_planet_contact,
+                tick_planet_grind,
+            ),
         );
         // Orz turret + marines own their input handling; must run AFTER
         // apply_player_input so it can clobber the hull's ang_vel when
@@ -2069,11 +2076,18 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             },
             special: AbilitySpec {
                 kind: AbilityKind::GrantShield {
-                    // .ini Special Frames=500 → 25 s at 20 Hz.
-                    duration_s: 500.0 / 20.0,
+                    // shpyehte.cpp `shieldFrames = (... % frame_time) +
+                    // specialFrames` with specialFrames=500 (ms) decrements
+                    // by `frame_time` (50 ms) per tick → 10 ticks → 0.5 s.
+                    // The canon Yehat shield is a *brief flash* the player
+                    // has to keep tapping to maintain, not a sustained 25 s
+                    // bubble. Earlier 500/20 read the .ini as "frames" but
+                    // the original units are milliseconds.
+                    duration_s: 0.5,
                     damage_factor: 0.0,
                 },
-                // SpecialRate=2 → 2/20 = 0.1 s.
+                // SpecialRate=2 → 2/20 = 0.1 s — fast enough to re-arm by
+                // the time the previous shield flash drops.
                 cooldown_s: 2.0 / 20.0,
             },
         }),
@@ -3425,7 +3439,17 @@ pub(crate) fn spawn_tractor(
             width,
             remaining: duration_s,
         },
-        Sprite::from_color(color, Vec2::new(width * 2.0, range)),
+        // Spawn the sprite invisible (custom_size = ZERO) — `tick_tractors`
+        // grabs a target on the very next tick and resizes it to the disc
+        // visual. Previously we initialised the sprite as a full-range
+        // vertical bar, which would visibly flash for one frame *and*
+        // linger forever if the tractor had no target (the if-let-Some
+        // visibility branch happens later in the system).
+        Sprite {
+            color,
+            custom_size: Some(Vec2::ZERO),
+            ..default()
+        },
         Transform::from_translation(midpoint.extend(0.3)),
     ));
 }
@@ -4857,14 +4881,45 @@ fn draw_shield_rings(
     time: Res<Time>,
     mut gizmos: Gizmos,
     camera: Query<&Transform, With<Camera2d>>,
-    ships: Query<&Position, (With<Ship>, With<ShieldActive>)>,
+    colliders: Res<crate::collider::ShipColliders>,
+    ships: Query<(&Position, &Rotation, &ShipClass), (With<Ship>, With<ShieldActive>)>,
 ) {
+    // Pulse the colour, not the size — we want the outline to hug the
+    // hull, matching the actual collider polygon (so you SEE what's
+    // actually being protected).
     let focus = camera.single().ok().map(|t| t.translation.truncate());
-    let pulse = 46.0 + 4.0 * (time.elapsed_secs() * 6.0).sin();
-    for pos in &ships {
+    let pulse = 0.5 + 0.5 * (time.elapsed_secs() * 6.0).sin();
+    let main = Color::srgba(0.55, 0.85, 1.0, 0.65 + 0.25 * pulse);
+    let glow = Color::srgba(0.80, 0.95, 1.0, 0.30 + 0.15 * pulse);
+    for (pos, rot, class) in &ships {
         let c = focus.map_or(pos.0, |f| crate::physics::nearest_image(pos.0, f));
-        gizmos.circle_2d(c, pulse, Color::srgba(0.45, 0.78, 1.0, 0.7));
-        gizmos.circle_2d(c, pulse - 3.0, Color::srgba(0.7, 0.9, 1.0, 0.35));
+        // Fall back to a circle for ships whose polygon hasn't been
+        // extracted yet (early startup race).
+        let Some(poly) = colliders.polys.get(class) else {
+            gizmos.circle_2d(c, 46.0, main);
+            continue;
+        };
+        // Rotate each vertex by the ship's facing, then translate to
+        // its world (camera-imaged) position. Draw the outline a few
+        // times at slightly grown radii so the line reads as thick
+        // without needing custom gizmo configs.
+        for grow in [1.0_f32, 1.06, 1.12] {
+            let color = if grow <= 1.0 { main } else { glow };
+            let mut prev: Option<Vec2> = None;
+            let first = poly.first().copied();
+            for v in poly.iter().copied().chain(first) {
+                let scaled = v * grow;
+                let rotated = Vec2::new(
+                    scaled.x * rot.cos - scaled.y * rot.sin,
+                    scaled.x * rot.sin + scaled.y * rot.cos,
+                );
+                let world = c + rotated;
+                if let Some(p) = prev {
+                    gizmos.line_2d(p, world, color);
+                }
+                prev = Some(world);
+            }
+        }
     }
 }
 
@@ -5589,6 +5644,7 @@ fn tick_beams(
     ship_class_of: Query<&Ship>,
     hypers: Query<&crate::ultimate::HyperActive>,
     camera: Query<&Transform, With<Camera2d>>,
+    satellites_for_filter: Query<(Entity, &ChmmrSatellite)>,
     assets: Res<AssetServer>,
 ) {
     use avian2d::prelude::SpatialQueryFilter;
@@ -5637,12 +5693,18 @@ fn tick_beams(
         }
 
         // Physics-native hit test: Avian ray cast against every
-        // collider in the world. Exclude the firer so the beam
-        // doesn't bounce off its own hull. Returns the closest hit
-        // along the ray within `beam.range` — exactly what canon
-        // laser behaviour wants.
+        // collider in the world. Exclude the firer AND the firer's own
+        // Chmmr satellites — those orbit close to the hull and were
+        // soaking the Chmmr laser's first hit before the beam reached
+        // the enemy (the canon laser passes through its own orbiters).
         let dir = Dir2::new(world_dir).unwrap_or(Dir2::X);
-        let filter = SpatialQueryFilter::default().with_excluded_entities([beam.owner]);
+        let mut excluded: Vec<Entity> = vec![beam.owner];
+        for (sat_e, sat) in &satellites_for_filter {
+            if sat.owner == beam.owner {
+                excluded.push(sat_e);
+            }
+        }
+        let filter = SpatialQueryFilter::default().with_excluded_entities(excluded);
         let hit = spatial.cast_ray(
             world_origin,
             dir,
@@ -6877,9 +6939,50 @@ pub fn spawn_planet(commands: &mut Commands, assets: &AssetServer, rng: &mut cra
         Friction::new(0.0),
         Position(pos),
         CollisionEventsEnabled,
+        // Continuous contact list — `tick_planet_grind` drains crew per
+        // tick from every ship still touching the planet, so a ship that
+        // gets pulled in by gravity and pinned against the surface
+        // actually dies instead of sitting forever taking a single
+        // CollisionStart's chunk of damage.
+        CollidingEntities::default(),
         planet,
     ));
     info!("spawned planet at ({:.0}, {:.0})", pos.x, pos.y);
+}
+
+/// Continuous "you're grinding against the planet" damage. The one-shot
+/// `tick_planet_contact` deals a chunk on the moment of contact; this
+/// pass drains a steady DPS on top, so a ship gravity-pinned against
+/// the surface dies instead of perpetually contacting the planet.
+fn tick_planet_grind(
+    time: Res<Time<Physics>>,
+    planets: Query<&CollidingEntities, With<Planet>>,
+    mut crews: Query<&mut Crew, With<Ship>>,
+    shields: Query<&ShieldActive>,
+) {
+    /// Crew per second while touching the planet — enough that a ship
+    /// dragged in by gravity dies within a couple of seconds, fast
+    /// enough that you can't tank it with shields, slow enough that a
+    /// grazing slingshot doesn't instantly kill you.
+    const PLANET_GRIND_DPS: f32 = 12.0;
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    for colliders in &planets {
+        for &e in colliders.0.iter() {
+            let Ok(mut crew) = crews.get_mut(e) else { continue };
+            if crew.current <= 0 {
+                continue;
+            }
+            let factor = shields.get(e).map(|s| s.damage_factor).unwrap_or(1.0);
+            let amount = PLANET_GRIND_DPS * dt * factor;
+            let dmg = amount.ceil() as i32; // ceil → still ticks at < 1 dmg/s
+            if dmg > 0 {
+                crew.current = (crew.current - dmg).max(0);
+            }
+        }
+    }
 }
 
 /// Pull every dynamic body toward each planet, inverse-square with distance
@@ -6935,15 +7038,22 @@ fn apply_planet_gravity(
 /// gentler 1/8 (min 2). Deterministic: Avian's collision events are generated
 /// inside `GgrsSchedule`, so they replay identically on rollback.
 fn tick_planet_contact(
+    mut commands: Commands,
     mut reader: MessageReader<CollisionStart>,
+    assets: Res<AssetServer>,
     planets: Query<(), With<Planet>>,
+    asteroids: Query<&Position, With<Asteroid>>,
     mut crews: Query<&mut Crew>,
     shields: Query<&ShieldActive>,
     ships: Query<&Ship>,
 ) {
+    // Guard against re-applying damage / despawn twice in the same
+    // event pass (Avian can emit a CollisionStart for both colliders).
+    let mut gone: bevy::platform::collections::HashSet<Entity> =
+        bevy::platform::collections::HashSet::default();
     for event in reader.read() {
-        // Identify which collider is the planet and which is the ship.
-        let (ship_e, planet_e) = if planets.contains(event.collider1) {
+        // Identify which collider is the planet and which is the other body.
+        let (other_e, planet_e) = if planets.contains(event.collider1) {
             (event.collider2, event.collider1)
         } else if planets.contains(event.collider2) {
             (event.collider1, event.collider2)
@@ -6951,13 +7061,26 @@ fn tick_planet_contact(
             continue;
         };
         let _ = planet_e;
-        let Ok(ship) = ships.get(ship_e) else {
+        if gone.contains(&other_e) {
             continue;
-        };
-        let Ok(mut crew) = crews.get_mut(ship_e) else {
+        }
+
+        // Asteroid hits the planet → kaboom + despawn. `replenish_asteroids`
+        // refills the field over time so the arena doesn't slowly empty.
+        // Matches `mcbodies.cpp:Planet::inflict_damage` where mass>0 bodies
+        // take 1 damage on contact and asteroids have armour 0 → destroyed.
+        if let Ok(ast_pos) = asteroids.get(other_e) {
+            spawn_asteroid_explosion(&mut commands, &assets, ast_pos.0, 24.0);
+            if gone.insert(other_e) {
+                commands.entity(other_e).try_despawn();
+            }
             continue;
-        };
-        let factor = shields.get(ship_e).map(|s| s.damage_factor).unwrap_or(1.0);
+        }
+
+        // Ship hit. Grazing the planet's surface costs crew (shield-aware).
+        let Ok(ship) = ships.get(other_e) else { continue; };
+        let Ok(mut crew) = crews.get_mut(other_e) else { continue; };
+        let factor = shields.get(other_e).map(|s| s.damage_factor).unwrap_or(1.0);
         let base = (crew.current / 8).max(2);
         let dmg = ((base as f32 * factor).round() as i32).max(0);
         if dmg > 0 {

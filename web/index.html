@@ -131,36 +131,6 @@
         console.error(err);
       });
   </script>
-  <script>
-    // Hide the browser chrome on the first user gesture where we can.
-    // - Android Chrome / desktop: the Fullscreen API works on an
-    //   element and removes the URL bar entirely.
-    // - iOS Safari: element fullscreen is unsupported; the only way
-    //   to lose the URL bar is "Add to Home Screen" (handled by the
-    //   apple-mobile-web-app-* meta tags above). So this is a no-op
-    //   there and that's fine.
-    // Gesture-gated because requestFullscreen() must be called from a
-    // user activation or the browser rejects it.
-    (function () {
-      function goFullscreen() {
-        var el = document.documentElement;
-        var req = el.requestFullscreen || el.webkitRequestFullscreen;
-        if (req && !document.fullscreenElement && !document.webkitFullscreenElement) {
-          try { req.call(el).catch(function () {}); } catch (e) {}
-        }
-      }
-      var events = ['pointerdown', 'touchstart', 'click'];
-      function once() {
-        goFullscreen();
-        events.forEach(function (ev) {
-          window.removeEventListener(ev, once, true);
-        });
-      }
-      events.forEach(function (ev) {
-        window.addEventListener(ev, once, { capture: true, passive: true });
-      });
-    })();
-  </script>
   <!-- build: __BUILD_SHA__ -->
 </body>
 </html>
