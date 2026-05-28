@@ -1898,68 +1898,45 @@ fn drive_camera_during_ultimate(
         ),
     >,
 ) {
-    use std::f32::consts::FRAC_PI_2;
     // Only the dramatic beats + the Pkunk reveal pan own the camera.
     // Every other phase — paused wind-ups AND the unpaused action — is
     // handed to the ordinary `follow_ships_with_camera`, so the move
-    // plays out at normal zoom with normal movement. Outside the
-    // cinematic beats we force the camera level, undoing the tilt (and
-    // any half-finished tilt if the cinematic was aborted mid-spin).
+    // plays out at normal zoom with normal movement.
     if !is_cinematic_camera_phase(state.phase) {
-        if let Ok((mut cam_xf, _)) = cameras.single_mut() {
-            if cam_xf.rotation != Quat::IDENTITY {
-                cam_xf.rotation = Quat::IDENTITY;
-            }
-        }
         return;
     }
     let Some(p1) = state.player_entity else { return };
     let Ok(ship_pos) = ships.get(p1) else { return };
 
-    // Resolve this frame's camera target position, orthographic scale,
-    // and tilt angle for whichever cinematic beat we're in.
+    // Resolve this frame's camera target position + orthographic scale
+    // for whichever cinematic beat we're in.
     let z = cameras
         .single()
         .map(|(t, _)| t.translation.z)
         .unwrap_or(999.0);
-    let (target_pos, scale, angle) = match state.phase {
+    let (target_pos, scale) = match state.phase {
         UltimatePhase::DramaticZoomIn => {
             let p = (state.phase_timer_s / PHASE_ZOOM_IN_S).clamp(0.0, 1.0);
             // Hard ease-out so the camera *snaps* toward the ship.
             let eased = 1.0 - (1.0 - p).powi(4);
             let pos = state.orig_cam_pos.truncate().lerp(ship_pos.0, eased);
-            // 90° tilt ramps in linearly so it reads as a slow roll.
-            // Pkunk is exempt: its zoom-in leads straight into the pan,
-            // so a tilt here would have to snap back.
-            let angle = if state.variant == UltimateVariant::Pkunk {
-                0.0
-            } else {
-                FRAC_PI_2 * p
-            };
             (
                 pos,
                 state.orig_cam_scale * (1.0 - eased) + HYPER_CAM_SCALE * eased,
-                angle,
             )
         }
         UltimatePhase::DramaticZoomOut => {
             let p = (state.phase_timer_s / PHASE_ZOOM_OUT_S).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - p).powi(3);
             let pos = ship_pos.0.lerp(state.orig_cam_pos.truncate(), eased);
-            let angle = if state.variant == UltimateVariant::Pkunk {
-                0.0
-            } else {
-                FRAC_PI_2 * (1.0 - p)
-            };
             (
                 pos,
                 HYPER_CAM_SCALE * (1.0 - eased) + state.orig_cam_scale * eased,
-                angle,
             )
         }
         // Pkunk reveal: hold the close-up on the leader while the clones
         // pop in, then pan across the trio (still zoomed, still frozen).
-        UltimatePhase::PkunkSummoning => (ship_pos.0, HYPER_CAM_SCALE, 0.0),
+        UltimatePhase::PkunkSummoning => (ship_pos.0, HYPER_CAM_SCALE),
         UltimatePhase::PkunkPan => {
             // Gather leader + live clone positions.
             let mut positions: Vec<Vec2> = Vec::with_capacity(3);
@@ -1998,7 +1975,7 @@ fn drive_camera_during_ultimate(
                     HYPER_CAM_SCALE * (1.0 - e) + state.orig_cam_scale * e,
                 )
             };
-            (pos, scale, 0.0)
+            (pos, scale)
         }
         // is_cinematic_camera_phase guarantees only the beats above.
         _ => return,
@@ -2006,7 +1983,6 @@ fn drive_camera_during_ultimate(
 
     if let Ok((mut cam_xf, mut projection)) = cameras.single_mut() {
         cam_xf.translation = target_pos.extend(z);
-        cam_xf.rotation = Quat::from_rotation_z(angle);
         if let Projection::Orthographic(ref mut ortho) = *projection {
             ortho.scale = scale;
         }
@@ -2077,17 +2053,9 @@ fn drive_camera_during_ultimate(
                 -half_h_px * y_anchor_frac * scale
             };
 
-            // The camera may be tilted by `angle`, rotating the screen
-            // axes in world space. Rotate the portrait's screen-offset
-            // into world space and spin the portrait by the same angle so
-            // it still reads upright on screen.
-            let rot = Quat::from_rotation_z(angle);
-            let local = Vec3::new(x_world, y_world, 0.0);
-            let world_offset = rot * local;
             let pz = portrait_xf.translation.z;
-            portrait_xf.translation = cam_xf.translation + world_offset;
+            portrait_xf.translation = cam_xf.translation + Vec3::new(x_world, y_world, 0.0);
             portrait_xf.translation.z = pz;
-            portrait_xf.rotation = rot;
             portrait_xf.scale = Vec3::new(w_px * scale, h_px * scale, 1.0);
         }
     }
