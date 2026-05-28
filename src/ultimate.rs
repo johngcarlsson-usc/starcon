@@ -421,6 +421,12 @@ pub enum UltimatePhase {
     /// in. No active behaviour yet — the held breath before the
     /// move. Shared by all variants.
     DramaticZoomIn,
+    /// Time STILL paused. Camera pulls all the way back out to the
+    /// original framing (and untilts) while the portrait zips away.
+    /// Only once this completes does time resume — so no part of the
+    /// ultimate's action ever plays while the camera is zoomed in.
+    /// Shared by all variants.
+    DramaticZoomOut,
     // ---- Arilou ----
     /// Time resumes. Camera pulls back to its original framing
     /// *while* the ship spins and the blade slashes — the zoom-out
@@ -543,6 +549,20 @@ pub enum UltimatePhase {
     /// `AlaryDoubled` marker is stamped so it can never grow
     /// again. The 2× scale is permanent (not restored on exit).
     AlaryGrowing,
+}
+
+/// True only for the two dramatic beats where the cinematic owns the
+/// camera (the zoom-in and the zoom-out). During every other phase —
+/// the paused wind-ups and the unpaused action — the ordinary
+/// `follow_ships_with_camera` drives the view, so the action plays out
+/// at normal zoom with normal movement. `follow_ships_with_camera`
+/// bails when this is true; `drive_camera_during_ultimate` only acts
+/// when it's true.
+pub fn is_cinematic_camera_phase(phase: UltimatePhase) -> bool {
+    matches!(
+        phase,
+        UltimatePhase::DramaticZoomIn | UltimatePhase::DramaticZoomOut
+    )
 }
 
 /// Marker on the ship while the cinematic is active.
@@ -806,6 +826,10 @@ impl Plugin for UltimatePlugin {
 /// before the punch. Long enough to read the portrait and feel
 /// the held breath.
 const PHASE_ZOOM_IN_S: f32 = 0.45;
+/// Time STILL paused. Camera pulls back from the close-up to the
+/// original framing (and untilts the 90° flourish) across this
+/// duration. Time only resumes once this finishes.
+const PHASE_ZOOM_OUT_S: f32 = 0.5;
 /// Time resumes for this phase. Camera pulls back from full close-
 /// up to the original framing across this duration *while* the
 /// blade slashes — the zoom-out itself sells the move.
@@ -868,8 +892,6 @@ const PKUNK_PAN_S: f32 = 1.6;
 const PKUNK_FORMATION_S: f32 = 10.0;
 /// Side length of the equilateral formation triangle (world units).
 const PKUNK_FORMATION_SIDE: f32 = 240.0;
-/// How wide the camera frames the three ships at the end of the pan.
-const PKUNK_PAN_FAR_SCALE: f32 = 1.2;
 
 // -- Slylandro asteroid storm --
 const SLYP_CHARGE_S: f32 = 0.7;
@@ -1408,6 +1430,11 @@ fn tick_ultimate_phases(
                 let eased = 1.0 - (1.0 - p).powi(3);
                 (PHASE_ZOOM_IN_S, eased, false, 0.0, true)
             }
+            UltimatePhase::DramaticZoomOut => {
+                // Still paused; portrait fades out as the camera pulls back.
+                let p = (state.phase_timer_s / PHASE_ZOOM_OUT_S).clamp(0.0, 1.0);
+                (PHASE_ZOOM_OUT_S, 1.0 - p, false, 0.0, true)
+            }
             UltimatePhase::ArilouUnleashing => {
                 let p = (state.phase_timer_s / PHASE_UNLEASH_S).clamp(0.0, 1.0);
                 let portrait_p = (p / 0.6).clamp(0.0, 1.0);
@@ -1506,6 +1533,15 @@ fn tick_ultimate_phases(
         state.was_paused = false;
     }
 
+    // The portrait only ever shows during the two dramatic beats now;
+    // once we've zoomed back out it's gone for the rest of the move
+    // (no lingering portrait floating over the ordinary-camera action).
+    let portrait_alpha = if is_cinematic_camera_phase(state.phase) {
+        portrait_alpha
+    } else {
+        0.0
+    };
+
     if let Some(mat_handle) = state.portrait_material.clone() {
         if let Some(mat) = materials.get_mut(&mat_handle) {
             mat.params.x = portrait_alpha * 0.92;
@@ -1567,29 +1603,33 @@ fn tick_ultimate_phases(
         let prev_phase = state.phase;
         state.phase_timer_s = 0.0;
         state.phase = match (state.phase, state.variant) {
-            // Shared entry: variant decides what comes next.
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Arilou) => {
+            // Zoom-in always hands off to the (still-paused) zoom-out;
+            // only after THAT does the variant's first phase begin, so
+            // time stays frozen until the camera is back to normal.
+            (UltimatePhase::DramaticZoomIn, _) => UltimatePhase::DramaticZoomOut,
+            // Shared entry: variant decides what comes after the zoom-out.
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Arilou) => {
                 UltimatePhase::ArilouUnleashing
             }
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Earthling) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Earthling) => {
                 UltimatePhase::EarthlingCharging
             }
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Yehat) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Yehat) => {
                 UltimatePhase::YehatSummoning
             }
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Spathi) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Spathi) => {
                 UltimatePhase::SpathiLockOn
             }
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Chenjesu) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Chenjesu) => {
                 UltimatePhase::ChenjesuCharging
             }
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Shofixti) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Shofixti) => {
                 UltimatePhase::ShofixtiCharging
             }
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Pkunk) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Pkunk) => {
                 UltimatePhase::PkunkSummoning
             }
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Slylandro) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Slylandro) => {
                 UltimatePhase::SlylandroCharging
             }
             (UltimatePhase::EarthlingCharging, _) => UltimatePhase::EarthlingStretching,
@@ -1602,31 +1642,31 @@ fn tick_ultimate_phases(
             (UltimatePhase::PkunkPan, _) => UltimatePhase::PkunkFormation,
             (UltimatePhase::SlylandroCharging, _) => UltimatePhase::SlylandroPullback,
             (UltimatePhase::SlylandroPullback, _) => UltimatePhase::SlylandroStorm,
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Mmrnmhrm) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Mmrnmhrm) => {
                 UltimatePhase::MmrxfTransform
             }
             (UltimatePhase::MmrxfTransform, _) => UltimatePhase::MmrxfUnleashing,
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Druuge) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Druuge) => {
                 UltimatePhase::DruugeCharging
             }
             (UltimatePhase::DruugeCharging, _) => UltimatePhase::DruugeBarrage,
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::KohrAh) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::KohrAh) => {
                 UltimatePhase::KohrAhSharpening
             }
             (UltimatePhase::KohrAhSharpening, _) => UltimatePhase::KohrAhSlaughter,
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Mycon) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Mycon) => {
                 UltimatePhase::MyconGathering
             }
             (UltimatePhase::MyconGathering, _) => UltimatePhase::MyconHurricane,
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Thraddash) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Thraddash) => {
                 UltimatePhase::ThraddashIgniting
             }
             (UltimatePhase::ThraddashIgniting, _) => UltimatePhase::ThraddashBurning,
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Chmmr) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Chmmr) => {
                 UltimatePhase::ChmmrCharging
             }
             (UltimatePhase::ChmmrCharging, _) => UltimatePhase::ChmmrVolley,
-            (UltimatePhase::DramaticZoomIn, UltimateVariant::Alary) => {
+            (UltimatePhase::DramaticZoomOut, UltimateVariant::Alary) => {
                 UltimatePhase::AlaryGrowing
             }
             // Final phases: exit.
@@ -1848,13 +1888,31 @@ fn drive_camera_during_ultimate(
         ),
     >,
 ) {
-    if state.phase == UltimatePhase::Idle {
+    use std::f32::consts::FRAC_PI_2;
+    // Only the two dramatic beats own the camera. Every other phase —
+    // the paused wind-ups AND the unpaused action — is handed to the
+    // ordinary `follow_ships_with_camera`, so the move plays out at
+    // normal zoom with normal movement (which is what the player wants:
+    // no part of the action happening while zoomed in). Outside the
+    // rotating beats we also force the camera level, undoing the 90°
+    // flourish (and any half-finished tilt if the cinematic was aborted
+    // mid-spin).
+    if !is_cinematic_camera_phase(state.phase) {
+        if let Ok((mut cam_xf, _)) = cameras.single_mut() {
+            if cam_xf.rotation != Quat::IDENTITY {
+                cam_xf.rotation = Quat::IDENTITY;
+            }
+        }
         return;
     }
     let Some(p1) = state.player_entity else { return };
     let Ok(ship_pos) = ships.get(p1) else { return };
 
-    let (blend, scale) = match state.phase {
+    // `blend` 1.0 = on the ship (zoomed in), 0.0 = original framing.
+    // `angle` is the camera's world tilt this frame — a slow 90° turn
+    // that ramps in with the zoom-in and unwinds with the zoom-out,
+    // purely for flair.
+    let (blend, scale, angle) = match state.phase {
         UltimatePhase::DramaticZoomIn => {
             let p = (state.phase_timer_s / PHASE_ZOOM_IN_S).clamp(0.0, 1.0);
             // Hard ease-out so the camera *snaps* toward the ship —
@@ -1863,247 +1921,37 @@ fn drive_camera_during_ultimate(
             (
                 eased,
                 state.orig_cam_scale * (1.0 - eased) + HYPER_CAM_SCALE * eased,
+                FRAC_PI_2 * eased,
             )
         }
-        UltimatePhase::ArilouUnleashing => {
-            let p = (state.phase_timer_s / PHASE_UNLEASH_S).clamp(0.0, 1.0);
-            // Ease-out cubic — fast pull-back at the start so the
-            // player sees the whole arena while the blade swings,
-            // then smooth into the final framing.
+        UltimatePhase::DramaticZoomOut => {
+            let p = (state.phase_timer_s / PHASE_ZOOM_OUT_S).clamp(0.0, 1.0);
+            // Ease-out cubic — quick pull-back at the start, settling
+            // smoothly into the original framing.
             let eased = 1.0 - (1.0 - p).powi(3);
             (
                 1.0 - eased,
                 HYPER_CAM_SCALE * (1.0 - eased) + state.orig_cam_scale * eased,
+                FRAC_PI_2 * (1.0 - eased),
             )
         }
-        // Earthling: stay fully zoomed in through charge + stretch,
-        // then rapidly pull back during the blast so the action
-        // returns to game-scale.
-        UltimatePhase::EarthlingCharging | UltimatePhase::EarthlingStretching => {
-            (1.0, HYPER_CAM_SCALE)
-        }
-        UltimatePhase::EarthlingBlasting => {
-            let p = (state.phase_timer_s / 0.45).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - p).powi(3);
-            (
-                1.0 - eased,
-                HYPER_CAM_SCALE * (1.0 - eased) + state.orig_cam_scale * eased,
-            )
-        }
-        // Yehat: stay zoomed on the firer through the brief
-        // summoning beat, then pull back so the player can see
-        // the fighters orbit + fight.
-        UltimatePhase::YehatSummoning => (1.0, HYPER_CAM_SCALE),
-        UltimatePhase::YehatBattle => {
-            let p = (state.phase_timer_s / 0.6).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - p).powi(3);
-            (
-                1.0 - eased,
-                HYPER_CAM_SCALE * (1.0 - eased) + state.orig_cam_scale * eased,
-            )
-        }
-        // Spathi / Chenjesu / Shofixti: tight on the firer during
-        // wind-up, fast pull-back during the action so the player
-        // sees the full barrage / ring expansion / nova blast.
-        UltimatePhase::SpathiLockOn
-        | UltimatePhase::ChenjesuCharging
-        | UltimatePhase::ShofixtiCharging => (1.0, HYPER_CAM_SCALE),
-        UltimatePhase::SpathiBarrage
-        | UltimatePhase::ChenjesuTempest
-        | UltimatePhase::ShofixtiNova => {
-            let phase_dur = match state.phase {
-                UltimatePhase::SpathiBarrage => SPATHI_BARRAGE_S,
-                UltimatePhase::ChenjesuTempest => CHEBR_TEMPEST_S,
-                _ => SHOSC_NOVA_S,
-            };
-            let p = (state.phase_timer_s / (phase_dur * 0.6)).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - p).powi(3);
-            // Pull back farther than the original scale so the
-            // big-radius effects (nova, tempest) fit on screen.
-            let zoom_far = state.orig_cam_scale.max(1.4);
-            (
-                1.0 - eased,
-                HYPER_CAM_SCALE * (1.0 - eased) + zoom_far * eased,
-            )
-        }
-        // Pkunk: tight on the player ship through Summoning;
-        // PkunkPan + PkunkFormation use a custom target (handled
-        // below by overriding the lerp target).
-        UltimatePhase::PkunkSummoning => (1.0, HYPER_CAM_SCALE),
-        UltimatePhase::PkunkPan => (1.0, HYPER_CAM_SCALE),
-        UltimatePhase::PkunkFormation => {
-            let p = (state.phase_timer_s / 0.5).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - p).powi(3);
-            let zoom_far = state.orig_cam_scale.max(PKUNK_PAN_FAR_SCALE);
-            (
-                1.0 - eased,
-                PKUNK_PAN_FAR_SCALE * (1.0 - eased) + zoom_far * eased,
-            )
-        }
-        // Slylandro: tight on the firer through Charging; the
-        // dedicated Pullback phase eases the camera back to the
-        // player's original framing (time still paused), then
-        // Storm fires the impulse the moment time resumes.
-        UltimatePhase::SlylandroCharging => (1.0, HYPER_CAM_SCALE),
-        UltimatePhase::SlylandroPullback => {
-            let p = (state.phase_timer_s / SLYP_PULLBACK_S).clamp(0.0, 1.0);
-            // Ease-out cubic — quick at the start, settling
-            // into the wide framing.
-            let eased = 1.0 - (1.0 - p).powi(3);
-            let zoom_far = state.orig_cam_scale.max(1.4);
-            (
-                1.0 - eased,
-                HYPER_CAM_SCALE * (1.0 - eased) + zoom_far * eased,
-            )
-        }
-        UltimatePhase::SlylandroStorm => {
-            // Pullback already eased us to the wide framing before
-            // time resumed; stay there so the impulse fires
-            // against a stable view.
-            let zoom_far = state.orig_cam_scale.max(1.4);
-            (0.0, zoom_far)
-        }
-        // Mmrnmhrm: tight zoom during the transform beat, then
-        // ease back to a wide playable view for the unleashing.
-        UltimatePhase::MmrxfTransform => (1.0, HYPER_CAM_SCALE),
-        UltimatePhase::MmrxfUnleashing => {
-            let p = (state.phase_timer_s / 0.5).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - p).powi(3);
-            let zoom_far = state.orig_cam_scale.max(1.4);
-            (
-                1.0 - eased,
-                HYPER_CAM_SCALE * (1.0 - eased) + zoom_far * eased,
-            )
-        }
-        // New ultimates: tight during the wind-up, fast pull-back
-        // to original framing so the action fits on screen.
-        UltimatePhase::DruugeCharging
-        | UltimatePhase::KohrAhSharpening
-        | UltimatePhase::MyconGathering
-        | UltimatePhase::ThraddashIgniting
-        | UltimatePhase::ChmmrCharging
-        // Alary: hold the close-up on the ship as it doubles —
-        // the growth is the whole show.
-        | UltimatePhase::AlaryGrowing => (1.0, HYPER_CAM_SCALE),
-        UltimatePhase::ChmmrVolley => {
-            // Pull back fast so the whole bump-set-spike geometry
-            // fits in-frame; the impulse travel is wide.
-            let p = (state.phase_timer_s / 0.35).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - p).powi(3);
-            let zoom_far = state.orig_cam_scale.max(1.5);
-            (
-                1.0 - eased,
-                HYPER_CAM_SCALE * (1.0 - eased) + zoom_far * eased,
-            )
-        }
-        UltimatePhase::DruugeBarrage
-        | UltimatePhase::KohrAhSlaughter
-        | UltimatePhase::MyconHurricane
-        | UltimatePhase::ThraddashBurning => {
-            let phase_dur = match state.phase {
-                UltimatePhase::DruugeBarrage => DRUUGE_BARRAGE_S,
-                UltimatePhase::KohrAhSlaughter => KOHRAH_SLAUGHTER_S,
-                UltimatePhase::MyconHurricane => MYCON_HURRICANE_S,
-                _ => THRADDASH_BURN_S,
-            };
-            let p = (state.phase_timer_s / (phase_dur * 0.4)).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - p).powi(3);
-            let zoom_far = state.orig_cam_scale.max(1.4);
-            (
-                1.0 - eased,
-                HYPER_CAM_SCALE * (1.0 - eased) + zoom_far * eased,
-            )
-        }
-        UltimatePhase::Idle => return,
+        // is_cinematic_camera_phase guarantees only the two above.
+        _ => return,
     };
 
     if let Ok((mut cam_xf, mut projection)) = cameras.single_mut() {
-        // Pkunk gets a custom multi-keyframe target during PkunkPan
-        // so the camera quickly snaps between the three ships
-        // before settling on the centroid.
-        let mut custom_target: Option<Vec2> = None;
-        let mut custom_scale: Option<f32> = None;
-        if state.variant == UltimateVariant::Pkunk {
-            // Gather clone positions (filter out despawned ones).
-            let mut positions: Vec<Vec2> = Vec::with_capacity(3);
-            positions.push(ship_pos.0);
-            for &c in &state.pkunk_clones {
-                if let Ok(p) = ships.get(c) {
-                    positions.push(p.0);
-                }
-            }
-            let centroid = if positions.is_empty() {
-                ship_pos.0
-            } else {
-                positions.iter().copied().sum::<Vec2>() / positions.len() as f32
-            };
-            match state.phase {
-                UltimatePhase::PkunkPan => {
-                    // Four sub-segments across PKUNK_PAN_S:
-                    //   0   .. 0.20: hold on player
-                    //   0.20.. 0.45: snap-pan to clone 1
-                    //   0.45.. 0.70: snap-pan to clone 2
-                    //   0.70.. 1.00: pull back to centroid + zoom out
-                    let t = (state.phase_timer_s / PKUNK_PAN_S).clamp(0.0, 1.0);
-                    let p1 = positions.first().copied().unwrap_or(ship_pos.0);
-                    let c1 = positions.get(1).copied().unwrap_or(centroid);
-                    let c2 = positions.get(2).copied().unwrap_or(centroid);
-                    let (target, scale_t) = if t < 0.20 {
-                        (p1, 0.0)
-                    } else if t < 0.45 {
-                        let sub = ((t - 0.20) / 0.25).clamp(0.0, 1.0);
-                        let eased = 1.0 - (1.0 - sub).powi(3);
-                        (p1.lerp(c1, eased), 0.0)
-                    } else if t < 0.70 {
-                        let sub = ((t - 0.45) / 0.25).clamp(0.0, 1.0);
-                        let eased = 1.0 - (1.0 - sub).powi(3);
-                        (c1.lerp(c2, eased), 0.0)
-                    } else {
-                        let sub = ((t - 0.70) / 0.30).clamp(0.0, 1.0);
-                        let eased = 1.0 - (1.0 - sub).powi(3);
-                        (c2.lerp(centroid, eased), sub)
-                    };
-                    custom_target = Some(target);
-                    // During the first 70% of pan, stay zoomed in.
-                    // In the last 30%, ease out to PKUNK_PAN_FAR_SCALE
-                    // so the player sees the full formation.
-                    custom_scale = Some(
-                        HYPER_CAM_SCALE * (1.0 - scale_t)
-                            + PKUNK_PAN_FAR_SCALE * scale_t,
-                    );
-                }
-                UltimatePhase::PkunkFormation => {
-                    // Follow the centroid of the trio.
-                    custom_target = Some(centroid);
-                }
-                _ => {}
-            }
-        }
-
-        let blended_default = state.orig_cam_pos.lerp(
-            ship_pos.0.extend(cam_xf.translation.z),
-            blend,
-        );
-        if let Some(target) = custom_target {
-            // For Pkunk pan, snap directly to the computed target
-            // (the per-segment ease is baked into the lerp above).
-            cam_xf.translation =
-                Vec3::new(target.x, target.y, cam_xf.translation.z);
-        } else {
-            cam_xf.translation = blended_default;
-        }
-        let final_scale = custom_scale.unwrap_or(scale);
+        let blended = state
+            .orig_cam_pos
+            .lerp(ship_pos.0.extend(cam_xf.translation.z), blend);
+        cam_xf.translation = blended;
+        cam_xf.rotation = Quat::from_rotation_z(angle);
         if let Projection::Orthographic(ref mut ortho) = *projection {
-            ortho.scale = final_scale;
+            ortho.scale = scale;
         }
-        let scale = final_scale;
 
-        // Portrait zip animation: ease portrait_in_t toward 1.0
-        // during DramaticZoomIn (time is frozen — portrait is on
-        // screen), toward 0.0 in every other phase (time has
-        // resumed — portrait zips back out). 0.12s in / 0.18s out
-        // is fast enough to read as a snap but slow enough that
-        // the eye sees the motion.
+        // Portrait zip animation: ease portrait_in_t toward 1.0 during
+        // DramaticZoomIn (portrait slides on screen), toward 0.0 during
+        // DramaticZoomOut (it zips back off as time prepares to resume).
         const ZIP_IN_S: f32 = 0.12;
         const ZIP_OUT_S: f32 = 0.18;
         let target = if matches!(state.phase, UltimatePhase::DramaticZoomIn) {
@@ -2118,7 +1966,6 @@ fn drive_camera_during_ultimate(
         };
         let dt = time.delta_secs();
         let step = (target - state.portrait_in_t).signum() * rate * dt;
-        // Don't overshoot the target.
         if (target - state.portrait_in_t).abs() <= step.abs() {
             state.portrait_in_t = target;
         } else {
@@ -2129,9 +1976,6 @@ fn drive_camera_during_ultimate(
         let eased = 1.0 - (1.0 - in_t).powi(3);
 
         if let Ok(mut portrait_xf) = portraits.single_mut() {
-            // Portrait sized for the side-panel layout — smaller
-            // than the old centre-stage placement so it fits
-            // vertically alongside one of the two status panels.
             const MAX_SCREEN_DIM_PX: f32 = 320.0;
             let aspect = if state.portrait_aspect > 0.0 {
                 state.portrait_aspect
@@ -2144,29 +1988,17 @@ fn drive_camera_during_ultimate(
                 (MAX_SCREEN_DIM_PX * aspect, MAX_SCREEN_DIM_PX)
             };
 
-            // Window size for screen-edge anchoring. Fall back to
-            // the canonical 1280×720 if we can't read the window.
             let (win_w, win_h) = match windows.single() {
                 Ok(w) => (w.width().max(1.0), w.height().max(1.0)),
                 Err(_) => (1280.0, 720.0),
             };
             let half_w_px = win_w * 0.5;
             let half_h_px = win_h * 0.5;
-            /// Pixel inset from the window's left edge to the
-            /// portrait's left edge when fully zipped in. Roughly
-            /// matches the 12 px panel padding on the right-side
-            /// HUD column.
             const LEFT_MARGIN_PX: f32 = 12.0;
-            // World-space conversion: 1 screen px = `scale` world units.
             let rest_x_world = (-half_w_px + LEFT_MARGIN_PX + w_px * 0.5) * scale;
             let off_x_world = (-half_w_px - w_px * 0.5 - LEFT_MARGIN_PX) * scale;
             let x_world = off_x_world + (rest_x_world - off_x_world) * eased;
 
-            // Vertical: align the portrait's centre with the
-            // centre of the player's status panel. Right-edge HUD
-            // splits the column SpaceBetween; for a 720 px window
-            // each panel is centred around y = ±half_h * 0.49.
-            // Slot 0 (P1) → top → +y in world. Slot 1 (P2) → bottom.
             let slot = state
                 .player_entity
                 .and_then(|e| ship_lookup.get(e).ok())
@@ -2179,10 +2011,17 @@ fn drive_camera_during_ultimate(
                 -half_h_px * y_anchor_frac * scale
             };
 
+            // The camera is tilted by `angle` during these beats, so the
+            // screen axes are rotated in world space. Rotate the portrait's
+            // local screen-offset into world space and spin the portrait
+            // by the same angle so it still reads upright on screen.
+            let rot = Quat::from_rotation_z(angle);
+            let local = Vec3::new(x_world, y_world, 0.0);
+            let world_offset = rot * local;
             let z = portrait_xf.translation.z;
-            portrait_xf.translation = cam_xf.translation
-                + Vec3::new(x_world, y_world, 0.0);
+            portrait_xf.translation = cam_xf.translation + world_offset;
             portrait_xf.translation.z = z;
+            portrait_xf.rotation = rot;
             portrait_xf.scale = Vec3::new(w_px * scale, h_px * scale, 1.0);
         }
     }

@@ -568,7 +568,12 @@ fn follow_ships_with_camera(
         return;
     }
     if let Some(u) = ultimate {
-        if u.phase != crate::ultimate::UltimatePhase::Idle {
+        // Only the dramatic zoom-in / zoom-out beats lock the camera to
+        // the cinematic driver. During the paused wind-ups the virtual
+        // clock is stopped so our lerps below are no-ops anyway (the
+        // camera simply holds wherever the zoom-out left it), and during
+        // the unpaused action we deliberately resume ordinary follow.
+        if crate::ultimate::is_cinematic_camera_phase(u.phase) {
             return;
         }
     }
