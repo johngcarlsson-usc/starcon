@@ -603,6 +603,10 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
                     laser_damage: *laser_damage,
                     recharge_s: *recharge_s,
                     laser_cooldown_s: 0.0,
+                    // ~0.6 s grace = enough for the launch velocity to
+                    // clear the dreadnought's collider before owner
+                    // contact starts counting as a dock.
+                    air_grace_s: 0.6,
                 },
                 SubEntityAiSpec::DriftAndCollect { crew_value } => {
                     SubEntityAi::DriftAndCollect {

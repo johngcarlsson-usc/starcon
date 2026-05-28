@@ -4016,6 +4016,12 @@ pub enum SubEntityAi {
         laser_damage: i32,
         recharge_s: f32,
         laser_cooldown_s: f32,
+        /// Canon `air_frames`: while >0 the fighter is still clearing
+        /// the dreadnought's hitbox. Skips AI steering AND skips the
+        /// "touched parent → dock + refund crew" path (otherwise the
+        /// fighter dies on its birth frame to the parent collider it
+        /// spawns inside).
+        air_grace_s: f32,
     },
 }
 
@@ -6312,9 +6318,16 @@ fn tick_sub_entities(
                 laser_damage,
                 recharge_s,
                 laser_cooldown_s,
+                air_grace_s,
             } => {
-                // Tick the laser-recharge clock.
+                // Tick the laser-recharge + launch-grace clocks.
                 *laser_cooldown_s = (*laser_cooldown_s - dt).max(0.0);
+                if *air_grace_s > 0.0 {
+                    *air_grace_s = (*air_grace_s - dt).max(0.0);
+                    // While clearing the parent's hitbox, just coast
+                    // on the launch velocity — no AI, no fire.
+                    continue;
+                }
                 // Reacquire if target gone.
                 let target_lost = target.map(|t| ships.get(t).is_err()).unwrap_or(true);
                 if target_lost {
@@ -6443,18 +6456,25 @@ fn handle_sub_entity_collisions(
         // anything else just despawns the fighter — damage comes from
         // the periodic laser, not the bump. Handle here before the
         // generic owner-skip below.
-        if matches!(ai, SubEntityAi::KzerZaFighter { .. }) {
-            if other_entity == sub.owner {
+        if let SubEntityAi::KzerZaFighter { air_grace_s, .. } = ai {
+            // Birth-frame collisions with the parent (the fighter
+            // spawns inside the dreadnought's collider) must NOT
+            // dock — let the launch velocity carry it clear first.
+            if other_entity == sub.owner && *air_grace_s <= 0.0 {
                 if let Ok(mut crew) = crews.get_mut(other_entity) {
                     crew.current = (crew.current + 1).min(crew.max);
                 }
-                commands.entity(sub_entity).try_despawn();
-            } else if ships.get(other_entity).is_ok() {
+                if let Ok(mut ec) = commands.get_entity(sub_entity) {
+                    ec.try_despawn();
+                }
+            } else if other_entity != sub.owner && ships.get(other_entity).is_ok() {
                 // Bumping into an enemy ship: just vanish. No damage.
-                commands.entity(sub_entity).try_despawn();
+                if let Ok(mut ec) = commands.get_entity(sub_entity) {
+                    ec.try_despawn();
+                }
             }
-            // Non-ship contacts (planet, projectiles): leave to other
-            // handlers. We don't model the canon planet-bounce here.
+            // Non-ship contacts (planet, projectiles) and grace-period
+            // parent bumps: ignored.
             continue;
         }
         if other_entity == sub.owner {
