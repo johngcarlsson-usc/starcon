@@ -66,22 +66,6 @@ jobs:
           mkdir -p dist/assets
           rsync -a --exclude='legacy-dat' assets/ dist/assets/
 
-      - name: Install binaryen (wasm-opt)
-        # Binaryen's wasm-opt -Oz typically halves Bevy wasm sizes (we've
-        # been shipping ~60 MB raw → ~25-30 MB after -Oz), which is the
-        # difference between "loads on a phone" and "tab hangs forever
-        # while Safari tries to compile the module."
-        run: sudo apt-get update -qq && sudo apt-get install -yqq binaryen
-
-      - name: Optimise WASM for size
-        run: |
-          BEFORE=$(stat -c%s dist/starcon_bg.wasm)
-          wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int \
-            -o dist/starcon_bg.wasm.opt dist/starcon_bg.wasm
-          mv dist/starcon_bg.wasm.opt dist/starcon_bg.wasm
-          AFTER=$(stat -c%s dist/starcon_bg.wasm)
-          echo "wasm-opt -Oz: $BEFORE → $AFTER bytes ($(( (BEFORE - AFTER) * 100 / BEFORE ))% smaller)"
-
       - name: Show build size
         run: |
           echo "## Build sizes" >> $GITHUB_STEP_SUMMARY
