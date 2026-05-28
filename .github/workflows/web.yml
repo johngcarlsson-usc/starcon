@@ -55,15 +55,26 @@ jobs:
             --out-dir dist/ \
             --out-name starcon \
             target/wasm32-unknown-unknown/release/starcon.wasm
-          # Stamp the index with this commit's short SHA so the
-          # `?v=...` cache-buster on the wasm-bindgen JS forces every
-          # visitor's browser to re-fetch the JS + wasm on each deploy.
-          # Otherwise GH Pages' default 10 min cache can serve stale
-          # bundles long after a push.
           SHA=$(git rev-parse --short HEAD)
           sed "s|__BUILD_SHA__|${SHA}|g" web/index.html > dist/index.html
           sed "s|__BUILD_SHA__|${SHA}|g" web/manifest.json > dist/manifest.json
           cp -r assets dist/assets
+
+      - name: Install binaryen (wasm-opt)
+        # Binaryen's wasm-opt -Oz typically halves Bevy wasm sizes (we've
+        # been shipping ~60 MB raw → ~25-30 MB after -Oz), which is the
+        # difference between "loads on a phone" and "tab hangs forever
+        # while Safari tries to compile the module."
+        run: sudo apt-get update -qq && sudo apt-get install -yqq binaryen
+
+      - name: Optimise WASM for size
+        run: |
+          BEFORE=$(stat -c%s dist/starcon_bg.wasm)
+          wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int \
+            -o dist/starcon_bg.wasm.opt dist/starcon_bg.wasm
+          mv dist/starcon_bg.wasm.opt dist/starcon_bg.wasm
+          AFTER=$(stat -c%s dist/starcon_bg.wasm)
+          echo "wasm-opt -Oz: $BEFORE → $AFTER bytes ($(( (BEFORE - AFTER) * 100 / BEFORE ))% smaller)"
 
       - name: Show build size
         run: |
