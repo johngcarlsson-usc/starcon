@@ -727,6 +727,31 @@ pub struct ShipFrames {
     pub frames: Vec<Handle<Image>>,
 }
 
+/// Per-ship state for the Orz Nemesis (`shporzne.cpp`).
+///
+/// The Orz has a SEPARATE rotating turret sprite on top of the hull
+/// (`data->spriteExtra`, our `OverlaySprite` with the `shot_d_NN`
+/// frames). Holding SPECIAL re-routes the turn keys to rotate the
+/// turret instead of the ship; primary fire is suppressed while
+/// special is held, and pressing FIRE while special is held spawns a
+/// space marine (costs 1 crew, capped at MAX_MARINES). With special
+/// released, primary fires in the TURRET's facing (ship angle +
+/// `offset_rad`), not the hull's.
+#[derive(Component, Debug, Default)]
+pub struct OrzTurret {
+    /// Turret aim relative to the ship's facing, in radians. The
+    /// `OverlaySprite::extra_angle` mirrors this each tick so the art
+    /// follows.
+    pub offset_rad: f32,
+    /// Rising-edge detect for "spawn one marine per fire press while
+    /// special is held" (no firehose-of-marines from holding fire).
+    pub last_fire_held: bool,
+    /// Seconds until the cannon can fire again (mirrors WeaponRate=4
+    /// SC2 frames → 0.2 s, ticked here because primary fire is fully
+    /// managed by the Orz system rather than the generic dispatcher).
+    pub fire_cooldown_s: f32,
+}
+
 /// Per-ship state for Melnorme charge-and-release primary. Continuous
 /// linear interpolation of damage / scale / colour from base to max
 /// over `max_charge_s` of hold time.
@@ -910,6 +935,13 @@ impl Plugin for ShipPlugin {
         app.add_systems(
             bevy_ggrs::GgrsSchedule,
             (apply_planet_gravity.before(cap_velocity), tick_planet_contact),
+        );
+        // Orz turret + marines own their input handling; must run AFTER
+        // apply_player_input so it can clobber the hull's ang_vel when
+        // special is held (rotate the turret, not the ship).
+        app.add_systems(
+            bevy_ggrs::GgrsSchedule,
+            tick_orz_turret.after(apply_player_input),
         );
         app.add_systems(
             bevy_ggrs::GgrsSchedule,
@@ -1378,6 +1410,9 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Meltr) {
         entity.insert(MeltrChargeState::default());
+    }
+    if matches!(class, ShipClass::Orzne) {
+        entity.insert(OrzTurret::default());
     }
     if matches!(class, ShipClass::Mycpo) {
         // Marker so newly-spawned projectiles owned by Mycon ships
@@ -2471,56 +2506,19 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             },
         }),
 
-        // Orz Nemesis — turret cannon + marines. Turret aim + marine
-        // sub-entity both TODO (shporzne.cpp:549, 564).
+        // Orz Nemesis — separately-rotating turret + space marines. Fully
+        // owned by `tick_orz_turret` (input remap when SPECIAL is held,
+        // primary fires in the turret's direction, fire+special spawns
+        // a marine). The generic dispatcher does nothing for either
+        // slot — see `shporzne.cpp` for the canon behaviour.
         ShipClass::Orzne => Some(ShipAbilities {
             primary: AbilitySpec {
-                kind: AbilityKind::SpawnProjectiles { volleys: vec![VolleySpec {
-                    barrels: single_barrel(forward, 28.0),
-                    random_spread_rad: 0.0,
-                    speed: 120.0 * SC2_VEL_SCALE,
-                    lifetime: (20.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE),
-                    color: Color::srgb(1.0, 1.0, 1.0),
-                    sprite_size: 8.0,
-                    sprite_path: Some("ships/orzne/sprites/shot_a01.png".into()),
-                    homing_turn_rate: 0.0,
-                    is_limpet: false,
-                    recoil_impulse: 0.0,
-                }]},
-                cooldown_s: 4.0 / 20.0,
+                kind: AbilityKind::ManagedExternally { ident: "orz-turret" },
+                cooldown_s: 0.0,
             },
             special: AbilitySpec {
-                // shporzne.cpp activate_special: spawn one OrzMarine
-                // sub-entity per press (cost 1 crew, up to MAX_MARINES).
-                // The marine homes on the nearest enemy, attaches on
-                // contact, and drains crew over time. We model that
-                // as AttachAndDrain — one-shot heavy crew drain
-                // approximating the per-tick drain over the canonical
-                // attached duration.
-                kind: AbilityKind::Sequence(vec![
-                    AbilityKind::ModifyCrew { delta: -1 },
-                    AbilityKind::SpawnSubEntity {
-                        local_offset: Vec2::new(0.0, 28.0),
-                        initial_angle_offset: 0.0,
-                        // .ini Special SpeedMax=40 → 384 u/s top.
-                        initial_speed: 40.0 * SC2_VEL_SCALE,
-                        sprite_path: Some("ships/orzne/sprites/shot_b_01_bmp.png".into()),
-                        sprite_size: 10.0,
-                        color: Color::srgb(0.9, 1.0, 0.5),
-                        // .ini Armour=3 (marine itself can absorb a
-                        // few projectile hits — though we don't
-                        // currently route projectile damage to subs
-                        // — for now hp=1 = one-shot on a ship hit).
-                        hp: 1,
-                        lifetime_s: 15.0,
-                        ai: crate::ability::SubEntityAiSpec::AttachAndDrain {
-                            turn_rate: sc2_turning(2.0),
-                            speed: 40.0 * SC2_VEL_SCALE,
-                            crew_drain: 4,
-                        },
-                    },
-                ]),
-                cooldown_s: 12.0 / 20.0,
+                kind: AbilityKind::ManagedExternally { ident: "orz-turret" },
+                cooldown_s: 0.0,
             },
         }),
 
@@ -4166,6 +4164,196 @@ fn tick_meltr_charge(
                 state.sub_charge_s = 0.0;
                 state.last_damage = 0;
                 state.flash_remaining_s = 0.0;
+            }
+        }
+    }
+}
+
+/// Orz Nemesis turret + space marines (`shporzne.cpp`).
+///
+/// Holding SPECIAL remaps the turn keys to rotate the turret (no ship
+/// rotation) and cancels primary fire — pressing FIRE while special is
+/// held spawns a marine instead (1 crew, capped at MAX_MARINES). With
+/// special released, primary fires in the TURRET's facing (ship angle
+/// + `OrzTurret.offset_rad`). The visual turret (`OverlaySprite` with
+/// the `shot_d_NN` frames) tracks `offset_rad` each tick.
+fn tick_orz_turret(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    assets: Res<AssetServer>,
+    mut ships: Query<
+        (
+            Entity,
+            &Ship,
+            &ShipClass,
+            &Position,
+            &Rotation,
+            &LinearVelocity,
+            &mut AngularVelocity,
+            &mut ConstantTorque,
+            &mut OrzTurret,
+            &mut Crew,
+            &mut Battery,
+            &ShipPhysicsDerived,
+        ),
+        (
+            Without<crate::ultimate::HyperActive>,
+            Without<crate::ai::AiControlled>,
+        ),
+    >,
+    sub_entities: Query<&SubEntity>,
+    mut overlays: Query<&mut OverlaySprite>,
+) {
+    use std::f32::consts::{FRAC_PI_2, PI, TAU};
+    const MAX_MARINES: usize = 8;
+    let dt = time.delta_secs();
+    for (
+        entity,
+        ship,
+        class,
+        pos,
+        rot,
+        vel,
+        mut ang_vel,
+        mut torque,
+        mut turret,
+        mut crew,
+        mut batt,
+        derived,
+    ) in &mut ships
+    {
+        if *class != ShipClass::Orzne {
+            continue;
+        }
+        let input = slot_inputs.held[ship.player_slot.min(3)];
+        let special_held = input.pressed(input::INPUT_SPECIAL);
+        let fire_held = input.pressed(input::INPUT_FIRE);
+        let was_fire_held = turret.last_fire_held;
+        turret.last_fire_held = fire_held;
+        let fire_just_pressed = fire_held && !was_fire_held;
+        let left = input.pressed(input::INPUT_LEFT);
+        let right = input.pressed(input::INPUT_RIGHT);
+
+        turret.fire_cooldown_s = (turret.fire_cooldown_s - dt).max(0.0);
+
+        if special_held {
+            // Special held: lock the ship's rotation (apply_player_input
+            // already wrote ang_vel from the turn keys; clobber it here)
+            // and instead rotate the turret. Same ±target_omega rate the
+            // hull would use, so the feel matches "I'm turning, just with
+            // a different thing turning."
+            ang_vel.0 = 0.0;
+            torque.0 = 0.0;
+            let dir = if left {
+                1.0
+            } else if right {
+                -1.0
+            } else {
+                0.0
+            };
+            turret.offset_rad += dir * derived.target_omega * dt;
+            if turret.offset_rad > PI {
+                turret.offset_rad -= TAU;
+            } else if turret.offset_rad < -PI {
+                turret.offset_rad += TAU;
+            }
+
+            // Marine on each fresh fire-press. Canon: cost = 1 crew,
+            // cap at MAX_MARINES already in flight. Marine seeks the
+            // nearest enemy and drains crew on attach (AttachAndDrain).
+            if fire_just_pressed && crew.current > 1 {
+                let in_flight = sub_entities.iter().filter(|s| s.owner == entity).count();
+                if in_flight < MAX_MARINES {
+                    crew.current -= 1;
+                    // Launch from just ahead of the hull so the marine
+                    // sprite isn't visually overlapping the ship for a
+                    // tick or two.
+                    let muzzle_local = Vec2::new(0.0, 18.0);
+                    spawn_sub_entity(
+                        &mut commands,
+                        &assets,
+                        entity,
+                        pos.0,
+                        rot,
+                        muzzle_local,
+                        0.0,
+                        // .ini Special SpeedMax = 40 → 384 wu/s.
+                        40.0 * SC2_VEL_SCALE,
+                        Some("ships/orzne/sprites/shot_b_01_bmp.png"),
+                        12.0,
+                        Color::srgb(0.9, 1.0, 0.5),
+                        // Marine "armour" — survives a couple of stray
+                        // hits before the homing pass.
+                        3,
+                        15.0,
+                        SubEntityAi::AttachAndDrain {
+                            target: None,
+                            turn_rate: sc2_turning(2.0),
+                            speed: 40.0 * SC2_VEL_SCALE,
+                            crew_drain: 4,
+                        },
+                    );
+                }
+            }
+        } else {
+            // Special not held: primary fires in the turret's direction.
+            // Cooldown matches WeaponRate = 4 SC2 frames = 0.2 s.
+            if fire_held && turret.fire_cooldown_s <= 0.0 {
+                let drain = ship.stats.weapon_drain;
+                if drain <= 0 || batt.current >= drain {
+                    batt.current = (batt.current - drain).max(0);
+                    // Ship forward in world: (-sin, cos). Rotate by the
+                    // turret offset to get the cannon's true heading.
+                    let (s, c) = turret.offset_rad.sin_cos();
+                    let forward = Vec2::new(-rot.sin, rot.cos);
+                    let world_dir = Vec2::new(
+                        forward.x * c - forward.y * s,
+                        forward.x * s + forward.y * c,
+                    );
+                    // Muzzle = barrel tip, just past the hull along the
+                    // turret's forward.
+                    let muzzle = pos.0 + world_dir * 28.0;
+                    let proj_vel = vel.0 + world_dir * (120.0 * SC2_VEL_SCALE);
+                    let initial_angle = world_dir.y.atan2(world_dir.x) - FRAC_PI_2;
+                    let lifetime = (20.0 * SC2_RANGE_SCALE) / (120.0 * SC2_VEL_SCALE);
+                    let damage: i32 = 3;
+                    let sprite_size = 8.0_f32;
+                    commands.spawn((
+                        Projectile {
+                            owner: entity,
+                            damage,
+                            lifetime,
+                        },
+                        Sprite {
+                            image: assets.load("ships/orzne/sprites/shot_a01.png".to_string()),
+                            color: Color::srgb(1.0, 1.0, 1.0),
+                            custom_size: Some(Vec2::splat(sprite_size)),
+                            ..default()
+                        },
+                        Transform::from_translation(muzzle.extend(0.5)),
+                        RigidBody::Dynamic,
+                        Collider::circle(sprite_size * 0.5),
+                        Mass(0.5 + damage as f32 * 0.4),
+                        Position(muzzle),
+                        Rotation::radians(initial_angle),
+                        LinearVelocity(proj_vel),
+                        AngularVelocity::ZERO,
+                        LinearDamping(0.0),
+                        AngularDamping(0.0),
+                        CollisionEventsEnabled,
+                    ));
+                    turret.fire_cooldown_s = 4.0 / 20.0;
+                }
+            }
+        }
+
+        // Sync the visual turret rotation. The OverlaySprite update system
+        // (Update) reads this and picks the right rotation frame.
+        for mut overlay in &mut overlays {
+            if overlay.parent == entity {
+                overlay.extra_angle = turret.offset_rad;
+                break;
             }
         }
     }
