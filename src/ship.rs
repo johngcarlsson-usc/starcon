@@ -1352,10 +1352,10 @@ pub fn spawn_match(
     // ships feel no initial pull.)
     use std::f32::consts::{FRAC_PI_2, PI};
     let spawn_table: [(Vec2, f32); 4] = [
-        (Vec2::new(-700.0, 0.0), -FRAC_PI_2), // W, facing E
-        (Vec2::new(700.0, 0.0), FRAC_PI_2),   // E, facing W
-        (Vec2::new(0.0, -700.0), 0.0),        // S, facing N
-        (Vec2::new(0.0, 700.0), PI),          // N, facing S
+        (Vec2::new(-740.0, 0.0), -FRAC_PI_2), // W, facing E
+        (Vec2::new(740.0, 0.0), FRAC_PI_2),   // E, facing W
+        (Vec2::new(0.0, -740.0), 0.0),        // S, facing N
+        (Vec2::new(0.0, 740.0), PI),          // N, facing S
     ];
     for (slot, slot_cfg) in config.slots.iter().enumerate().take(4) {
         let (pos, rot) = spawn_table[slot];
@@ -7131,9 +7131,9 @@ pub fn spawn_asteroids(
         let pos = loop {
             let x = rng.signed_unit() * HALF;
             let y = rng.signed_unit() * HALF;
-            // Avoid the spawn corridor around (±700, 0).
-            let near_left = (x - (-700.0)).abs() < KEEP_OUT_X && y.abs() < KEEP_OUT_Y;
-            let near_right = (x - 700.0).abs() < KEEP_OUT_X && y.abs() < KEEP_OUT_Y;
+            // Avoid the spawn corridor around (±740, 0).
+            let near_left = (x - (-740.0)).abs() < KEEP_OUT_X && y.abs() < KEEP_OUT_Y;
+            let near_right = (x - 740.0).abs() < KEEP_OUT_X && y.abs() < KEEP_OUT_Y;
             if !near_left && !near_right {
                 break Vec2::new(x, y);
             }
@@ -7229,14 +7229,32 @@ impl Default for Planet {
             radius: 100.0, // PLAN_S0x sprites are 200×200 → ~100 px radius
             gravity_range: 720.0,   // scale_range(18)
             gravity_mindist: 240.0, // scale_range(6)
-            gravity_accel: 500.0,   // dialed back twice (1400 → 933 → 500) — was still too strong
+            gravity_accel: 800.0,
+            // ----------------- canon derivation -----------------
+            // server.ini [Planet]: GravityForce = 1.5 (SC2 units).
+            // mhelpers.cpp:     scale_acceleration(a, 0)
+            //                     = a × distance_ratio / time_ratio²
+            //                     = a × 0.48 / 50ms / 50ms
+            //                     = a × 1.92e-4 TW-px / ms².
+            // mcbodies.cpp:144: per-tick Δv = frame_time × force × sr
+            //                     = 50ms × (1.5 × 1.92e-4) × sr
+            //                     ≈ 0.0144 TW-px/ms · sr at peak.
+            // 20 game-frames/sec → peak acceleration ≈ 288 wu/s²
+            //   (1 wu = 1 TW-px in our world).
+            // We run a bit hotter than canon (800 vs 288) so the well
+            // is a real tactical thing in our smaller arena (3000 wu
+            // vs canon's 3840). The user's "make it stronger" request
+            // after the previous corner-placement experiment landed
+            // here — close enough to canon that slingshots feel right,
+            // strong enough that a stalled ship gets pulled in
+            // visibly.
             whip_mult: 1.5, // 1 + GravityWhip(0.5)
         }
     }
 }
 
 /// Spawn the central planet at the arena origin. Called once per match from
-/// `spawn_match`. Ships spawn at ±700 on the axes — right at the edge of the
+/// `spawn_match`. Ships spawn at ±740 on the axes — just outside the
 /// `gravity_range`, so they feel no initial pull. The original
 /// (`other/planet3d.cpp:create_planet`) picks a random one of the three
 /// `PLAN_S0x` melee.dat sprites; we do the same with the seeded RNG so peers
@@ -7245,17 +7263,17 @@ pub fn spawn_planet(commands: &mut Commands, assets: &AssetServer, rng: &mut cra
     let planet = Planet::default();
     let visual = planet.radius * 2.0;
     let frame = 1 + rng.usize_range(0..3); // PLAN_S01..03
-    // Put the planet somewhere clearly OFF the ±700 spawn corridors so
-    // ships don't start right on top of its gravity well. Pick one of the
-    // four quadrant diagonals with a bit of angular jitter and a comfy
-    // distance from the arena centre — far enough that the closest spawn
-    // is still well outside `gravity_range`.
-    use std::f32::consts::{FRAC_PI_4, PI};
-    let quadrant = rng.usize_range(0..4) as f32;
-    let jitter = (rng.f32() - 0.5) * (PI / 6.0); // ±30°
-    let theta = quadrant * (PI / 2.0) + FRAC_PI_4 + jitter;
-    let r = 1100.0 + rng.f32() * 200.0; // 1100..1300 wu from origin
-    let pos = Vec2::new(theta.cos() * r, theta.sin() * r);
+    // Canon (`mmain.cpp:init_objects`) places the planet at `map_size/2` —
+    // dead centre of the arena. The whole point of a gravity well is to
+    // be a tactical hazard / opportunity in the *middle* of the fight;
+    // pushing it to a random corner (as we briefly did) made the well
+    // effectively invisible since most engagements happen mid-arena. Tiny
+    // random translation (±60 wu) for visual variety, otherwise dead
+    // centre.
+    let pos = Vec2::new(
+        (rng.f32() - 0.5) * 120.0,
+        (rng.f32() - 0.5) * 120.0,
+    );
     commands.spawn((
         Sprite {
             image: assets.load(format!("ui/planet_{:02}.png", frame)),
@@ -7647,8 +7665,8 @@ fn replenish_asteroids(
         .iter()
         .copied()
         .find(|p| {
-            let near_left = (p.x - (-700.0)).abs() < KEEP_OUT_X && p.y.abs() < KEEP_OUT_Y;
-            let near_right = (p.x - 700.0).abs() < KEEP_OUT_X && p.y.abs() < KEEP_OUT_Y;
+            let near_left = (p.x - (-740.0)).abs() < KEEP_OUT_X && p.y.abs() < KEEP_OUT_Y;
+            let near_right = (p.x - 740.0).abs() < KEEP_OUT_X && p.y.abs() < KEEP_OUT_Y;
             let off_screen = (p.x - cam_xy.x).abs() > view_hx
                 || (p.y - cam_xy.y).abs() > view_hy;
             !near_left && !near_right && off_screen
