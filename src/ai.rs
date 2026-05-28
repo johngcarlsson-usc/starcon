@@ -28,13 +28,13 @@
 //! `SpecialFreq` 1/N gate uses a per-ship counter (no RNG), so this
 //! still replays identically across peers.
 
-use avian2d::prelude::{LinearVelocity, Physics, Position, Rotation};
+use avian2d::prelude::{AngularVelocity, LinearVelocity, Physics, Position, Rotation};
 use bevy::prelude::*;
 
 use crate::input::{self, PlayerInput, SlotInputs};
 use crate::ship::{
-    AiSpecialTactic, AiWeaponTactic, Battery, Crew, OrzTurret, Projectile, Ship, ShipClass,
-    SC2_RANGE_SCALE,
+    AiSpecialTactic, AiWeaponTactic, AngularControl, AngularControlOverride, Battery, Crew,
+    OrzTurret, Projectile, Ship, ShipClass, SC2_RANGE_SCALE,
 };
 
 /// Marker: this ship is driven by the AI instead of by player input.
@@ -122,6 +122,13 @@ pub struct AiBrain {
     /// True if the Spathi is currently in the brief turn-around
     /// portion of run-and-burst (facing target to fire primary).
     pub bursting: bool,
+    /// In **Inertial** angular mode `ang_vel` only resets on key-press
+    /// / key-release transitions, so an AI that isn't actively turning
+    /// would tumble forever after a collision (no damping). To brake
+    /// in-mode, the AI pulses a turn key: tick N press → tick N+1
+    /// release. The release snaps ω to 0. `brake_pulse_on` is the
+    /// "we pressed last tick" flag so the cycle alternates.
+    pub brake_pulse_on: bool,
 }
 
 pub struct AiPlugin;
@@ -225,6 +232,7 @@ fn optimal_range(class: ShipClass) -> f32 {
 
 fn tick_ai_pilots(
     difficulty: Res<AiDifficulty>,
+    angular_override: Res<AngularControlOverride>,
     mut slot_inputs: ResMut<SlotInputs>,
     targets: Query<
         (Entity, &Ship, &Position, &LinearVelocity),
@@ -237,6 +245,7 @@ fn tick_ai_pilots(
             &ShipClass,
             &Position,
             &Rotation,
+            &AngularVelocity,
             &Battery,
             &Crew,
             &mut AiBrain,
@@ -251,7 +260,10 @@ fn tick_ai_pilots(
     use std::f32::consts::FRAC_PI_2;
     let tuning = difficulty.tuning();
     let dt = time.delta_secs();
-    for (entity, ship, class, pos, rot, batt, crew, mut brain, turret, modes) in &mut pilots {
+    let inertial_active = matches!(angular_override.0, Some(AngularControl::Inertial));
+    for (entity, ship, class, pos, rot, ang_vel, batt, crew, mut brain, turret, modes) in
+        &mut pilots
+    {
         let slot = ship.player_slot.min(3);
         brain.burst_timer_s += dt;
         brain.jitter_phase = brain.jitter_phase.wrapping_add(1);
@@ -355,8 +367,33 @@ fn tick_ai_pilots(
             // At or inside optimal: don't burn fuel chasing.
             false
         };
-        let want_left = steer_err > 0.02;
-        let want_right = steer_err < -0.02;
+        let mut want_left = steer_err > 0.02;
+        let mut want_right = steer_err < -0.02;
+
+        // Inertial-mode brake pulse: if the ship is spinning from a
+        // collision and the AI isn't actively steering, alternate
+        // press → release on a turn key so Inertial's release-snap
+        // (ang_vel → 0) actually kills the spin. The press direction
+        // matches the spin so the brief +target_omega tick doesn't
+        // reverse heading (just decelerates). Skipped in Classic
+        // since apply_player_input zeroes ω each tick anyway.
+        const BRAKE_THRESHOLD: f32 = 0.6; // rad/s
+        if inertial_active && !want_left && !want_right && ang_vel.0.abs() > BRAKE_THRESHOLD {
+            if brain.brake_pulse_on {
+                // Release tick — no input, snaps ω to 0.
+                brain.brake_pulse_on = false;
+            } else {
+                if ang_vel.0 > 0.0 {
+                    want_left = true;
+                } else {
+                    want_right = true;
+                }
+                brain.brake_pulse_on = true;
+            }
+        } else {
+            brain.brake_pulse_on = false;
+        }
+
 
         // 8) Weapon decision. Skip firing while retreating (focus on
         //    escape); Spathi's BUTT missile fires via SPECIAL even
