@@ -2314,8 +2314,8 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             },
             special: AbilitySpec {
                 kind: AbilityKind::Sequence(vec![
-                    // SpecialDrain=8 already deducted; canonical also
-                    // burns 1 crew per fighter launched.
+                    // SpecialDrain=8 already deducted; canonical burns
+                    // 1 crew per fighter launched.
                     AbilityKind::ModifyCrew { delta: -1 },
                     AbilityKind::SpawnSubEntity {
                         // Spawn from the back of the dreadnought.
@@ -2324,23 +2324,28 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                         // .ini Special Velocity=35 → 336 u/s.
                         initial_speed: 35.0 * SC2_VEL_SCALE,
                         sprite_path: Some("ships/kzedr/sprites/shot_b01.png".into()),
-                        // shot_b01 is the 100×100 fighter sprite; the
-                        // previous 14-wu custom_size made it look like a
-                        // pixel. ~36 wu reads as a proper smaller-than-
-                        // dreadnought fighter.
+                        // shot_b01 is the 100×100 fighter sprite.
                         sprite_size: 36.0,
                         color: Color::srgb(1.0, 1.0, 1.0),
                         // .ini Special Armour = 1 (effectively one-hit).
                         hp: 1,
-                        // .ini Special Frames=23000 / 20 = 1150 s; cap
-                        // to a sensible value so they don't pile up
-                        // forever in our shorter rounds.
                         lifetime_s: 20.0,
-                        ai: crate::ability::SubEntityAiSpec::HomeAndDetonate {
+                        // Canon `KzerZaFighter::calculate`: fly out,
+                        // orbit the target at ~laser_range × 0.8, zap
+                        // them periodically. Not a kamikaze homer.
+                        ai: crate::ability::SubEntityAiSpec::KzerZaFighter {
                             turn_rate: sc2_turning(4.0),
                             speed: 35.0 * SC2_VEL_SCALE,
-                            damage_on_hit: 2,
-                            batt_sap: 0,
+                            // Laser range from canon Special is in SC2
+                            // units; ~4 → 160 wu lets the fighter close
+                            // to a useful "circle and shoot" distance.
+                            laser_range: 160.0,
+                            laser_damage: 1,
+                            // Per-laser recharge ~0.5 s (canon
+                            // ~10 frames @ 20 Hz). Enough that a pair
+                            // of fighters does sustained-but-not-
+                            // melting DPS while orbiting.
+                            recharge_s: 0.5,
                         },
                     },
                 ]),
@@ -3994,6 +3999,23 @@ pub enum SubEntityAi {
     DriftAndCollect {
         owner_slot: usize,
         crew_value: i32,
+    },
+    /// Kzer-Za Dreadnought fighter (`shpkzedr.cpp:KzerZaFighter`).
+    /// Flies toward an orbit point off the nearest opponent's flank,
+    /// holds station at `laser_range × 0.8`, and zaps the target with
+    /// a laser every `recharge_s`. Does NOT detonate on contact — it
+    /// keeps station and lasers until lifetime runs out or it takes
+    /// damage. `laser_cooldown_s` ticks down each frame; when it hits
+    /// 0 the fighter fires (deals `laser_damage`, spawns a `ZapFlash`)
+    /// and resets to `recharge_s`.
+    KzerZaFighter {
+        target: Option<Entity>,
+        turn_rate: f32,
+        speed: f32,
+        laser_range: f32,
+        laser_damage: i32,
+        recharge_s: f32,
+        laser_cooldown_s: f32,
     },
 }
 
@@ -6198,6 +6220,8 @@ fn tick_sub_entities(
         Option<&OrzMarineBoarded>,
     )>,
     ships: Query<(Entity, &Ship, &Position), Without<SubEntity>>,
+    mut crews: Query<&mut Crew>,
+    shields: Query<&ShieldActive>,
 ) {
     let dt = time.delta_secs();
     for (sub_entity, mut sub, sub_pos, mut sub_vel, mut ai, boarded) in &mut subs {
@@ -6280,6 +6304,113 @@ fn tick_sub_entities(
             SubEntityAi::DriftAndCollect { .. } => {
                 // No steering. Drift forever at spawn velocity.
             }
+            SubEntityAi::KzerZaFighter {
+                target,
+                turn_rate,
+                speed,
+                laser_range,
+                laser_damage,
+                recharge_s,
+                laser_cooldown_s,
+            } => {
+                // Tick the laser-recharge clock.
+                *laser_cooldown_s = (*laser_cooldown_s - dt).max(0.0);
+                // Reacquire if target gone.
+                let target_lost = target.map(|t| ships.get(t).is_err()).unwrap_or(true);
+                if target_lost {
+                    let mut best: Option<(Entity, f32)> = None;
+                    for (e, s, p) in &ships {
+                        if Some(s.player_slot) == owner_slot {
+                            continue;
+                        }
+                        let d2 = (p.0 - sub_pos.0).length_squared();
+                        if best.map_or(true, |(_, bd)| d2 < bd) {
+                            best = Some((e, d2));
+                        }
+                    }
+                    *target = best.map(|(e, _)| e);
+                }
+                let Some(t) = *target else { continue };
+                let Ok((_, _, t_pos)) = ships.get(t) else { continue };
+
+                let to_target = t_pos.0 - sub_pos.0;
+                let dist = to_target.length().max(1e-3);
+                // Orbit station: tangential to the target's bearing,
+                // at `laser_range × 0.8`. Pick the side the fighter
+                // is already closer to (cheap canon-equivalent of the
+                // "compare distance to left flank vs right flank" in
+                // shpkzedr.cpp).
+                let radial = to_target / dist;
+                let tangent = Vec2::new(-radial.y, radial.x);
+                let side = if tangent.dot(sub_pos.0 - t_pos.0) >= 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let station = t_pos.0 + tangent * side * (*laser_range * 0.8) - radial * (*laser_range * 0.8);
+                let to_station = (station - sub_pos.0).normalize_or_zero();
+
+                if to_station != Vec2::ZERO {
+                    // Steer the velocity vector toward the orbit
+                    // station, capped at turn_rate · dt per tick.
+                    let cur_dir = sub_vel.0.normalize_or_zero();
+                    let new_dir = if cur_dir == Vec2::ZERO {
+                        to_station
+                    } else {
+                        let cur_a = cur_dir.y.atan2(cur_dir.x);
+                        let tgt_a = to_station.y.atan2(to_station.x);
+                        let mut diff = tgt_a - cur_a;
+                        while diff > std::f32::consts::PI {
+                            diff -= std::f32::consts::TAU;
+                        }
+                        while diff < -std::f32::consts::PI {
+                            diff += std::f32::consts::TAU;
+                        }
+                        let cap = (*turn_rate * dt).abs();
+                        let actual = diff.clamp(-cap, cap);
+                        let (sn, cs) = actual.sin_cos();
+                        Vec2::new(cur_dir.x * cs - cur_dir.y * sn, cur_dir.x * sn + cur_dir.y * cs)
+                    };
+                    sub_vel.0 = new_dir * *speed;
+                }
+
+                // Fire when in range and recharged. Canon stops the
+                // fighter for the laser tick; we just keep it on its
+                // current trajectory — close enough visually.
+                if *laser_cooldown_s <= 0.0 && dist <= *laser_range {
+                    let factor = shields
+                        .get(t)
+                        .map(|s| s.damage_factor)
+                        .unwrap_or(1.0);
+                    let dmg = ((*laser_damage as f32 * factor).round() as i32).max(0);
+                    if dmg > 0 {
+                        if let Ok(mut crew) = crews.get_mut(t) {
+                            crew.current = (crew.current - dmg).max(0);
+                        }
+                    }
+                    // Visual: ZapFlash from fighter to target. Same
+                    // pattern as the Chmmr satellite laser — a thin
+                    // bright sprite stretched between the two points,
+                    // fading over 0.10 s.
+                    let rel = t_pos.0 - sub_pos.0;
+                    let len = rel.length().max(1.0);
+                    let mid = (sub_pos.0 + t_pos.0) * 0.5;
+                    let angle = rel.y.atan2(rel.x) - std::f32::consts::FRAC_PI_2;
+                    commands.spawn((
+                        ZapFlash { remaining_s: 0.10, total_s: 0.10 },
+                        Sprite::from_color(
+                            Color::srgba(1.0, 0.8, 0.5, 0.95),
+                            Vec2::new(2.5, len),
+                        ),
+                        Transform {
+                            translation: mid.extend(0.32),
+                            rotation: Quat::from_rotation_z(angle),
+                            scale: Vec3::ONE,
+                        },
+                    ));
+                    *laser_cooldown_s = *recharge_s;
+                }
+            }
         }
     }
 }
@@ -6307,6 +6438,25 @@ fn handle_sub_entity_collisions(
         let Ok((mut sub, ai)) = subs.get_mut(sub_entity) else {
             continue;
         };
+        // Kzer-Za fighter: docking with parent refunds the 1 crew it
+        // cost to launch (shpkzedr.cpp lines 145-152). Contact with
+        // anything else just despawns the fighter — damage comes from
+        // the periodic laser, not the bump. Handle here before the
+        // generic owner-skip below.
+        if matches!(ai, SubEntityAi::KzerZaFighter { .. }) {
+            if other_entity == sub.owner {
+                if let Ok(mut crew) = crews.get_mut(other_entity) {
+                    crew.current = (crew.current + 1).min(crew.max);
+                }
+                commands.entity(sub_entity).try_despawn();
+            } else if ships.get(other_entity).is_ok() {
+                // Bumping into an enemy ship: just vanish. No damage.
+                commands.entity(sub_entity).try_despawn();
+            }
+            // Non-ship contacts (planet, projectiles): leave to other
+            // handlers. We don't model the canon planet-bounce here.
+            continue;
+        }
         if other_entity == sub.owner {
             continue;
         }
@@ -6364,6 +6514,9 @@ fn handle_sub_entity_collisions(
                     commands.entity(sub_entity).try_despawn();
                 }
                 // Enemy contact: no effect, pod keeps drifting.
+            }
+            SubEntityAi::KzerZaFighter { .. } => {
+                // Handled above (pre-owner-skip dispatch).
             }
         }
     }

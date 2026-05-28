@@ -237,6 +237,18 @@ pub enum SubEntityAiSpec {
     DriftAndCollect {
         crew_value: i32,
     },
+    /// Kzer-Za Dreadnought fighter (`shpkzedr.cpp:KzerZaFighter`):
+    /// fly out, orbit the nearest opponent at `laser_range × 0.8`,
+    /// and zap them with a laser every `recharge_s`. Returns to the
+    /// parent when lifetime drops below half. Each laser deals
+    /// `laser_damage` crew; spawns a brief `ZapFlash` for the visual.
+    KzerZaFighter {
+        turn_rate: f32,
+        speed: f32,
+        laser_range: f32,
+        laser_damage: i32,
+        recharge_s: f32,
+    },
 }
 
 /// One beam emitted by a `SpawnBeams` ability. World pose is derived
@@ -576,6 +588,21 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
                     turn_rate: *turn_rate,
                     speed: *speed,
                     crew_drain: *crew_drain,
+                },
+                SubEntityAiSpec::KzerZaFighter {
+                    turn_rate,
+                    speed,
+                    laser_range,
+                    laser_damage,
+                    recharge_s,
+                } => SubEntityAi::KzerZaFighter {
+                    target: None,
+                    turn_rate: *turn_rate,
+                    speed: *speed,
+                    laser_range: *laser_range,
+                    laser_damage: *laser_damage,
+                    recharge_s: *recharge_s,
+                    laser_cooldown_s: 0.0,
                 },
                 SubEntityAiSpec::DriftAndCollect { crew_value } => {
                     SubEntityAi::DriftAndCollect {
