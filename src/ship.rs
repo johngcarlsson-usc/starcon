@@ -969,6 +969,25 @@ pub struct OrzTurret {
     pub fire_cooldown_s: f32,
 }
 
+/// Marker on an Orz marine that has reached its target and is now
+/// boarding it. While present:
+///   - The marine sticks to the host's position each tick (visually
+///     "clinging" — canon draws it as an icon on the host's crew panel).
+///   - Steering / lifetime decrement is skipped — the marine lives until
+///     the dice say otherwise or the host dies.
+///   - Each canon SC2 frame (50 ms) we roll the per-frame chance from
+///     `shporzne.cpp:OrzMarine::calculate`:
+///       * 9/10000 chance per ms · 50 ms ≈ 4.5% per tick → 1 crew dmg.
+///       * +1/10000 chance per ms · 50 ms ≈ 0.5% per tick → marine dies.
+/// `roll_accum_s` is the 50-ms tick accumulator so the system rolls at
+/// the canonical 20 Hz cadence regardless of our actual physics rate.
+#[derive(Component, Debug)]
+#[component(on_add = auto_add_rollback)]
+pub struct OrzMarineBoarded {
+    pub host: Entity,
+    pub roll_accum_s: f32,
+}
+
 /// Per-ship state for the Slylandro Probe (`shpslypr.cpp`). Canon
 /// behaviour: the probe is ALWAYS thrusting forward; pressing the
 /// thrust key flips the ship 180° (rising edge only) so direction
@@ -1181,6 +1200,7 @@ impl Plugin for ShipPlugin {
             (
                 tick_orz_turret.after(apply_player_input),
                 tick_slylandro_drift.after(apply_player_input),
+                tick_orz_marines_boarded,
             ),
         );
         app.add_systems(
@@ -4640,6 +4660,76 @@ fn tick_orz_turret(
     }
 }
 
+/// Tick attached Orz marines (`shporzne.cpp:OrzMarine::calculate`).
+///
+/// Once a marine has its `OrzMarineBoarded` marker, this system:
+///   1. Sticks its `Position` to the host each tick so it visually
+///      clings to the hull (canon draws it as an icon on the host's
+///      crew panel; we don't have that UI so we just glue the sprite
+///      to the host's centre).
+///   2. Despawns it if the host is gone (rematch / crew==0 / cycled).
+///   3. Rolls the canonical per-50 ms dice:
+///        - 9/10000 chance per ms · 50 ms ≈ 4.5 % → 1 crew dmg.
+///        - +1/10000 chance per ms · 50 ms ≈ 0.5 % → marine despawns.
+///      The 50 ms tick accumulator (`roll_accum_s`) lets us keep
+///      canon cadence regardless of our actual physics rate. The roll
+///      uses `GameRng` so it's deterministic across rollback.
+fn tick_orz_marines_boarded(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut rng: ResMut<crate::rng::GameRng>,
+    mut marines: Query<(
+        Entity,
+        &mut OrzMarineBoarded,
+        &mut Position,
+        &mut LinearVelocity,
+    )>,
+    mut hosts: Query<(&Position, &mut Crew, Option<&ShieldActive>, &Ship), Without<OrzMarineBoarded>>,
+) {
+    const TICK_MS: f32 = 50.0;
+    let dt = time.delta_secs();
+    for (sub_entity, mut boarded, mut pos, mut vel) in &mut marines {
+        // If the host is gone, the marine has nothing to drain — drop it.
+        let Ok((host_pos, mut host_crew, shield, host_ship)) =
+            hosts.get_mut(boarded.host)
+        else {
+            commands.entity(sub_entity).try_despawn();
+            continue;
+        };
+        // Glue to host.
+        pos.0 = host_pos.0;
+        vel.0 = Vec2::ZERO;
+
+        boarded.roll_accum_s += dt;
+        // Roll once per canon 50 ms tick — typically once every 3 frames
+        // at 60 Hz, every frame at 20 Hz. Catches up if dt is huge (rare).
+        while boarded.roll_accum_s >= TICK_MS / 1000.0 {
+            boarded.roll_accum_s -= TICK_MS / 1000.0;
+            let roll = rng.i32(0..=9999);
+            // 9 per ms · 50 ms = 450 → 4.5 % chance, deal 1 crew damage.
+            if roll < (9.0 * TICK_MS) as i32 {
+                let factor = shield.map(|s| s.damage_factor).unwrap_or(1.0);
+                let dmg = (1.0 * factor).round() as i32;
+                if dmg > 0 {
+                    host_crew.current = (host_crew.current - dmg).max(0);
+                    info!(
+                        "marine drained P{}: -{} crew ({}/{})",
+                        host_ship.player_slot + 1,
+                        dmg,
+                        host_crew.current,
+                        host_crew.max,
+                    );
+                }
+            // 1 per ms · 50 ms = 50 more → 0.5 % chance, marine despawns.
+            } else if roll < (10.0 * TICK_MS) as i32 {
+                info!("marine succumbed on P{}", host_ship.player_slot + 1);
+                commands.entity(sub_entity).try_despawn();
+                break;
+            }
+        }
+    }
+}
+
 /// Slylandro Probe drift (`shpslypr.cpp::SlylandroProbe::calculate_thrust`).
 ///
 /// Canon: the probe is *always* under thrust — there's no coast. Pressing
@@ -6036,11 +6126,23 @@ fn tick_damage_to_battery(
 fn tick_sub_entities(
     mut commands: Commands,
     time: Res<Time<Physics>>,
-    mut subs: Query<(Entity, &mut SubEntity, &Position, &mut LinearVelocity, &mut SubEntityAi)>,
+    mut subs: Query<(
+        Entity,
+        &mut SubEntity,
+        &Position,
+        &mut LinearVelocity,
+        &mut SubEntityAi,
+        Option<&OrzMarineBoarded>,
+    )>,
     ships: Query<(Entity, &Ship, &Position), Without<SubEntity>>,
 ) {
     let dt = time.delta_secs();
-    for (sub_entity, mut sub, sub_pos, mut sub_vel, mut ai) in &mut subs {
+    for (sub_entity, mut sub, sub_pos, mut sub_vel, mut ai, boarded) in &mut subs {
+        // Boarded marines are owned entirely by `tick_orz_marines_boarded`
+        // — they don't time out and they don't steer.
+        if boarded.is_some() {
+            continue;
+        }
         sub.remaining_s -= dt;
         if sub.remaining_s <= 0.0 || sub.hp <= 0 {
             commands.entity(sub_entity).try_despawn();
@@ -6171,16 +6273,17 @@ fn handle_sub_entity_collisions(
                     sub.hp
                 );
             }
-            SubEntityAi::AttachAndDrain { crew_drain, .. } => {
-                if let Ok(mut crew) = crews.get_mut(other_entity) {
-                    crew.current = (crew.current - *crew_drain).max(0);
-                }
-                info!(
-                    "marine boarded P{}: -{} crew",
-                    other_ship.player_slot + 1,
-                    crew_drain
-                );
-                commands.entity(sub_entity).try_despawn();
+            SubEntityAi::AttachAndDrain { crew_drain: _, .. } => {
+                // Canon: marine BOARDS the host and rolls stochastic
+                // damage each 50 ms tick (`shporzne.cpp` 9/10000 dmg
+                // chance, 1/10000 death chance per ms). Don't drain
+                // up-front and don't despawn — just attach and let
+                // `tick_orz_marines_boarded` handle the rest.
+                commands.entity(sub_entity).try_insert(OrzMarineBoarded {
+                    host: other_entity,
+                    roll_accum_s: 0.0,
+                });
+                info!("marine boarded P{}", other_ship.player_slot + 1);
             }
             SubEntityAi::DriftAndCollect {
                 owner_slot,
