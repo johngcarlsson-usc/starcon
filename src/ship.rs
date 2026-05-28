@@ -3241,7 +3241,7 @@ fn cap_velocity(
             if speed <= derived.speed_max * 1.02 && derived.speed_max > 0.0 {
                 commands
                     .entity(entity)
-                    .remove::<crate::ultimate::PostUltimateCoasting>();
+                    .try_remove::<crate::ultimate::PostUltimateCoasting>();
             }
             continue;
         }
@@ -6113,7 +6113,7 @@ fn apply_syreen_drain(
         }
         commands
             .entity(firer_entity)
-            .remove::<SyreenDrainRequest>();
+            .try_remove::<SyreenDrainRequest>();
     }
 }
 

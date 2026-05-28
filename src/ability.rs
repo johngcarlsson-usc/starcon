@@ -679,7 +679,7 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
             // has access to the full ship query.
             ctx.commands
                 .entity(ctx.entity)
-                .insert(crate::ship::SyreenDrainRequest {
+                .try_insert(crate::ship::SyreenDrainRequest {
                     range: *range,
                     max_drain: *max_drain,
                 });
