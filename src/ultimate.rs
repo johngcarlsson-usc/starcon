@@ -900,8 +900,14 @@ const PKUNK_FORMATION_S: f32 = 10.0;
 const PKUNK_FORMATION_SIDE: f32 = 240.0;
 
 // -- Slylandro asteroid storm --
-const SLYP_CHARGE_S: f32 = 0.7;
-const SLYP_PULLBACK_S: f32 = 0.7;
+// Was 0.7 + 0.7 = 1.4 s of paused beat AFTER the (already paused)
+// dramatic zoom-in / zoom-out — which felt like the game had frozen.
+// Cut both: 0.25 s is enough to register the asteroid-arming flash;
+// the legacy "camera pullback" was made obsolete by `DramaticZoomOut`
+// pulling the camera back BEFORE the variant phases run, so the
+// pullback phase is just a brief held-breath now.
+const SLYP_CHARGE_S: f32 = 0.25;
+const SLYP_PULLBACK_S: f32 = 0.15;
 const SLYP_STORM_S: f32 = 4.0;
 /// Min/max launch speed of each asteroid (world units / second).
 /// Doubled from the first pass + narrower spread so the swarm
