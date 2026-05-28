@@ -4719,6 +4719,7 @@ fn handle_projectile_hits(
     mut commands: Commands,
     mut reader: MessageReader<CollisionStart>,
     projectiles: Query<&Projectile>,
+    proj_positions: Query<&Position, With<Projectile>>,
     limpets: Query<&Limpet>,
     shields: Query<&ShieldActive>,
     damage_to_batt: Query<&DamageToBattery>,
@@ -4912,6 +4913,13 @@ fn handle_projectile_hits(
             );
         }
         if gone.insert(proj_entity) {
+            // Visible boom when a shot lands on a ship — without this
+            // a missile just blinked out of existence. Spawned at the
+            // projectile's last position (asteroid kaboom sprite,
+            // smaller scale) before despawn.
+            if let Ok(proj_pos) = proj_positions.get(proj_entity) {
+                spawn_asteroid_explosion(&mut commands, &assets, proj_pos.0, 14.0);
+            }
             commands.entity(proj_entity).try_despawn();
         }
     }
@@ -6462,7 +6470,7 @@ impl Default for Planet {
             radius: 100.0, // PLAN_S0x sprites are 200×200 → ~100 px radius
             gravity_range: 720.0,   // scale_range(18)
             gravity_mindist: 240.0, // scale_range(6)
-            gravity_accel: 933.0,   // tuned down 1/3 from 1400 — felt too strong
+            gravity_accel: 500.0,   // dialed back twice (1400 → 933 → 500) — was still too strong
             whip_mult: 1.5, // 1 + GravityWhip(0.5)
         }
     }
@@ -6478,6 +6486,17 @@ pub fn spawn_planet(commands: &mut Commands, assets: &AssetServer, rng: &mut cra
     let planet = Planet::default();
     let visual = planet.radius * 2.0;
     let frame = 1 + rng.usize_range(0..3); // PLAN_S01..03
+    // Put the planet somewhere clearly OFF the ±700 spawn corridors so
+    // ships don't start right on top of its gravity well. Pick one of the
+    // four quadrant diagonals with a bit of angular jitter and a comfy
+    // distance from the arena centre — far enough that the closest spawn
+    // is still well outside `gravity_range`.
+    use std::f32::consts::{FRAC_PI_4, PI};
+    let quadrant = rng.usize_range(0..4) as f32;
+    let jitter = (rng.f32() - 0.5) * (PI / 6.0); // ±30°
+    let theta = quadrant * (PI / 2.0) + FRAC_PI_4 + jitter;
+    let r = 1100.0 + rng.f32() * 200.0; // 1100..1300 wu from origin
+    let pos = Vec2::new(theta.cos() * r, theta.sin() * r);
     commands.spawn((
         Sprite {
             image: assets.load(format!("ui/planet_{:02}.png", frame)),
@@ -6486,18 +6505,18 @@ pub fn spawn_planet(commands: &mut Commands, assets: &AssetServer, rng: &mut cra
             ..default()
         },
         // Below ships/projectiles (z 0.5..) but above the starfield.
-        Transform::from_translation(Vec2::ZERO.extend(0.05)),
+        Transform::from_translation(pos.extend(0.05)),
         RigidBody::Static,
         Collider::circle(planet.radius),
         // Some bounce so ramming the planet kicks you off rather than
         // sticking; ships keep most of their speed.
         Restitution::new(0.4),
         Friction::new(0.0),
-        Position(Vec2::ZERO),
+        Position(pos),
         CollisionEventsEnabled,
         planet,
     ));
-    info!("spawned central planet (gravity well)");
+    info!("spawned planet at ({:.0}, {:.0})", pos.x, pos.y);
 }
 
 /// Pull every dynamic body toward each planet, inverse-square with distance
