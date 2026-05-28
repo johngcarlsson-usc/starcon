@@ -738,30 +738,53 @@ pub struct Projectile {
     pub lifetime: f32,
 }
 
-/// On-add hook for `Projectile`: tag the entity for rollback **and**
-/// mark it as a `Sensor`. Sensor projectiles still emit `CollisionStart`
-/// events (so damage handling in `handle_projectile_hits` is unaffected),
-/// but apply no physics impulse to either body — so a ship doesn't get
-/// shoved around by its own muzzle output (Zoq-Fot-Pik symptom) and
-/// projectile-vs-ship hits don't transfer linear/angular momentum.
-///
-/// Druuge keeps its intentional recoil: that runs via
-/// `VolleySpec.recoil_impulse` writing `LinearVelocity` directly on the
-/// firer, independent of the Avian contact resolver, so Sensor status
-/// here doesn't affect it.
+/// Layer bits used by `CollisionLayers` to filter own-slot projectiles
+/// out of a ship's contact set. Bit 0 is the Avian DEFAULT layer (used
+/// by anything we don't tag explicitly: asteroids, planet, damage zones,
+/// sub-entities). Bits 1..=4 are ship-per-slot. Bits 5..=8 are
+/// projectile-per-slot. Filters work bidirectionally — if either side's
+/// `filters` excludes the other's `memberships`, no contact happens, so
+/// it's enough to set the SHIP'S filter to exclude its own slot's
+/// projectile bit and the projectile is invisible to the firer.
+pub(crate) fn ship_layers(slot: usize) -> CollisionLayers {
+    let slot = slot.min(3) as u32;
+    let memberships = 1u32 << (1 + slot);
+    let own_proj_bit = 1u32 << (5 + slot);
+    CollisionLayers::from_bits(memberships, 0xffff_ffffu32 & !own_proj_bit)
+}
+
+pub(crate) fn projectile_layers(slot: usize) -> CollisionLayers {
+    let slot = slot.min(3) as u32;
+    let memberships = 1u32 << (5 + slot);
+    CollisionLayers::from_bits(memberships, 0xffff_ffffu32)
+}
+
+/// On-add hook for `Projectile`: tag the entity for rollback and stamp
+/// it with `CollisionLayers` keyed to the firer's slot, so the firer's
+/// own ship is filtered out of the projectile's contact set (no
+/// muzzle-output recoil / spin on the firer). Opponent ships still
+/// collide normally, taking Avian's default linear+angular impulse.
 fn projectile_on_add(
     mut world: bevy::ecs::world::DeferredWorld,
     ctx: bevy::ecs::lifecycle::HookContext,
 ) {
+    // Look up the firer's slot via `Projectile.owner` → `Ship.player_slot`.
+    // Fall back to slot 0 if the chain breaks (the firer was already
+    // despawned, or the projectile is owned by a non-ship sub-entity).
+    let owner = world.get::<Projectile>(ctx.entity).map(|p| p.owner);
+    let slot = owner
+        .and_then(|e| world.get::<Ship>(e).map(|s| s.player_slot))
+        .unwrap_or(0);
+    let layers = projectile_layers(slot);
     let need_rb = world.get::<bevy_ggrs::Rollback>(ctx.entity).is_none();
-    let need_sensor = world.get::<Sensor>(ctx.entity).is_none();
+    let need_layers = world.get::<CollisionLayers>(ctx.entity).is_none();
     let mut commands = world.commands();
     let mut ec = commands.entity(ctx.entity);
     if need_rb {
         ec.try_insert(bevy_ggrs::Rollback);
     }
-    if need_sensor {
-        ec.try_insert(Sensor);
+    if need_layers {
+        ec.try_insert(layers);
     }
 }
 
@@ -1598,14 +1621,13 @@ fn spawn_ship(
         RigidBody::Dynamic,
         collider,
         Mass(stats.mass),
-        // Ships should never rotate from external impulse — bouncing off
-        // an asteroid or another ship shouldn't spin them, only the
-        // player's own turn input should change angular velocity. Setting
-        // an enormous AngularInertia means τ = J·α → α ≈ 0 for any
-        // collision torque the solver applies. Our Classic-mode steering
-        // writes `AngularVelocity` directly (bypassing torque integration)
-        // so this doesn't break controlled turning.
-        AngularInertia(1.0e10),
+        // Filter own-slot projectiles out of this ship's collision set —
+        // a ship can't be pushed or spun by its own muzzle output, but
+        // everything else (asteroids, planet, ship-ship rams, opponent
+        // weapons) collides normally and imparts Avian's default
+        // linear+angular impulse. See `ship_layers` / `projectile_layers`
+        // for the bit scheme.
+        ship_layers(slot),
         // `Position` is now mandatory because we disabled
         // `PhysicsTransformConfig::transform_to_position` — Avian no
         // longer reads spawn pose from `Transform`, so without an
