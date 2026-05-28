@@ -47,7 +47,15 @@ enum MenuAction {
     Online,
 }
 
-fn spawn_menu(mut commands: Commands) {
+fn spawn_menu(mut commands: Commands, windows: Query<&Window>) {
+    // The menu is a fixed-height column (~600 px at full size). On a phone in
+    // landscape the usable height can be ~330 px, so the column overflowed and
+    // clipped the title + bottom buttons. Scale every dimension to the window
+    // height so the whole thing always fits (clamped so it never gets so tiny
+    // it's unreadable, and never bigger than the original desktop size).
+    let win_h = windows.single().map(|w| w.height()).unwrap_or(720.0);
+    let s = (win_h / 640.0).clamp(0.5, 1.0);
+
     commands
         .spawn((
             MenuRoot,
@@ -60,7 +68,7 @@ fn spawn_menu(mut commands: Commands) {
                 flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
-                row_gap: Val::Px(18.0),
+                row_gap: Val::Px(18.0 * s),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.02, 0.02, 0.06, 0.94)),
@@ -69,49 +77,49 @@ fn spawn_menu(mut commands: Commands) {
             // Title text.
             root.spawn((
                 Text::new("STARCON"),
-                TextFont::from_font_size(64.0),
+                TextFont::from_font_size(64.0 * s),
                 TextColor(Color::srgb(0.85, 0.95, 1.0)),
             ));
             root.spawn((
                 Text::new("Modern Star Control: TimeWarp"),
-                TextFont::from_font_size(18.0),
+                TextFont::from_font_size(18.0 * s),
                 TextColor(Color::srgba(0.65, 0.75, 0.90, 0.85)),
                 Node {
-                    margin: UiRect::bottom(Val::Px(24.0)),
+                    margin: UiRect::bottom(Val::Px(24.0 * s)),
                     ..default()
                 },
             ));
 
-            spawn_button(root, MenuAction::LocalTwo, "Local 2-Player");
-            spawn_button(root, MenuAction::LocalThree, "Local 3-Player (hotseat)");
-            spawn_button(root, MenuAction::LocalFour, "Local 4-Player (hotseat)");
-            spawn_button(root, MenuAction::SoloVsAi, "Solo vs 3 AI");
-            spawn_button(root, MenuAction::Online, "Online (2-4 players)");
+            spawn_button(root, MenuAction::LocalTwo, "Local 2-Player", s);
+            spawn_button(root, MenuAction::LocalThree, "Local 3-Player (hotseat)", s);
+            spawn_button(root, MenuAction::LocalFour, "Local 4-Player (hotseat)", s);
+            spawn_button(root, MenuAction::SoloVsAi, "Solo vs 3 AI", s);
+            spawn_button(root, MenuAction::Online, "Online (2-4 players)", s);
 
             root.spawn((
                 Text::new("[1..0] cycle P1 class    [F1..F10] cycle P2"),
-                TextFont::from_font_size(13.0),
+                TextFont::from_font_size(13.0 * s),
                 TextColor(Color::srgba(0.55, 0.62, 0.75, 0.75)),
                 Node {
-                    margin: UiRect::top(Val::Px(28.0)),
+                    margin: UiRect::top(Val::Px(28.0 * s)),
                     ..default()
                 },
             ));
         });
 }
 
-fn spawn_button(parent: &mut ChildSpawnerCommands, action: MenuAction, label: &str) {
+fn spawn_button(parent: &mut ChildSpawnerCommands, action: MenuAction, label: &str, s: f32) {
     parent
         .spawn((
             Button,
             action,
             Node {
-                width: Val::Px(320.0),
-                height: Val::Px(54.0),
+                width: Val::Px(320.0 * s),
+                height: Val::Px(54.0 * s),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 border: UiRect::all(Val::Px(2.0)),
-                border_radius: BorderRadius::all(Val::Px(10.0)),
+                border_radius: BorderRadius::all(Val::Px(10.0 * s)),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.15, 0.25, 0.45, 0.85)),
@@ -120,7 +128,7 @@ fn spawn_button(parent: &mut ChildSpawnerCommands, action: MenuAction, label: &s
         .with_children(|btn| {
             btn.spawn((
                 Text::new(label.to_string()),
-                TextFont::from_font_size(22.0),
+                TextFont::from_font_size(22.0 * s),
                 TextColor(Color::srgba(1.0, 1.0, 1.0, 0.95)),
             ));
         });

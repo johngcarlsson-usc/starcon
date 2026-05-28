@@ -992,12 +992,23 @@ pub fn spawn_match(
     // Rotation convention: 0 rad = sprite facing +Y (up), positive
     // = CCW. -π/2 → +X (right), +π/2 → -X (left), 0 → +Y,
     // π → -Y. All four ships face the arena centre.
+    //
+    // Spawn radius is 700 → opposing pairs start 1400 apart, just UNDER the
+    // half-arena (1500). That matters for the toroidal camera: if the pair
+    // started more than half an arena apart (e.g. the old ±900 → 1800), the
+    // genuinely shortest path between them would be the WRAP direction, so
+    // the auto-framing would want to show them wrapped (back-to-back) instead
+    // of facing each other across the arena. Keeping the start under half the
+    // arena makes "face each other directly" the true minimum-image framing,
+    // and flying outward past the half-arena point then cleanly hands off to
+    // the wrap framing. (700 also sits right at the planet's gravity_range, so
+    // ships feel no initial pull.)
     use std::f32::consts::{FRAC_PI_2, PI};
     let spawn_table: [(Vec2, f32); 4] = [
-        (Vec2::new(-900.0, 0.0), -FRAC_PI_2), // W, facing E
-        (Vec2::new(900.0, 0.0), FRAC_PI_2),   // E, facing W
-        (Vec2::new(0.0, -900.0), 0.0),        // S, facing N
-        (Vec2::new(0.0, 900.0), PI),          // N, facing S
+        (Vec2::new(-700.0, 0.0), -FRAC_PI_2), // W, facing E
+        (Vec2::new(700.0, 0.0), FRAC_PI_2),   // E, facing W
+        (Vec2::new(0.0, -700.0), 0.0),        // S, facing N
+        (Vec2::new(0.0, 700.0), PI),          // N, facing S
     ];
     for (slot, slot_cfg) in config.slots.iter().enumerate().take(4) {
         let (pos, rot) = spawn_table[slot];
@@ -6353,9 +6364,9 @@ pub fn spawn_asteroids(
         let pos = loop {
             let x = rng.signed_unit() * HALF;
             let y = rng.signed_unit() * HALF;
-            // Avoid the spawn corridor around (±900, 0).
-            let near_left = (x - (-900.0)).abs() < KEEP_OUT_X && y.abs() < KEEP_OUT_Y;
-            let near_right = (x - 900.0).abs() < KEEP_OUT_X && y.abs() < KEEP_OUT_Y;
+            // Avoid the spawn corridor around (±700, 0).
+            let near_left = (x - (-700.0)).abs() < KEEP_OUT_X && y.abs() < KEEP_OUT_Y;
+            let near_right = (x - 700.0).abs() < KEEP_OUT_X && y.abs() < KEEP_OUT_Y;
             if !near_left && !near_right {
                 break Vec2::new(x, y);
             }
@@ -6451,15 +6462,15 @@ impl Default for Planet {
             radius: 100.0, // PLAN_S0x sprites are 200×200 → ~100 px radius
             gravity_range: 720.0,   // scale_range(18)
             gravity_mindist: 240.0, // scale_range(6)
-            gravity_accel: 1400.0,
+            gravity_accel: 933.0,   // tuned down 1/3 from 1400 — felt too strong
             whip_mult: 1.5, // 1 + GravityWhip(0.5)
         }
     }
 }
 
 /// Spawn the central planet at the arena origin. Called once per match from
-/// `spawn_match`. Ships spawn at ±900 on the axes, well outside the
-/// `gravity_range`, so they don't start trapped in the well. The original
+/// `spawn_match`. Ships spawn at ±700 on the axes — right at the edge of the
+/// `gravity_range`, so they feel no initial pull. The original
 /// (`other/planet3d.cpp:create_planet`) picks a random one of the three
 /// `PLAN_S0x` melee.dat sprites; we do the same with the seeded RNG so peers
 /// agree.
@@ -6794,8 +6805,8 @@ fn replenish_asteroids(
         .iter()
         .copied()
         .find(|p| {
-            let near_left = (p.x - (-900.0)).abs() < KEEP_OUT_X && p.y.abs() < KEEP_OUT_Y;
-            let near_right = (p.x - 900.0).abs() < KEEP_OUT_X && p.y.abs() < KEEP_OUT_Y;
+            let near_left = (p.x - (-700.0)).abs() < KEEP_OUT_X && p.y.abs() < KEEP_OUT_Y;
+            let near_right = (p.x - 700.0).abs() < KEEP_OUT_X && p.y.abs() < KEEP_OUT_Y;
             let off_screen = (p.x - cam_xy.x).abs() > view_hx
                 || (p.y - cam_xy.y).abs() > view_hy;
             !near_left && !near_right && off_screen

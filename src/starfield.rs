@@ -621,6 +621,15 @@ fn follow_ships_with_camera(
     let mut s_max = Vec2::splat(f32::NEG_INFINITY);
     let mut f_min = Vec2::splat(f32::INFINITY);
     let mut f_max = Vec2::splat(f32::NEG_INFINITY);
+    // Anchor the "fresh" framing on the first ship's raw position and image
+    // every ship as its minimum-image RELATIVE TO THAT ANCHOR. This is the
+    // genuine tightest cluster (the true shortest-path pairing), independent
+    // of where the continuous focus has drifted. Imaging around the focus
+    // instead (the old bug) meant that when you flew one ship toward the wrap
+    // edge — chasing the camera with it — `fresh` tracked the same stretched
+    // framing as `sticky`, so the camera never noticed the ships were actually
+    // closing from the other side and only reframed when they nearly touched.
+    let anchor = ships.iter().next().map(|(_, p)| p.0).unwrap_or(focus);
     for (e, p) in &ships {
         // Pull any remembered image into the current focus cell first.
         // For normal continuity this is a no-op (last frame's image is
@@ -635,7 +644,7 @@ fn follow_ships_with_camera(
             .map(|img| crate::physics::nearest_image(img, focus))
             .unwrap_or_else(|| crate::physics::nearest_image(p.0, focus));
         let sticky = crate::physics::nearest_image(p.0, prev);
-        let fresh = crate::physics::nearest_image(p.0, focus);
+        let fresh = crate::physics::nearest_image(p.0, anchor);
         s_min = s_min.min(sticky);
         s_max = s_max.max(sticky);
         f_min = f_min.min(fresh);
