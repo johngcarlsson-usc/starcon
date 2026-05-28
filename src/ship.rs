@@ -2304,12 +2304,13 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                     random_spread_rad: 0.0,
                     speed: 28.0 * SC2_VEL_SCALE,
                     lifetime: (2.8 * SC2_RANGE_SCALE) / (28.0 * SC2_VEL_SCALE),
-                    // The extracted shot_a01 is essentially blank (mean
-                    // alpha ~0.003), so render a solid coloured bolt
-                    // instead — short-range orange "fire breath".
-                    color: Color::srgb(1.0, 0.55, 0.2),
-                    sprite_size: 12.0,
-                    sprite_path: None,
+                    // The extracted shot_a01 frames are essentially blank
+                    // (mean alpha ~0.003) — use our generated fireball
+                    // for the short-range orange "fire breath" so there's
+                    // actually something visible on screen.
+                    color: Color::srgb(1.0, 0.6, 0.25),
+                    sprite_size: 18.0,
+                    sprite_path: Some("ui/fireball.png".into()),
                     homing_turn_rate: 0.0,
                     is_limpet: false,
                     recoil_impulse: 0.0,
@@ -2348,16 +2349,20 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                         local_dir: forward,
                         impulse: 8.0 * SC2_VEL_SCALE * 7.0, // mass≈7
                     },
-                    // ThraddashFlame: Damage=2, Frames=39 ≈ 3.9 s.
-                    // Bigger + brighter so the afterburner fireball
-                    // trail is clearly visible (was a faint small square).
+                    // Canon ThraddashFlame: 2 damage per CONTACT, armour=2,
+                    // 3.9 s lifetime — the flame puff is consumed on the
+                    // first ship hit. Our `SpawnDamageZone` is dps-based,
+                    // so we approximate "2 dmg per touch" with a low dps
+                    // for the short duration. Previous 8 dps × 3.9 s = ~31
+                    // damage per puff while ramming = obliterating —
+                    // user reported this was way too powerful.
                     AbilityKind::SpawnDamageZone {
                         offset: Vec2::new(0.0, -24.0),
-                        radius: 28.0,
-                        damage_per_sec: 8.0,
-                        duration_s: 3.9,
+                        radius: 22.0,
+                        damage_per_sec: 1.0,
+                        duration_s: 2.0,
                         source_self: true,
-                        color: Color::srgba(1.0, 0.8, 0.5, 0.95),
+                        color: Color::srgba(1.0, 0.8, 0.5, 0.85),
                         sprite_path: Some("ui/fireball.png"),
                     },
                 ]),
@@ -6130,15 +6135,16 @@ pub struct SyreenDrainRequest {
 /// Implements shpsyrpe.cpp:activate_special — the Syreen siren song.
 fn apply_syreen_drain(
     mut commands: Commands,
-    requesters: Query<(Entity, &Ship, &Position, &SyreenDrainRequest)>,
+    assets: Res<AssetServer>,
+    requesters: Query<(Entity, &Ship, &Position, &Rotation, &SyreenDrainRequest)>,
     ship_pos: Query<(Entity, &Ship, &Position), Without<Invisible>>,
     shields: Query<&ShieldActive>,
     mut crews: Query<&mut Crew>,
     mut rng: ResMut<crate::rng::GameRng>,
 ) {
-    for (firer_entity, firer_ship, firer_pos, req) in &requesters {
+    for (firer_entity, firer_ship, firer_pos, firer_rot, req) in &requesters {
         let firer_xy = firer_pos.0;
-        let mut drained_total = 0;
+        let _firer_rot = firer_rot;
         for (target_entity, target_ship, target_pos) in &ship_pos {
             if target_entity == firer_entity {
                 continue;
@@ -6166,26 +6172,75 @@ fn apply_syreen_drain(
             if dmg <= 0 {
                 continue;
             }
-            if let Ok(mut crew) = crews.get_mut(target_entity) {
-                let actual = dmg.min(crew.current);
-                if actual > 0 {
-                    crew.current -= actual;
-                    drained_total += actual;
+            let actual = if let Ok(mut crew) = crews.get_mut(target_entity) {
+                let a = dmg.min(crew.current);
+                if a > 0 {
+                    crew.current -= a;
                 }
+                a
+            } else {
+                0
+            };
+            // Canon `shpsyrpe.cpp`: for each crew lured, spawn a CrewPod
+            // (`data->spriteSpecial`, the little green figure) that drifts
+            // from the target toward the Syreen and joins it on contact.
+            // We use the `DriftAndCollect` SubEntity AI: ballistic motion
+            // at spawn velocity, on hit with an owner-slot ship adds
+            // `crew_value` crew. Velocity points toward the Syreen with
+            // random jitter, like the canon `vel = unit_vector(traj) *
+            // velocity` (re-evaluated each tick on canon; for our ballistic
+            // pod we lock the spawn-time direction — close enough).
+            for _ in 0..actual {
+                let jitter = Vec2::new(
+                    (rng.f32() - 0.5) * 30.0,
+                    (rng.f32() - 0.5) * 30.0,
+                );
+                let spawn = target_pos.0 + jitter;
+                let to_firer = firer_xy - spawn;
+                let dir = if to_firer.length_squared() > 1.0 {
+                    to_firer.normalize()
+                } else {
+                    Vec2::Y
+                };
+                let speed = 220.0;
+                let local_dir = Vec2::new(0.0, 1.0); // forward-local; rotated below
+                // `spawn_sub_entity` rotates local_dir by the owner's
+                // rotation. Hand it a zeroed "rotation" by spawning the
+                // pod at the target's position via the firer (rotation
+                // doesn't matter for DriftAndCollect — it's ballistic),
+                // and inject the actual world direction via a follow-up
+                // velocity write. Easier: build the LinearVelocity
+                // ourselves and spawn directly.
+                let _ = local_dir;
+                commands.spawn((
+                    SubEntity {
+                        owner: firer_entity,
+                        remaining_s: 8.0,
+                        hp: 1,
+                    },
+                    SubEntityAi::DriftAndCollect {
+                        owner_slot: firer_ship.player_slot,
+                        crew_value: 1,
+                    },
+                    Sprite {
+                        image: assets.load("ships/syrpe/sprites/shot_b01.png".to_string()),
+                        color: Color::srgb(0.5, 1.0, 0.5),
+                        custom_size: Some(Vec2::splat(7.0)),
+                        ..default()
+                    },
+                    Transform::from_translation(spawn.extend(0.4)),
+                    RigidBody::Dynamic,
+                    Collider::circle(3.5),
+                    Mass(0.4),
+                    Position(spawn),
+                    Rotation::default(),
+                    LinearVelocity(dir * speed),
+                    AngularVelocity::ZERO,
+                    LinearDamping(0.0),
+                    AngularDamping(0.0),
+                    CollisionEventsEnabled,
+                ));
             }
-        }
-        // The lured crew "jump ship" and join the Syreen — it absorbs
-        // them up to its (large) max, which is why it starts under-
-        // crewed. Apply after the loop so we don't borrow `crews` twice.
-        if drained_total > 0 {
-            if let Ok(mut firer_crew) = crews.get_mut(firer_entity) {
-                firer_crew.current = (firer_crew.current + drained_total).min(firer_crew.max);
-            }
-            info!(
-                "P{} Syreen song lured {} crew aboard",
-                firer_ship.player_slot + 1,
-                drained_total
-            );
         }
         commands
             .entity(firer_entity)
@@ -6960,11 +7015,11 @@ fn tick_planet_grind(
     mut crews: Query<&mut Crew, With<Ship>>,
     shields: Query<&ShieldActive>,
 ) {
-    /// Crew per second while touching the planet — enough that a ship
-    /// dragged in by gravity dies within a couple of seconds, fast
-    /// enough that you can't tank it with shields, slow enough that a
-    /// grazing slingshot doesn't instantly kill you.
-    const PLANET_GRIND_DPS: f32 = 12.0;
+    /// Crew per second while touching the planet. A ship dragged in and
+    /// pinned dies in a few seconds; a slingshot brush that releases on
+    /// its own only costs a crew or two. Earlier 12/s was insta-kill on
+    /// low-crew classes (Shofixti, Pkunk) the moment they touched down.
+    const PLANET_GRIND_DPS: f32 = 3.0;
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
@@ -7080,9 +7135,12 @@ fn tick_planet_contact(
         // Ship hit. Grazing the planet's surface costs crew (shield-aware).
         let Ok(ship) = ships.get(other_e) else { continue; };
         let Ok(mut crew) = crews.get_mut(other_e) else { continue; };
+        // Grazing damage on first contact — modest single-crew tap so a
+        // brush isn't immediately fatal (the original Planet::inflict_damage
+        // dealt 1 dmg vs the ship's armour; for low-crew classes like
+        // Shofixti the previous "crew/8 min 2" was an insta-kill on touch).
         let factor = shields.get(other_e).map(|s| s.damage_factor).unwrap_or(1.0);
-        let base = (crew.current / 8).max(2);
-        let dmg = ((base as f32 * factor).round() as i32).max(0);
+        let dmg = ((1.0 * factor).round() as i32).max(0);
         if dmg > 0 {
             crew.current = (crew.current - dmg).max(0);
             info!("P{} grazed the planet: -{} crew", ship.player_slot + 1, dmg);

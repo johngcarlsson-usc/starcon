@@ -37,19 +37,6 @@ pub enum AppState {
 
 fn main() {
     App::new()
-        // Make Bevy's command error handler WARN instead of PANIC. With the
-        // default handler, every `commands.entity(e).<op>()` on an entity
-        // that's been despawned earlier in the same flush takes the match
-        // out — we've found and fixed dozens of these (see the try_*
-        // sweeps), but the surface area is huge (every component insert /
-        // remove / despawn on any rollback-tracked entity is a potential
-        // race when a ship dies mid-tick). Routing stale-entity commands
-        // to the warn handler turns a hard crash into a console line and
-        // a silent no-op — far better behaviour for the player, and
-        // doesn't mask the bug from the dev console.
-        .insert_resource(bevy::ecs::error::DefaultErrorHandler(
-            bevy::ecs::error::warn,
-        ))
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
