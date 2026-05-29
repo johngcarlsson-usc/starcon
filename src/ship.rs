@@ -1386,6 +1386,61 @@ pub fn spawn_match(
 
     spawn_planet(&mut commands, &assets, &mut rng);
     spawn_asteroids(&mut commands, &assets, &mut rng);
+
+    // Canon VUX `relocate()` (`shpvuxin.cpp:176-189`): on combat
+    // start, if the VUX is farther than ~500 canon px from its
+    // target, teleport to 125 canon px off the target and face it.
+    // In our wu (40 wu / canon-range-unit, 12.5 wu per canon px),
+    // 500 canon px ≈ 6250 wu — well over our arena, so this
+    // ALWAYS fires for a 1v1. Approximate the canon "125 canon px"
+    // with 220 wu — just outside the VUX's laser range (360 wu)
+    // so the player still has to close to fire but starts most of
+    // the way there. Iterate the spawn table again so we can
+    // overwrite the compass-point pos we already set.
+    for (vux_slot, vux_cfg) in config.slots.iter().enumerate().take(4) {
+        if vux_cfg.class != ShipClass::Vuxin {
+            continue;
+        }
+        // Find another slot to anchor to. In 1v1 that's the only
+        // other ship; in 4-player FFA, the first non-self slot is
+        // close enough to canon (which targets `control->target`).
+        let Some((opp_idx, _)) = config
+            .slots
+            .iter()
+            .enumerate()
+            .take(4)
+            .find(|(i, _)| *i != vux_slot)
+        else {
+            continue;
+        };
+        let opp_pos = spawn_table[opp_idx].0;
+        let vux_pos = spawn_table[vux_slot].0;
+        let toward_opp = (opp_pos - vux_pos).normalize_or_zero();
+        if toward_opp == Vec2::ZERO {
+            continue;
+        }
+        let new_pos = opp_pos - toward_opp * 220.0;
+        let new_rot = (-toward_opp.x).atan2(toward_opp.y);
+        // We need the Entity for this slot; find it by player_slot.
+        // Done via a deferred command — `apply_player_input` reads
+        // `Position`/`Rotation` next tick.
+        commands.queue(move |world: &mut World| {
+            let mut q = world.query::<(Entity, &Ship)>();
+            let candidate = q.iter(world).find_map(|(e, s)| {
+                (s.player_slot == vux_slot).then_some(e)
+            });
+            if let Some(e) = candidate {
+                if let Ok(mut ec) = world.get_entity_mut(e) {
+                    if let Some(mut p) = ec.get_mut::<Position>() {
+                        p.0 = new_pos;
+                    }
+                    if let Some(mut r) = ec.get_mut::<Rotation>() {
+                        *r = Rotation::radians(new_rot);
+                    }
+                }
+            }
+        });
+    }
 }
 
 /// Class-picker hotkeys. Two ways in:
@@ -2562,7 +2617,16 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                     color: Color::srgb(1.0, 1.0, 1.0),
                     sprite_size: 10.0,
                     sprite_path: Some("ships/vuxin/sprites/shot_a01.png".into()),
-                    homing_turn_rate: 0.0,
+                    // Canon VuxLimpet::calculate re-points `vel` AT the
+                    // target every frame (no inertia, no turn-rate cap):
+                    //   if (ship->target && !ship->target->isInvisible()) {
+                    //       angle = trajectory_angle(ship->target);
+                    //       vel = v * unit_vector(angle);
+                    //   }
+                    // Match that with a turn rate large enough to
+                    // fully re-orient within one physics step
+                    // (20 Hz → ~3.14 rad/tick covers any heading).
+                    homing_turn_rate: 100.0,
                     is_limpet: true,
                     recoil_impulse: 0.0,
                 }]},
