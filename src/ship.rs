@@ -3436,7 +3436,14 @@ pub(crate) fn apply_player_input(
 fn cycle_angular_override(
     keys: Res<ButtonInput<KeyCode>>,
     mut override_mode: ResMut<AngularControlOverride>,
+    session: Option<Res<bevy_ggrs::Session<crate::netplay::Config>>>,
 ) {
+    // Bail in netplay: local KeyM mutates `AngularControlOverride`,
+    // which `apply_player_input` (GgrsSchedule) reads. Without a
+    // wire-format vote both peers' steering models would diverge.
+    if session.is_some() {
+        return;
+    }
     if !keys.just_pressed(KeyCode::KeyM) {
         return;
     }

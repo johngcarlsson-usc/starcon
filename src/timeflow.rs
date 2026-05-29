@@ -82,7 +82,19 @@ impl Plugin for TimeflowPlugin {
     }
 }
 
-fn debug_controls(keys: Res<ButtonInput<KeyCode>>, mut scale: ResMut<TimeScale>) {
+fn debug_controls(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut scale: ResMut<TimeScale>,
+    session: Option<Res<bevy_ggrs::Session<crate::netplay::Config>>>,
+) {
+    // Bail in netplay: this reads local `KeyCode` and writes into
+    // `TimeScale`, which `apply_time_scale` then bakes into
+    // `Time<Physics>.relative_speed()`. If one peer slowed time the
+    // other side wouldn't see it through GGRS, so physics would tick
+    // at different rates per peer — instant desync.
+    if session.is_some() {
+        return;
+    }
     let changed = if keys.just_pressed(KeyCode::BracketLeft) {
         scale.0 = (scale.0 - 0.25).max(0.0);
         true

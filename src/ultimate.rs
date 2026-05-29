@@ -1202,7 +1202,20 @@ fn hyper_trigger(
     mut color_mats: ResMut<Assets<SoftBladeMaterial>>,
     assets: Res<AssetServer>,
     mut virt: ResMut<Time<Virtual>>,
+    session: Option<Res<bevy_ggrs::Session<crate::netplay::Config>>>,
 ) {
+    // Ultimates are disabled in netplay: the cinematic phase machine
+    // (`tick_ultimate_phases`) runs in `Update` and drives state
+    // transitions + spawns via `Time<Real>`, which diverges across
+    // peers and can't be rolled back. The pause via `Time<Virtual>`
+    // freezes `GgrsSchedule`, so the proper gameplay-effect systems
+    // also stop running. Disabling the trigger keeps the rest of
+    // netplay clean while a future refactor splits the cinematic into
+    // a rollback-tracked phase machine + visual-only animation
+    // systems.
+    if session.is_some() {
+        return;
+    }
     if state.phase != UltimatePhase::Idle {
         return;
     }
@@ -2247,6 +2260,12 @@ fn tick_ultimate_beams(
     asteroids: Query<(Entity, &Position), With<crate::ship::Asteroid>>,
     assets: Res<AssetServer>,
     mut commands: Commands,
+    // Determinism-critical: this system runs in `GgrsSchedule` and
+    // spawns `BeamTrail` entities whose properties (lifetime, color,
+    // width) all need to be identical across peers — otherwise the
+    // snapshotted world diverges. Use seeded `GameRng` instead of
+    // global `fastrand`.
+    mut rng: ResMut<crate::rng::GameRng>,
 ) {
     if state.phase == UltimatePhase::Idle {
         return;
@@ -2393,7 +2412,7 @@ fn tick_ultimate_beams(
         let t = (i as f32 + 0.5) / TRAIL_SAMPLES_PER_FRAME as f32;
         // Add a tiny per-sample angle jitter so even the interpolated
         // ghosts don't sit on the perfect arc — feels less mechanical.
-        let angle_jitter = (fastrand::f32() - 0.5) * 0.10;
+        let angle_jitter = (rng.f32() - 0.5) * 0.10;
         let sample_angle = last_angle + sweep * t + angle_jitter;
 
         // Direction along this ghost's blade, for the tangential
@@ -2406,9 +2425,9 @@ fn tick_ultimate_beams(
         // Mostly tangential, with a small radial outward component
         // — flames lick off and outward.
         let drift_tang = tangent
-            * (fastrand::f32() * 2.0 - 1.0)
+            * (rng.f32() * 2.0 - 1.0)
             * TRAIL_DRIFT_MAX;
-        let drift_rad = sample_dir * fastrand::f32() * TRAIL_DRIFT_MAX * 0.4;
+        let drift_rad = sample_dir * rng.f32() * TRAIL_DRIFT_MAX * 0.4;
         let drift_vel = drift_tang + drift_rad;
 
         // Spawn all three layers as trails. Earlier interpolated
@@ -2424,20 +2443,20 @@ fn tick_ultimate_beams(
             };
             // Per-ghost lifetime jitter (0.65..1.35×) so trails
             // don't all snuff out together — flickering effect.
-            let life_jitter = 0.65 + fastrand::f32() * 0.70;
+            let life_jitter = 0.65 + rng.f32() * 0.70;
             let lifetime = TRAIL_LIFETIME_S * life_mult * life_jitter;
             // Width / length jitter so the smear has texture rather
             // than reading as uniform slabs.
-            let width_jitter = 0.6 + fastrand::f32() * 0.9; // 0.6..1.5
-            let length_jitter = 0.8 + fastrand::f32() * 0.4; // 0.8..1.2
+            let width_jitter = 0.6 + rng.f32() * 0.9; // 0.6..1.5
+            let length_jitter = 0.8 + rng.f32() * 0.4; // 0.8..1.2
             let peak =
                 TRAIL_PEAK_ALPHA * phase_alpha * alpha_mult * (0.55 + 0.45 * freshness);
             let lin = color.to_linear();
             // Small per-ghost RGB jitter — hue chaos for the fiery
             // flicker (each wisp a slightly different shade).
-            let r_jit = (fastrand::f32() - 0.5) * 0.18;
-            let g_jit = (fastrand::f32() - 0.5) * 0.12;
-            let b_jit = (fastrand::f32() - 0.5) * 0.10;
+            let r_jit = (rng.f32() - 0.5) * 0.18;
+            let g_jit = (rng.f32() - 0.5) * 0.12;
+            let b_jit = (rng.f32() - 0.5) * 0.10;
             let trail_color = Color::srgba(
                 (lin.red + r_jit).clamp(0.0, 1.5),
                 (lin.green + g_jit).clamp(0.0, 1.5),
@@ -2449,7 +2468,7 @@ fn tick_ultimate_beams(
             // Per-ghost width growth — some wisps puff out big,
             // others stay tight. Range 1.5..4.0× so the mix of
             // tight cores and big billows gives texture.
-            let width_growth = 1.5 + fastrand::f32() * 2.5;
+            let width_growth = 1.5 + rng.f32() * 2.5;
             commands.spawn((
                 BeamTrail {
                     remaining_s: lifetime,
@@ -2657,6 +2676,9 @@ fn tick_earthling_blast(
     mut color_mats: ResMut<Assets<SoftBladeMaterial>>,
     ultimate_meshes: Res<UltimateMeshes>,
     mut commands: Commands,
+    // Trail-jitter draws — needs seeded RNG so the spawned BeamTrail
+    // entities have matching properties across peers in GgrsSchedule.
+    mut rng: ResMut<crate::rng::GameRng>,
 ) {
     if state.variant != UltimateVariant::Earthling
         || state.phase != UltimatePhase::EarthlingBlasting
@@ -2725,13 +2747,13 @@ fn tick_earthling_blast(
     const TRAILS_PER_FRAME: usize = 3;
     for i in 0..TRAILS_PER_FRAME {
         let t = (i as f32 + 0.5) / TRAILS_PER_FRAME as f32;
-        let lateral = (fastrand::f32() - 0.5) * 22.0;
+        let lateral = (rng.f32() - 0.5) * 22.0;
         let along = -t * frame_travel * 0.7;
         let tangent = Vec2::new(-dir.y, dir.x);
         let origin = pos.0 + dir * along + tangent * lateral;
 
         // Random jagged angle offset so segments fork at angles.
-        let angle_jit = (fastrand::f32() - 0.5) * 0.30;
+        let angle_jit = (rng.f32() - 0.5) * 0.30;
         let trail_dir = Vec2::new(
             dir.x * angle_jit.cos() - dir.y * angle_jit.sin(),
             dir.x * angle_jit.sin() + dir.y * angle_jit.cos(),
@@ -2742,16 +2764,16 @@ fn tick_earthling_blast(
         // blast direction (apex AT the ship, base extending behind).
         // To flip the triangle (apex behind, base toward us), we
         // simply rotate by +π so local +Y points opposite to dir.
-        let streak_len = 70.0 + fastrand::f32() * 140.0;
-        let streak_width = 8.0 + fastrand::f32() * 14.0;
-        let lifetime = 0.45 + fastrand::f32() * 0.40;
-        let peak = 0.85 + fastrand::f32() * 0.15;
+        let streak_len = 70.0 + rng.f32() * 140.0;
+        let streak_width = 8.0 + rng.f32() * 14.0;
+        let lifetime = 0.45 + rng.f32() * 0.40;
+        let peak = 0.85 + rng.f32() * 0.15;
 
         // Gradient: hot-white center fading toward blue. The
         // shader-less version just uses one solid colour per trail,
         // varied by the ghost — gives the gradient feel across the
         // population of ghosts.
-        let hot = fastrand::f32();
+        let hot = rng.f32();
         let color = Color::srgba(
             0.55 + 0.45 * hot,
             0.75 + 0.25 * hot,
@@ -4033,6 +4055,10 @@ pub fn tick_mmrxf_tangled_laser(
     >,
     shields: Query<&crate::ship::ShieldActive>,
     mut crews: Query<&mut crate::ship::Crew>,
+    // Determinism-critical: runs in GgrsSchedule, spawns visual
+    // segments whose `fork_perp_sign` jitter (rng below) needs to
+    // match across peers — `fastrand::bool()` diverges per peer.
+    mut rng: ResMut<crate::rng::GameRng>,
 ) {
     if state.variant != UltimateVariant::Mmrnmhrm
         || state.phase != UltimatePhase::MmrxfUnleashing
@@ -4133,7 +4159,7 @@ pub fn tick_mmrxf_tangled_laser(
             }
             let dir = remaining / remaining_len;
             let base_angle = dir.y.atan2(dir.x);
-            let dev = (fastrand::f32() - 0.5) * 2.0 * STEP_ANGLE_DEV;
+            let dev = (rng.f32() - 0.5) * 2.0 * STEP_ANGLE_DEV;
             let step_angle = base_angle + dev;
             let step_len = (remaining_len * STEP_FRAC)
                 .max(STEP_MIN)
@@ -4145,13 +4171,13 @@ pub fn tick_mmrxf_tangled_laser(
             // Dead-end fork: shoots roughly perpendicular for
             // FORK_STEPS short steps. Adds the "tangled rope"
             // fingers without changing where the main bolt ends.
-            if fastrand::f32() < FORK_PROB {
+            if rng.f32() < FORK_PROB {
                 let mut fork_cursor = cursor;
-                let fork_perp_sign = if fastrand::bool() { 1.0 } else { -1.0 };
+                let fork_perp_sign = if rng.bool() { 1.0 } else { -1.0 };
                 let mut fork_angle =
                     base_angle + fork_perp_sign * std::f32::consts::FRAC_PI_2;
                 for _ in 0..FORK_STEPS {
-                    fork_angle += (fastrand::f32() - 0.5) * 2.0 * STEP_ANGLE_DEV;
+                    fork_angle += (rng.f32() - 0.5) * 2.0 * STEP_ANGLE_DEV;
                     let fork_step = step_len * 0.6;
                     let fork_next = fork_cursor
                         + Vec2::new(fork_angle.cos(), fork_angle.sin()) * fork_step;
