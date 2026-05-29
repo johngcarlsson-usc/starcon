@@ -98,16 +98,27 @@ fn play_ship_death_boom(
 
 /// Per-faction post-match jingle (`victoryditty.dat:<RACE>DITTY_WAV`).
 /// Triggered the tick the match transitions to `PostMatch` (one-shot,
-/// guarded by `Changed<MatchPhase>`).
+/// guarded by `Changed<MatchPhase>`). Also kills the combat loop so
+/// the ditty plays clean — the state stays in `InMatch` during the
+/// post-match summary, so the OnExit(InMatch) `stop_music` hook
+/// doesn't fire here.
 fn play_victory_ditty(
     mut commands: Commands,
     assets: Res<AssetServer>,
     phase: Res<MatchPhase>,
     outcome: Res<MatchOutcome>,
     ships: Query<&Ship>,
+    mut track: ResMut<MusicTrack>,
 ) {
     if !phase.is_changed() || *phase != MatchPhase::PostMatch {
         return;
+    }
+    // Stop the combat loop regardless of whether we have a winner
+    // ditty to play (draws should still go silent for the summary).
+    if let Some(e) = track.0.take() {
+        if let Ok(mut ec) = commands.get_entity(e) {
+            ec.try_despawn();
+        }
     }
     let Some(winner_slot) = outcome.winner else {
         return;
