@@ -16,7 +16,7 @@
 //! cutover stays small.
 
 use bevy::prelude::*;
-use bevy_matchbox::matchbox_socket::PeerId;
+use bevy_matchbox::matchbox_socket::{PeerId, WebRtcChannel};
 use serde::{Deserialize, Serialize};
 
 /// Who's running the simulation for this match.
@@ -175,11 +175,114 @@ pub struct LobbySlot {
     pub ready: bool,
 }
 
+/// Owns the second matchbox channel (the one NOT given to GGRS) for
+/// authoritative-host traffic: input forwarding, state snapshots,
+/// lobby votes. Inserted by `netplay::start_p2p_session` after
+/// taking ownership of `channel(1)` off the `MatchboxSocket`.
+///
+/// `channel` is wrapped in `Option` so the receive system can take
+/// it temporarily across a mutation boundary without re-checking
+/// the resource handle. `heartbeat_s` ticks the periodic ping the
+/// connectivity-test system uses to verify the channel actually
+/// reaches the other peer.
+#[derive(Resource)]
+pub struct NetSocket {
+    pub channel: Option<WebRtcChannel>,
+    pub heartbeat_s: f32,
+    /// Remote peers we should send to. `WebRtcChannel` itself
+    /// doesn't expose a connected-peer list (that's on
+    /// `MatchboxSocket`), so we cache it here at handshake time.
+    pub peers: Vec<PeerId>,
+}
+
+/// Cadence of the connectivity heartbeat sent on the NetMessage
+/// channel. Slow (1 Hz) — this is only here to confirm the channel
+/// is wired up; once snapshots are flowing they'll dominate.
+const HEARTBEAT_INTERVAL_S: f32 = 1.0;
+
 pub struct NetcodePlugin;
 
 impl Plugin for NetcodePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetRole>()
-            .init_resource::<NetIdAllocator>();
+            .init_resource::<NetIdAllocator>()
+            // Heartbeat + receive loop. Both gate on the
+            // `NetSocket` resource existing, which only happens
+            // after the matchbox handshake — so they're no-ops
+            // in solo / local hotseat.
+            .add_systems(
+                Update,
+                (send_heartbeat, drain_messages).chain().run_if(
+                    resource_exists::<NetSocket>,
+                ),
+            );
+    }
+}
+
+fn send_heartbeat(
+    time: Res<Time<Real>>,
+    role: Res<NetRole>,
+    mut sock: ResMut<NetSocket>,
+) {
+    sock.heartbeat_s += time.delta_secs();
+    if sock.heartbeat_s < HEARTBEAT_INTERVAL_S {
+        return;
+    }
+    sock.heartbeat_s = 0.0;
+    if sock.peers.is_empty() {
+        return;
+    }
+    // Encode an empty snapshot as the heartbeat for now. Once host
+    // snapshots are wired up this gets replaced by the real
+    // periodic snapshot send; for the foundation commit we just
+    // verify the channel round-trips.
+    let msg = NetMessage::Snapshot {
+        tick: 0,
+        entities: Vec::new(),
+    };
+    let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) else {
+        return;
+    };
+    let peers = sock.peers.clone();
+    let Some(channel) = sock.channel.as_mut() else {
+        return;
+    };
+    for peer in peers {
+        channel.send(bytes.clone().into(), peer);
+    }
+    let _ = role; // role isn't acted on yet; the dispatcher uses it next session
+}
+
+fn drain_messages(mut sock: ResMut<NetSocket>) {
+    let Some(channel) = sock.channel.as_mut() else {
+        return;
+    };
+    for (peer, bytes) in channel.receive() {
+        let Ok((msg, _)) =
+            bincode::serde::decode_from_slice::<NetMessage, _>(&bytes, bincode::config::standard())
+        else {
+            warn!("netcode: decode failed from {peer:?} ({} bytes)", bytes.len());
+            continue;
+        };
+        // Dispatch by message type. The host/guest gameplay split
+        // isn't wired yet — for the foundation pass we only log
+        // receipt so the user can confirm the channel is live.
+        match msg {
+            NetMessage::Input { tick, .. } => {
+                debug!("netcode: rx Input tick={tick} from {peer:?}");
+            }
+            NetMessage::Snapshot { tick, entities } => {
+                debug!(
+                    "netcode: rx Snapshot tick={tick} entities={} from {peer:?}",
+                    entities.len()
+                );
+            }
+            NetMessage::Lobby { slots } => {
+                debug!("netcode: rx Lobby slots={} from {peer:?}", slots.len());
+            }
+            NetMessage::LobbyVote { class, ready } => {
+                debug!("netcode: rx LobbyVote class={class} ready={ready} from {peer:?}");
+            }
+        }
     }
 }

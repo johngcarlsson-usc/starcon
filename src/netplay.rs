@@ -817,10 +817,23 @@ fn handle_setup_buttons(
                 info!("netplay: opening matchbox socket → {}", url);
                 let ice = build_ice_config(&ice_override);
                 info!("netplay: ICE servers: {:?}", ice.urls);
+                // Two channels:
+                //   0: unreliable — GGRS rollback inputs (current
+                //      path) + the future authoritative-host
+                //      snapshot stream. High volume, latency
+                //      sensitive, drop-tolerant.
+                //   1: reliable, ordered — lobby votes,
+                //      ship-select state changes, anything that
+                //      "must arrive exactly once." Low volume.
+                // The host/guest split (see NETCODE_REFACTOR.md)
+                // moves snapshot + input traffic to channel 0
+                // while leaving channel 1 for lobby state, so the
+                // two protocols don't head-of-line each other.
                 let socket = MatchboxSocket::from(
                     WebRtcSocketBuilder::new(url)
                         .ice_server(ice)
-                        .add_channel(ChannelConfig::unreliable()),
+                        .add_channel(ChannelConfig::unreliable())
+                        .add_channel(ChannelConfig::reliable()),
                 );
                 commands.insert_resource(socket);
                 state.status = LobbyStatus::Connecting;
@@ -930,6 +943,17 @@ fn update_lobby(
         .chain(std::iter::once(our_id))
         .collect();
     peer_ids.sort();
+
+    // Elect host / guest from the sorted PeerId list. Lower id = Host.
+    // Same answer on both peers because they both see the same sort.
+    let role = crate::netcode::elect_role(our_id, &peer_ids);
+    commands.insert_resource(role);
+    info!("netplay: role elected = {:?}", role);
+    // Reset the NetId allocator so id 1 is the first ship of the new
+    // match. Lives on the host; guests don't allocate but resetting
+    // is harmless and keeps the resource consistent.
+    commands.insert_resource(crate::netcode::NetIdAllocator::default());
+
     let players: Vec<PlayerType<PeerId>> = peer_ids
         .iter()
         .map(|&id| {
@@ -984,6 +1008,27 @@ fn update_lobby(
             return;
         }
     };
+    // Take channel 1 too — this is the host/guest NetMessage path.
+    // For now the host/guest split isn't actually driving gameplay
+    // yet (GGRS still ticks the simulation), but the channel needs
+    // to be claimed before the socket gets dropped on InMatch
+    // entry so the new code can use it. Cache the remote peer list
+    // alongside the channel — `WebRtcChannel` itself doesn't expose
+    // connected peers, only `MatchboxSocket` does.
+    let remote_peers: Vec<PeerId> = peer_ids
+        .iter()
+        .copied()
+        .filter(|id| *id != our_id)
+        .collect();
+    if let Ok(net_channel) = socket.take_channel(1) {
+        commands.insert_resource(crate::netcode::NetSocket {
+            channel: Some(net_channel),
+            heartbeat_s: 0.0,
+            peers: remote_peers,
+        });
+    } else {
+        warn!("netplay: take_channel(1) failed — NetMessage transport unavailable");
+    }
     let session = match builder.start_p2p_session(GgrsChannelAdapter(channel)) {
         Ok(s) => s,
         Err(e) => {
