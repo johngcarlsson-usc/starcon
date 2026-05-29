@@ -131,11 +131,20 @@ fn resume_from_reset(
 }
 
 fn request_rematch(
-    keys: Res<ButtonInput<KeyCode>>,
+    slot_inputs: Res<input::SlotInputs>,
     phase: Res<hud::MatchPhase>,
     mut next: ResMut<NextState<AppState>>,
 ) {
-    if *phase == hud::MatchPhase::PostMatch && keys.just_pressed(KeyCode::KeyR) {
+    // Read the rematch vote from `SlotInputs` (synced through the
+    // GGRS input channel as `PlayerInput.flags & FLAG_REMATCH`) so
+    // either peer pressing R triggers `AppState::Resetting` on both
+    // sides simultaneously. Previously this read `KeyCode::KeyR`
+    // straight off the local `ButtonInput`, which is invisible to
+    // the remote peer — the rematch worked locally but the other
+    // tab stayed stuck on the PostMatch summary.
+    if *phase == hud::MatchPhase::PostMatch
+        && slot_inputs.any_flag_just_pressed(input::FLAG_REMATCH)
+    {
         next.set(AppState::Resetting);
     }
 }

@@ -27,6 +27,15 @@ pub const INPUT_ABSOLUTE: u8 = 1 << 6;
 /// ultimate chord (down-arrow for P1, S for P2, …).
 pub const INPUT_BACKWARD: u8 = 1 << 7;
 
+// ---- `PlayerInput.flags` bits (post-match / global state votes) ----
+
+/// Player is asking for a rematch from the PostMatch summary screen.
+/// Lives on the separate `flags` byte (not `buttons`) so it survives
+/// the network round-trip independently of the gameplay-input space —
+/// `request_rematch` consumes this on EITHER peer's slot to trigger
+/// `AppState::Resetting` for both sides simultaneously.
+pub const FLAG_REMATCH: u8 = 1 << 0;
+
 /// Holding turn-left + turn-right + backward together fires the
 /// ultimate. Deliberately NOT fire/special — pressing those would
 /// trigger the ship's actual weapons (e.g. Arilou would warp away)
@@ -62,11 +71,26 @@ pub struct PlayerInput {
     /// this direction and thrusts along it.
     pub aim_x: i8,
     pub aim_y: i8,
+    /// Global-state votes that need to ride through the GGRS input
+    /// channel but aren't gameplay buttons. See `FLAG_*` constants
+    /// above — currently just the rematch trigger. Keeping these
+    /// separate from `buttons` means edge-detection logic and the
+    /// per-slot gameplay path don't see them, and adding new votes
+    /// later doesn't risk collisions with weapon bits. Five
+    /// 1-byte fields make `PlayerInput` `[u8; 5]` — Pod-safe with
+    /// no implicit padding under `repr(C)`.
+    pub flags: u8,
 }
 
 impl PlayerInput {
     pub fn pressed(&self, mask: u8) -> bool {
         self.buttons & mask != 0
+    }
+    /// Test a `FLAG_*` bit on the global-state-vote byte. Separate
+    /// from `pressed` so callers can't accidentally test a flag
+    /// against the gameplay-button space (or vice-versa).
+    pub fn flag(&self, mask: u8) -> bool {
+        self.flags & mask != 0
     }
     /// Analog turn as a float in `[-1.0, 1.0]`.
     pub fn turn_f32(&self) -> f32 {
@@ -113,6 +137,12 @@ impl SlotInputs {
     }
     pub fn just_pressed(&self, slot: usize, mask: u8) -> bool {
         slot < 4 && self.just_pressed[slot].pressed(mask)
+    }
+    /// True iff ANY slot has the given `FLAG_*` bit set on its
+    /// just-pressed edge this tick. Used for global-state votes
+    /// (rematch) that don't care which peer pressed.
+    pub fn any_flag_just_pressed(&self, mask: u8) -> bool {
+        self.just_pressed.iter().any(|i| i.flag(mask))
     }
 }
 
@@ -228,7 +258,12 @@ pub fn read_local_input(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput
     } else {
         0
     };
-    PlayerInput { buttons, turn, aim_x: 0, aim_y: 0 }
+    // Rematch vote rides on `flags` (separate from the gameplay-button
+    // space) so it survives the GGRS network round-trip and triggers
+    // `AppState::Resetting` on BOTH peers simultaneously. R is global
+    // — pressing it on any slot's keyboard counts.
+    let flags = if keys.pressed(KeyCode::KeyR) { FLAG_REMATCH } else { 0 };
+    PlayerInput { buttons, turn, aim_x: 0, aim_y: 0, flags }
 }
 
 /// Same as `read_local_input` but also OR's in the virtual touch
@@ -277,7 +312,8 @@ pub fn read_local_just_pressed(keys: &ButtonInput<KeyCode>, slot: usize) -> Play
             buttons |= mask;
         }
     }
-    PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0 }
+    let flags = if keys.just_pressed(KeyCode::KeyR) { FLAG_REMATCH } else { 0 };
+    PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0, flags }
 }
 
 pub fn read_local_just_pressed_with_virtual(
@@ -306,7 +342,8 @@ pub fn read_local_just_released(keys: &ButtonInput<KeyCode>, slot: usize) -> Pla
             buttons |= mask;
         }
     }
-    PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0 }
+    let flags = if keys.just_released(KeyCode::KeyR) { FLAG_REMATCH } else { 0 };
+    PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0, flags }
 }
 
 pub struct InputPlugin;
@@ -385,10 +422,27 @@ pub fn gather_slot_inputs(
                 let prev = net.previous[slot];
                 let edge_press = cur.buttons & !prev.buttons;
                 let edge_release = !cur.buttons & prev.buttons;
+                // Flag bits are global votes (rematch) — compute their
+                // edge the same way so `slot_inputs.just_pressed[slot].flag(...)`
+                // works for remote peers.
+                let flag_press = cur.flags & !prev.flags;
+                let flag_release = !cur.flags & prev.flags;
                 (
                     cur,
-                    PlayerInput { buttons: edge_press, turn: 0, aim_x: 0, aim_y: 0 },
-                    PlayerInput { buttons: edge_release, turn: 0, aim_x: 0, aim_y: 0 },
+                    PlayerInput {
+                        buttons: edge_press,
+                        turn: 0,
+                        aim_x: 0,
+                        aim_y: 0,
+                        flags: flag_press,
+                    },
+                    PlayerInput {
+                        buttons: edge_release,
+                        turn: 0,
+                        aim_x: 0,
+                        aim_y: 0,
+                        flags: flag_release,
+                    },
                 )
             }
         } else {

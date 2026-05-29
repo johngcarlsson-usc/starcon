@@ -661,23 +661,27 @@ fn write_input(slot_inputs: &mut SlotInputs, slot: usize, brain: &mut AiBrain, b
     } else {
         0
     };
+    // AI never votes for a rematch — leave `flags = 0`.
     slot_inputs.held[slot] = PlayerInput {
         buttons: bits,
         turn,
         aim_x: 0,
         aim_y: 0,
+        flags: 0,
     };
     slot_inputs.just_pressed[slot] = PlayerInput {
         buttons: pressed,
         turn: 0,
         aim_x: 0,
         aim_y: 0,
+        flags: 0,
     };
     slot_inputs.just_released[slot] = PlayerInput {
         buttons: released,
         turn: 0,
         aim_x: 0,
         aim_y: 0,
+        flags: 0,
     };
     brain.last_buttons = bits;
 }
