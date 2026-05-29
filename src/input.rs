@@ -428,47 +428,55 @@ pub fn gather_slot_inputs(
         // ultimate chord below.
         let prev_held = slot_inputs.held[slot];
         let (mut held, mut pressed_edge, released_edge) = if online {
-            // Online: local handle reads kbd (slot 0 keymap);
-            // every other slot reads from NetInputs.
-            if Some(slot) == local_handle {
-                let held = read_local_input_with_virtual(&keys, Some(&virt), 0);
-                let pressed = read_local_just_pressed_with_virtual(&keys, Some(&virt), 0);
-                let released = read_local_just_released_with_virtual(&keys, Some(&virt), 0);
-                (held, pressed, released)
-            } else {
-                let cur = net.current[slot];
-                let prev = net.previous[slot];
-                let edge_press = cur.buttons & !prev.buttons;
-                let edge_release = !cur.buttons & prev.buttons;
-                // Flag bits are global votes (rematch) — compute their
-                // edge the same way so `slot_inputs.just_pressed[slot].flag(...)`
-                // works for remote peers.
-                let flag_press = cur.flags & !prev.flags;
-                let flag_release = !cur.flags & prev.flags;
-                (
-                    cur,
-                    PlayerInput {
-                        buttons: edge_press,
-                        turn: 0,
-                        aim_x: 0,
-                        aim_y: 0,
-                        flags: flag_press,
-                        // `class` on edge inputs is meaningless (it's
-                        // a level-triggered vote, not a press/release
-                        // event). Keep at 0; lobby logic reads the
-                        // held `class` instead.
-                        class: 0,
-                    },
-                    PlayerInput {
-                        buttons: edge_release,
-                        turn: 0,
-                        aim_x: 0,
-                        aim_y: 0,
-                        flags: flag_release,
-                        class: 0,
-                    },
-                )
-            }
+            // Online: EVERY slot — including the local handle — reads
+            // from `NetInputs`, which `net_inputs_bridge` populates
+            // from `PlayerInputs<Config>`. That's the canonical
+            // per-tick input GGRS uses for the rollback simulation.
+            //
+            // Previously the local handle re-read `ButtonInput<KeyCode>`
+            // direct from Bevy each tick. On rollback re-simulation
+            // the keyboard state had moved on since the original
+            // frame (the player has held / released keys in the
+            // meantime), so the replay produced different inputs
+            // than the live simulation — instant desync.
+            //
+            // Reading uniformly from `NetInputs` removes the
+            // discrepancy: every tick's input is whatever GGRS
+            // recorded for that tick, both during live play and
+            // during replay.
+            let _ = (&keys, &virt, local_handle);
+            let cur = net.current[slot];
+            let prev = net.previous[slot];
+            let edge_press = cur.buttons & !prev.buttons;
+            let edge_release = !cur.buttons & prev.buttons;
+            // Flag bits are global votes (rematch) — compute their
+            // edge the same way so `slot_inputs.just_pressed[slot].flag(...)`
+            // works for remote peers.
+            let flag_press = cur.flags & !prev.flags;
+            let flag_release = !cur.flags & prev.flags;
+            (
+                cur,
+                PlayerInput {
+                    buttons: edge_press,
+                    turn: 0,
+                    aim_x: 0,
+                    aim_y: 0,
+                    flags: flag_press,
+                    // `class` on edge inputs is meaningless (it's
+                    // a level-triggered vote, not a press/release
+                    // event). Keep at 0; lobby logic reads the
+                    // held `class` instead.
+                    class: 0,
+                },
+                PlayerInput {
+                    buttons: edge_release,
+                    turn: 0,
+                    aim_x: 0,
+                    aim_y: 0,
+                    flags: flag_release,
+                    class: 0,
+                },
+            )
         } else {
             // Local hotseat: each slot uses its own keymap.
             let held = read_local_input_with_virtual(&keys, Some(&virt), slot);

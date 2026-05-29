@@ -560,7 +560,16 @@ impl Plugin for NetplayPlugin {
             // resource. The next FixedUpdate's
             // `gather_slot_inputs` then routes those inputs to
             // each slot.
-            .add_systems(GgrsSchedule, net_inputs_bridge);
+            // `net_inputs_bridge` must run BEFORE `gather_slot_inputs`
+            // (which sits in `SlotInputProducerSet`) so `NetInputs.current`
+            // reflects THIS tick's GGRS-managed inputs, including the
+            // local handle's. Otherwise the local slot gets last tick's
+            // input on the first frame after a rollback, while every
+            // remote slot already has this tick's.
+            .add_systems(
+                GgrsSchedule,
+                net_inputs_bridge.before(crate::input::SlotInputProducerSet),
+            );
     }
 }
 
