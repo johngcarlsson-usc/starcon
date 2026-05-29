@@ -111,6 +111,13 @@ pub enum AbilityKind {
     /// (shpsyrpe.cpp activate_special.)
     DrainNearbyCrew { range: f32, max_drain: i32 },
 
+    /// Slylandro's asteroid harvest (`shpslypr.cpp:calculate` lines
+    /// 224-235). On press, find every asteroid within `range` of the
+    /// firer; despawn it (canon damages with 1 dmg, asteroids have
+    /// 1 hp), then refill the firer's battery to max. Free (no
+    /// SpecialDrain).
+    EatAsteroidRefillBattery { range: f32 },
+
     /// Fire one or more beams (sustained line damage). Each beam is
     /// owned by the firer and follows its pose; lives for `duration_s`,
     /// damaging the nearest enemy along its ray per tick. Canonical
@@ -774,6 +781,14 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
                 local_dir.x * ctx.rot.sin + local_dir.y * ctx.rot.cos,
             );
             ctx.vel.0 += world_dir * (*impulse / mass);
+        }
+        AbilityKind::EatAsteroidRefillBattery { range } => {
+            // Stamp the firer with a pending request; a system in
+            // ship.rs consumes it next tick, where it has the
+            // asteroid query + battery handle in one place.
+            ctx.commands
+                .entity(ctx.entity)
+                .try_insert(crate::ship::SlypHarvestRequest { range: *range });
         }
         AbilityKind::DrainNearbyCrew { range, max_drain } => {
             // Stamp a pending request on the firer; `apply_syreen_drain`

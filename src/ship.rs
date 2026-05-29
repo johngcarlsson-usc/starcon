@@ -1271,6 +1271,7 @@ impl Plugin for ShipPlugin {
                 handle_sub_entity_collisions,
                 handle_mode_contact_damage,
                 apply_syreen_drain,
+                apply_slyp_harvest,
                 tick_mycon_plasma_birth,
                 tick_mycon_plasma,
                 spawn_chmmr_satellites,
@@ -2955,15 +2956,43 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             },
         }),
 
-        // Slylandro Probe — lightning (TODO) + asteroid harvest (no asteroids).
+        // Slylandro Probe. Canon `shpslypr.cpp`:
+        //   - Primary (`activate_weapon`): one persistent
+        //     `SlylandroLaserNew` per cast (existtime 1.2 s) snaking
+        //     toward the nearest target, dealing 1 damage every
+        //     ~0.5-1.0 s while alive. WeaponRate=5 → cooldown 0.25 s.
+        //     We approximate it with a short auto-aim beam pulse per
+        //     fire — 0.18 s flash, 1 damage, range 200 wu. The 0.25 s
+        //     cooldown means ~4 fires/sec, which averages out to
+        //     comparable canon DPS without the persistent-beam plumbing.
+        //   - Special: `calculate` lines 224-235 walks every asteroid
+        //     within 100 canon-px and refills the battery to max on
+        //     contact. SpecialDrain=0 — completely free.
         ShipClass::Slypr => Some(ShipAbilities {
             primary: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "Slylandro lightning (shpslypr.cpp:SlylandroLaserNew)" },
+                kind: AbilityKind::SpawnBeams {
+                    beams: vec![crate::ability::BeamSpec {
+                        local_origin: Vec2::ZERO,
+                        local_dir: forward,
+                        range: 5.0 * SC2_RANGE_SCALE,
+                        damage_per_tick: 1,
+                        // Bright electric blue/white — reads as
+                        // lightning even without a jagged sprite.
+                        color: Color::srgba(0.6, 0.85, 1.0, 0.95),
+                        auto_aim: true,
+                        duration_s: 0.18,
+                        width: 2.0,
+                    }],
+                },
                 cooldown_s: 5.0 / 20.0,
             },
             special: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "Slylandro asteroid harvest (no asteroids in arena)" },
-                cooldown_s: 20.0 / 20.0,
+                // Canon scans within 100 canon-px. In our wu (≈ 80 wu
+                // touch radius for the standard probe hull), 90 wu
+                // is a tight "you must be sitting on the rock" range
+                // that matches the canon-feel of "harvest by ramming".
+                kind: AbilityKind::EatAsteroidRefillBattery { range: 90.0 },
+                cooldown_s: 5.0 / 20.0,
             },
         }),
 
@@ -6639,6 +6668,44 @@ fn tick_invisible_visual(
 pub struct SyreenDrainRequest {
     pub range: f32,
     pub max_drain: i32,
+}
+
+/// Stamped on the Slylandro Probe by `EatAsteroidRefillBattery` in
+/// apply_kind; consumed (and removed) by `apply_slyp_harvest` next
+/// tick. Matches `shpslypr.cpp:calculate` lines 224-235.
+#[derive(Component, Debug)]
+pub struct SlypHarvestRequest {
+    pub range: f32,
+}
+
+/// Harvest any asteroid within `range` of the requesting Probe:
+/// despawn the rock (with kaboom for feedback) and refill the
+/// Probe's battery to max. Canon damages the asteroid for 1 (which
+/// is enough to one-shot it) and tops up the battery on success.
+fn apply_slyp_harvest(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    mut requesters: Query<(Entity, &Position, &mut Battery, &SlypHarvestRequest)>,
+    asteroids: Query<(Entity, &Position), With<Asteroid>>,
+) {
+    for (probe, probe_pos, mut batt, req) in &mut requesters {
+        let r2 = req.range * req.range;
+        let mut ate_any = false;
+        for (ast_e, ast_pos) in &asteroids {
+            if (ast_pos.0 - probe_pos.0).length_squared() <= r2 {
+                spawn_asteroid_explosion(&mut commands, &assets, ast_pos.0, 24.0);
+                if let Ok(mut ec) = commands.get_entity(ast_e) {
+                    ec.try_despawn();
+                }
+                ate_any = true;
+            }
+        }
+        if ate_any {
+            batt.current = batt.max;
+            info!("Slylandro harvest → battery full ({}/{})", batt.current, batt.max);
+        }
+        commands.entity(probe).try_remove::<SlypHarvestRequest>();
+    }
 }
 
 /// One-shot crew drain: for each enemy ship within `range` of the
