@@ -388,13 +388,14 @@ fn send_heartbeat(
 }
 
 /// Host-only: every `SNAPSHOT_INTERVAL_S`, gather the state of every
-/// live ship and ship it as a `NetMessage::Snapshot`. Guest's
-/// `drain_messages` will apply this onto its local entities.
+/// live ship + asteroid and ship it as a `NetMessage::Snapshot`.
+/// Guest's `drain_messages` applies it onto its local entities.
 ///
-/// Ships are keyed by `player_slot` in the snapshot (we put the slot
-/// index in the low byte of `EntityKind::Ship`). Both peers spawn
-/// ships in the same slot order via `spawn_match`, so the guest just
-/// has to match `Ship.player_slot` to find its local mirror.
+/// Ships are keyed by `player_slot` (both peers spawn ships in the
+/// same slot order via `spawn_match`). Asteroids are keyed by the
+/// `NetId` that `spawn_asteroids` assigned from the spawn index — the
+/// `MatchSeed`-driven RNG produces identical spawn orders on both
+/// peers, so `NetId(i)` names the same rock everywhere.
 fn send_ship_snapshot(
     time: Res<Time<Real>>,
     mut sock: ResMut<NetSocket>,
@@ -409,6 +410,16 @@ fn send_ship_snapshot(
             &crate::ship::Battery,
         ),
     >,
+    asteroids: Query<
+        (
+            &NetId,
+            &avian2d::prelude::Position,
+            &avian2d::prelude::Rotation,
+            &avian2d::prelude::LinearVelocity,
+            &avian2d::prelude::AngularVelocity,
+        ),
+        With<crate::ship::Asteroid>,
+    >,
     snapshot_tick: Local<u32>,
 ) {
     sock.heartbeat_s += time.delta_secs();
@@ -420,7 +431,7 @@ fn send_ship_snapshot(
     }
     sock.heartbeat_s = 0.0;
 
-    let entities: Vec<EntityState> = ships
+    let mut entities: Vec<EntityState> = ships
         .iter()
         .map(|(ship, pos, rot, lin, ang, crew, batt)| EntityState {
             net_id: NetId(0),
@@ -447,6 +458,22 @@ fn send_ship_snapshot(
             batt: batt.current,
         })
         .collect();
+
+    entities.extend(asteroids.iter().map(|(net_id, pos, rot, lin, ang)| {
+        EntityState {
+            net_id: *net_id,
+            kind: EntityKind::Asteroid,
+            pos_x: pos.0.x,
+            pos_y: pos.0.y,
+            rot_cos: rot.cos,
+            rot_sin: rot.sin,
+            vel_x: lin.0.x,
+            vel_y: lin.0.y,
+            ang_vel: ang.0,
+            crew: 0,
+            batt: 0,
+        }
+    }));
 
     let tick = *snapshot_tick;
     let msg = NetMessage::Snapshot {
@@ -481,6 +508,17 @@ fn drain_messages(
             &mut crate::ship::Crew,
             &mut crate::ship::Battery,
         ),
+        Without<crate::ship::Asteroid>,
+    >,
+    mut asteroids: Query<
+        (
+            &NetId,
+            &mut avian2d::prelude::Position,
+            &mut avian2d::prelude::Rotation,
+            &mut avian2d::prelude::LinearVelocity,
+            &mut avian2d::prelude::AngularVelocity,
+        ),
+        With<crate::ship::Asteroid>,
     >,
     mut last_snapshot_tick: Local<u32>,
 ) {
@@ -531,27 +569,46 @@ fn drain_messages(
                 }
                 *last_snapshot_tick = tick;
                 for state in entities {
-                    let EntityKind::Ship { slot, .. } = state.kind else {
-                        // Only ships in v1.
-                        continue;
-                    };
-                    // Find our local mirror for this slot.
-                    for (ship, mut pos, mut rot, mut lin, mut ang, mut crew, mut batt) in
-                        &mut ships
-                    {
-                        if ship.player_slot as u8 != slot {
-                            continue;
+                    match state.kind {
+                        EntityKind::Ship { slot, .. } => {
+                            for (ship, mut pos, mut rot, mut lin, mut ang, mut crew, mut batt) in
+                                &mut ships
+                            {
+                                if ship.player_slot as u8 != slot {
+                                    continue;
+                                }
+                                pos.0.x = state.pos_x;
+                                pos.0.y = state.pos_y;
+                                rot.cos = state.rot_cos;
+                                rot.sin = state.rot_sin;
+                                lin.0.x = state.vel_x;
+                                lin.0.y = state.vel_y;
+                                ang.0 = state.ang_vel;
+                                crew.current = state.crew;
+                                batt.current = state.batt;
+                                break;
+                            }
                         }
-                        pos.0.x = state.pos_x;
-                        pos.0.y = state.pos_y;
-                        rot.cos = state.rot_cos;
-                        rot.sin = state.rot_sin;
-                        lin.0.x = state.vel_x;
-                        lin.0.y = state.vel_y;
-                        ang.0 = state.ang_vel;
-                        crew.current = state.crew;
-                        batt.current = state.batt;
-                        break;
+                        EntityKind::Asteroid => {
+                            for (net_id, mut pos, mut rot, mut lin, mut ang) in &mut asteroids {
+                                if *net_id != state.net_id {
+                                    continue;
+                                }
+                                pos.0.x = state.pos_x;
+                                pos.0.y = state.pos_y;
+                                rot.cos = state.rot_cos;
+                                rot.sin = state.rot_sin;
+                                lin.0.x = state.vel_x;
+                                lin.0.y = state.vel_y;
+                                ang.0 = state.ang_vel;
+                                break;
+                            }
+                        }
+                        EntityKind::Projectile
+                        | EntityKind::Planet
+                        | EntityKind::SubEntity => {
+                            // Not synced yet — see NETCODE_REFACTOR.md.
+                        }
                     }
                 }
             }

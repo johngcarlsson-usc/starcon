@@ -128,8 +128,10 @@ fn tick_local_ready_toggle(
 /// During PostMatch, if EVERY human slot is currently holding the
 /// Ready vote, sync each slot's class from its `PlayerInput.class`
 /// vote into `MatchConfig` and trigger the rematch. AI slots are
-/// auto-ready (their input never flips the bit, but they don't get a
-/// vote either — `slot_count_humans()` excludes them).
+/// auto-ready (they don't get a vote — they're excluded from
+/// `voter_slots`). Remote peers are voters too: from this peer's
+/// POV the other side's `kind` is `PlayerKind::Remote`, but their
+/// `FLAG_READY` bit rides over the wire just like a local human's.
 fn detect_all_ready(
     phase: Res<MatchPhase>,
     slot_inputs: Res<SlotInputs>,
@@ -139,29 +141,21 @@ fn detect_all_ready(
     if *phase != MatchPhase::PostMatch {
         return;
     }
-    let mut all_ready = false;
-    let mut any_human = false;
-    for slot_cfg in &config.slots {
-        if slot_cfg.kind == PlayerKind::Human {
-            any_human = true;
-        }
-    }
-    if !any_human {
-        return;
-    }
-    let human_slots: Vec<usize> = config
+    let voter_slots: Vec<usize> = config
         .slots
         .iter()
         .enumerate()
-        .filter_map(|(i, s)| (s.kind == PlayerKind::Human).then_some(i))
+        .filter_map(|(i, s)| {
+            matches!(s.kind, PlayerKind::Human | PlayerKind::Remote).then_some(i)
+        })
         .collect();
-    if human_slots
+    if voter_slots.is_empty() {
+        return;
+    }
+    if !voter_slots
         .iter()
         .all(|&i| input::SlotInputs::flag(&slot_inputs, i, FLAG_READY))
     {
-        all_ready = true;
-    }
-    if !all_ready {
         return;
     }
     // Apply every peer's class vote — including our own (which is
@@ -169,7 +163,7 @@ fn detect_all_ready(
     // than `MatchConfig` keeps the code symmetric and means a peer
     // that joins mid-PostMatch with a different selection wins).
     for (i, slot_cfg) in config.slots.iter_mut().enumerate() {
-        if slot_cfg.kind == PlayerKind::Human {
+        if matches!(slot_cfg.kind, PlayerKind::Human | PlayerKind::Remote) {
             let vote = slot_inputs.held[i].class;
             let class = class_from_index(vote);
             if slot_cfg.class != class {

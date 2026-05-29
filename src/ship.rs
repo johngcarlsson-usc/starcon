@@ -7479,7 +7479,7 @@ pub fn spawn_asteroids(
     // All draws here affect game state (asteroid position +
     // velocity + collider mass + radius → physics integration
     // diverges if peers disagree). Use the seeded RNG.
-    for _ in 0..N {
+    for spawn_idx in 0..N {
         let pos = loop {
             let x = rng.signed_unit() * HALF;
             let y = rng.signed_unit() * HALF;
@@ -7501,6 +7501,11 @@ pub fn spawn_asteroids(
         let ang_vel = rng.signed_unit() * 0.3;
         commands.spawn((
             Asteroid,
+            // NetId is stable across peers: both ends spawn in the
+            // same seeded order, so `spawn_idx + 1` (0 is the
+            // "unassigned" sentinel) names the same rock everywhere.
+            // The host's snapshot stream uses it as the join key.
+            crate::netcode::NetId((spawn_idx as u32) + 1),
             Sprite {
                 image: assets.load(sprite_path),
                 color: Color::WHITE,
