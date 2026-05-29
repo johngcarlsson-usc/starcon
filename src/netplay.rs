@@ -745,8 +745,12 @@ fn update_setup_visibility(
 fn drop_socket(mut commands: Commands, mut state: ResMut<LobbyState>) {
     commands.remove_resource::<crate::netcode::NetSocket>();
     commands.remove_resource::<crate::netcode::LocalHandle>();
-    commands.remove_resource::<crate::netcode::NetRole>();
-    commands.remove_resource::<crate::netcode::NetIdAllocator>();
+    // NetRole and NetIdAllocator are `init_resource`'d at startup and
+    // read by always-on run conditions (e.g. `role_is_authoritative`),
+    // so they have to exist for the whole app lifetime. Reset them
+    // back to the Solo default instead of removing them.
+    commands.insert_resource(crate::netcode::NetRole::Solo);
+    commands.insert_resource(crate::netcode::NetIdAllocator::default());
     commands.remove_resource::<MatchboxSocket>();
     state.status = LobbyStatus::Setup;
     state.connected = 0;
