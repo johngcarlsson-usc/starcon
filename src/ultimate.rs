@@ -1123,17 +1123,24 @@ fn voice_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Slylandro => "ultimate/slypr_voi.wav",
         UltimateVariant::Mmrnmhrm => "ultimate/mmrxf_voi.wav",
         UltimateVariant::Chmmr => "ultimate/chmav_voi.wav",
+        // User filename mismatches: same as portraits, both Ur-Quan
+        // factions share `urqdr_voi`, and Syreen / Mycon / ZoqFotPik
+        // use the abbreviated stems from their uploaded files.
         UltimateVariant::Alary => "ultimate/alabc_voi.wav",
-        UltimateVariant::KzerZa => "ultimate/kzedr_voi.wav",
+        UltimateVariant::KzerZa => "ultimate/urqdr_voi.wav",
+        UltimateVariant::KohrAh => "ultimate/kohma_voi.wav",
         UltimateVariant::Ilwrath => "ultimate/ilwav_voi.wav",
         UltimateVariant::Vux => "ultimate/vuxin_voi.wav",
         UltimateVariant::Supox => "ultimate/supbl_voi.wav",
-        UltimateVariant::Syreen => "ultimate/syrpe_voi.wav",
+        UltimateVariant::Syreen => "ultimate/sypen_voi.wav",
         UltimateVariant::Androsynth => "ultimate/andgu_voi.wav",
         UltimateVariant::Utwig => "ultimate/utwju_voi.wav",
-        UltimateVariant::ZoqFotPik => "ultimate/zfpst_voi.wav",
+        UltimateVariant::ZoqFotPik => "ultimate/zoqst_voi.wav",
         UltimateVariant::Orz => "ultimate/orzne_voi.wav",
         UltimateVariant::Umgah => "ultimate/umgdr_voi.wav",
+        UltimateVariant::Mycon => "ultimate/mypo_voi.wav",
+        UltimateVariant::Druuge => "ultimate/druma_voi.wav",
+        UltimateVariant::Thraddash => "ultimate/thrto_voi.wav",
         UltimateVariant::Melnorme => "ultimate/meltr_voi.wav",
         _ => "ultimate/arisk_voi.wav",
     }
