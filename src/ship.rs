@@ -7693,6 +7693,19 @@ pub fn preload_all_assets(
             .untyped(),
     );
 
+    // Title + combat music and the global ship-death boom. Title
+    // music plays the moment the menu loads, so warming the handle
+    // during the Loading state avoids a hitch at the transition.
+    for path in [
+        "music/title.mp3",
+        "music/melee.mp3",
+        "sfx/boom_ship.wav",
+    ] {
+        preloaded
+            .handles
+            .push(assets.load::<AudioSource>(path).untyped());
+    }
+
     // Per-class base rotation frame ONLY. The full 64-frame set
     // gets loaded the moment a class spawns via
     // `load_rotation_frames`; we'd duplicate ~25 × 64 = 1600

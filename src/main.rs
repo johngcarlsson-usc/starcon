@@ -1,5 +1,6 @@
 mod ability;
 mod ai;
+mod audio;
 mod collider;
 mod hud;
 mod indicator;
@@ -83,7 +84,7 @@ fn main() {
             rng::RngPlugin,
             settings_menu::SettingsMenuPlugin,
         ))
-        .add_plugins(indicator::IndicatorPlugin)
+        .add_plugins((indicator::IndicatorPlugin, audio::AudioPlugin))
         .init_resource::<ship::PreloadedAssets>()
         .add_systems(Startup, (setup_camera, ship::preload_all_assets))
         .add_systems(OnEnter(AppState::Loading), ship::load_ship_catalog)
