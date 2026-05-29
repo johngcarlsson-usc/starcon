@@ -1081,17 +1081,29 @@ fn portrait_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Mmrnmhrm => "ultimate/portrait_mmrxf.png",
         UltimateVariant::Chmmr => "ultimate/portrait_chmav.png",
         UltimateVariant::Alary => "ultimate/portrait_alabc.png",
-        UltimateVariant::KzerZa => "ultimate/portrait_kzedr.png",
+        // Both Ur-Quan factions reuse the single Ur-Quan Dreadnought
+        // portrait the user supplied (`portrait_urqdr.png`). Visually
+        // accurate enough — Kzer-Za and Kohr-Ah share a hull lineage.
+        UltimateVariant::KzerZa => "ultimate/portrait_urqdr.png",
+        UltimateVariant::KohrAh => "ultimate/portrait_urqdr.png",
         UltimateVariant::Ilwrath => "ultimate/portrait_ilwav.png",
         UltimateVariant::Vux => "ultimate/portrait_vuxin.png",
         UltimateVariant::Supox => "ultimate/portrait_supbl.png",
-        UltimateVariant::Syreen => "ultimate/portrait_syrpe.png",
+        // User's filenames differ from our 5-char ship codes for
+        // two races — keep our match arms keyed by the canon
+        // `<code>` everywhere else but point to whatever PNG
+        // they uploaded.
+        UltimateVariant::Syreen => "ultimate/portrait_sypen.png",
+        UltimateVariant::ZoqFotPik => "ultimate/portrait_zoqst.png",
         UltimateVariant::Androsynth => "ultimate/portrait_andgu.png",
         UltimateVariant::Utwig => "ultimate/portrait_utwju.png",
-        UltimateVariant::ZoqFotPik => "ultimate/portrait_zfpst.png",
         UltimateVariant::Orz => "ultimate/portrait_orzne.png",
         UltimateVariant::Umgah => "ultimate/portrait_umgdr.png",
         UltimateVariant::Melnorme => "ultimate/portrait_meltr.png",
+        UltimateVariant::Thraddash => "ultimate/portrait_thrto.png",
+        // Races without a custom portrait yet — Mycon, Druuge,
+        // Chmmr, Alary, Ilwrath — all fall through to the Arilou
+        // skiff portrait as a placeholder.
         _ => "ultimate/portrait_arisk.png",
     }
 }

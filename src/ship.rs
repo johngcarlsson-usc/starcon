@@ -5626,10 +5626,14 @@ fn handle_projectile_hits(
         if let Ok(pos) = asteroids_q.get(other_entity) {
             spawn_asteroid_explosion(&mut commands, &assets, pos.0, 24.0);
             if gone.insert(other_entity) {
-                commands.entity(other_entity).try_despawn();
+                if let Ok(mut ec) = commands.get_entity(other_entity) {
+                    ec.try_despawn();
+                }
             }
             if gone.insert(proj_entity) {
-                commands.entity(proj_entity).try_despawn();
+                if let Ok(mut ec) = commands.get_entity(proj_entity) {
+                    ec.try_despawn();
+                }
             }
             continue;
         }
@@ -5653,12 +5657,16 @@ fn handle_projectile_hits(
             let dmg = ((proj.damage as f32 * factor).round() as i32).max(0);
             sat.armour = (sat.armour - dmg).max(0);
             if gone.insert(proj_entity) {
-                commands.entity(proj_entity).try_despawn();
+                if let Ok(mut ec) = commands.get_entity(proj_entity) {
+                    ec.try_despawn();
+                }
             }
             if sat.armour <= 0 {
                 spawn_asteroid_explosion(&mut commands, &assets, sat_pos.0, 18.0);
                 if gone.insert(other_entity) {
-                    commands.entity(other_entity).try_despawn();
+                    if let Ok(mut ec) = commands.get_entity(other_entity) {
+                        ec.try_despawn();
+                    }
                 }
             }
             continue;
@@ -5701,7 +5709,9 @@ fn handle_projectile_hits(
                 );
             }
             if gone.insert(proj_entity) {
-                commands.entity(proj_entity).try_despawn();
+                if let Ok(mut ec) = commands.get_entity(proj_entity) {
+                    ec.try_despawn();
+                }
             }
             continue;
         }
@@ -5744,7 +5754,9 @@ fn handle_projectile_hits(
             if let Ok(proj_pos) = proj_positions.get(proj_entity) {
                 spawn_asteroid_explosion(&mut commands, &assets, proj_pos.0, 14.0);
             }
-            commands.entity(proj_entity).try_despawn();
+            if let Ok(mut ec) = commands.get_entity(proj_entity) {
+                ec.try_despawn();
+            }
         }
     }
 }
@@ -6592,11 +6604,16 @@ fn handle_sub_entity_collisions(
                 // damage each 50 ms tick (`shporzne.cpp` 9/10000 dmg
                 // chance, 1/10000 death chance per ms). Don't drain
                 // up-front and don't despawn — just attach and let
-                // `tick_orz_marines_boarded` handle the rest.
-                commands.entity(sub_entity).try_insert(OrzMarineBoarded {
-                    host: other_entity,
-                    roll_accum_s: 0.0,
-                });
+                // `tick_orz_marines_boarded` handle the rest. Same
+                // pattern as the KzerZaFighter branch above: use
+                // `get_entity` to short-circuit if the sub was
+                // already despawned earlier in the same event batch.
+                if let Ok(mut ec) = commands.get_entity(sub_entity) {
+                    ec.try_insert(OrzMarineBoarded {
+                        host: other_entity,
+                        roll_accum_s: 0.0,
+                    });
+                }
                 info!("marine boarded P{}", other_ship.player_slot + 1);
             }
             SubEntityAi::DriftAndCollect {
@@ -7741,7 +7758,9 @@ fn tick_planet_contact(
         if let Ok(ast_pos) = asteroids.get(other_e) {
             spawn_asteroid_explosion(&mut commands, &assets, ast_pos.0, 24.0);
             if gone.insert(other_e) {
-                commands.entity(other_e).try_despawn();
+                if let Ok(mut ec) = commands.get_entity(other_e) {
+                    ec.try_despawn();
+                }
             }
             continue;
         }
