@@ -1,0 +1,102 @@
+	body {
+		margin:5px 5px 5px 5px;
+		background:#446;
+        color:#ff0
+        }
+    a:link { color:#fff; }
+    a:visited { color:#aaa; }
+    a:hover { color:#fff; background:#555; }
+    a:active { }
+
+	#main {
+		border:1px solid #000;
+                background:#224;
+                color:#ff0;
+		}
+
+	#menu {
+		border-left:1px solid #000;
+		border-bottom:1px solid #000;
+		float:right;
+                background:#aaf;
+                text-align:left;
+		margin:0px 0px 5px 5px;
+		}
+     #menu a:link { color:#00f; }
+     #menu a:visited { color:#70f; }
+     #menu a:hover { color:#fff; background:#000; }
+     /*#menu a:active { }*/
+        
+    #captionRight {
+		border-left:1px solid #000; 
+		border-bottom:1px solid #000;
+        border-right:1px solid #000;
+		float:right;
+        color:#4f4;
+        text-align:center;
+		margin:5px 0px 5px 5px;
+		background:#446;
+        /*background:#aaf;*/
+    }
+    #captionRight img {
+        background: #fff;
+    }
+    #captionCenter {
+		border-left:1px solid #000; 
+		border-bottom:1px solid #000;
+        border-right:1px solid #000;
+        color:#4f4;
+        text-align:center;
+		margin:5px 5px 5px 5px;
+    }
+    h1,h2,h3,h4,h5,h6 {
+		border-top:1px solid #88a; 
+		border-bottom:1px solid #000;
+        color:#4f4;
+        background: #446;
+    }
+    
+    dt {
+       color:#4f4;
+    }
+    
+		
+	h1 {
+		margin:0px 0px 0px 0px;
+    }
+    
+    table {
+     	background:#446;
+        border-top:1px solid #aa6; 
+        border-left:1px solid #aa6;
+        
+    }
+
+    
+    th {
+        color:#4f4;
+     	background:#446;
+        border-top:1px solid #aa6; 
+        border-left:1px solid #aa6;
+        
+    }
+		
+    td {
+     	background:#226;
+        border-right:1px solid #446; 
+        border-bottom:1px solid #446;
+    }
+    
+    dt  {
+        margin-bottom: 10px;
+        margin-left: 1px;
+        /*background: #446;*/
+    }
+	
+    dd  {
+        margin-bottom: 20px;
+        /*background: #226;*/
+    }
+	
+	#menu br { border:10px solid#000; }
+	

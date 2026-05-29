@@ -1,0 +1,150 @@
+<html>
+<head>
+    <title>Star Control: Timewarp - FAQ</title>
+    <link rel="stylesheet" type="text/css" href="stylesheet.css" />
+</head>
+<body>
+
+<!--MENU--><div id="main">
+	<div id="menu">
+    	<a href="../readme.html">Home</a><br>
+    	<a href="installing.html">Downloading and Installing</a><br>
+    	<a href="playing.html">Playing</a><br>
+    	<a href="GameTypes.html">Game Types</a><br>
+    	<a href="coding.html">Development</a><br>
+    	<a href="faq.html">FAQ</a><br>
+    	<a href="links.html">Links</a>
+	</div>
+
+<!--MENU-->
+
+<h1>Frequently Asked Questions</h1>
+
+<h3>Q.  It says "ACK!!! An error occured!  But I don't know what kind!"</h3>
+or something like that.  What do I do?
+A.  I don't know.
+
+<h3>Q.  It says "Game Desynchronized" or something.  What do I do?</h3>
+A.  Look in net.txt
+
+<h3>Q.  It says "Error: Error switching to graphics mode" or something
+like that.  What should I do?</h3>
+<pre>
+A.  Use the command line options -res, -bpp, and -fullscreen or
+-window to force it to start in a graphics mode your video card
+and video driver like.  Example:
+"twwin -res 640 480 -bpp 8 -fullscreen -nosound" runs the windows version
+of TimeWarp at 640x480 with 8 bits per pixel in a fullscreen mode.  This
+is generally a safe setting, although 8 bits per pixel looks ugly.
+Once you get it running, click on options and then select "Set Default" so
+that those settings will be the default the next time you run it.
+
+Note: "twdos -res 320 200 -bpp 8 -fullscreen" will cause TimeWarp
+to run in standard VGA mode (13h).  TimeWarp is actually playable at
+this outdated resolution.  "twdos -res 320 240 -bpp 8 -fullscreen"
+should also work on any VGA card.  This can also be usefull if you want
+to run twdos on a windows NT dos box that doesn't permit dos programs
+to use super VGA mode graphics.
+</pre>
+
+
+<h2>Networking FAQ</h2>
+
+<h3>Q.  I can't find networking in the menu.  Where is it?</h3>
+A.  Click on "Extended Menu".
+
+<h3>Q.  When I try to start a network game it says "Networking is disabled
+(compile time) in this version of TimeWarp".  What do I do?</h3>
+A.  Use the windows binary (twwin.exe) instead of the DOS binary
+(twdos.exe).
+
+<h3>Q.  The client asks me for an IP Address and Port number.  What should I
+tell it?</h3>
+A.  Give it the IP address of the server, and leave the port number at
+15515.  By the way, you can usually also enter a name instead of an IP
+number (e.g. orz.res.wpi.net instead of 130.215.232.159)
+
+<h3>Q.  What's my servers IP address?</h3>
+A.  Run "winipcfg" on your server.  It will tell you.
+A2.  If you're running win2k/NT, you type "ipconfig"
+or "ipconfig /all" instead of "winipcfg".
+
+<h3>Q.  What are the keys used for controlling a network game?</h3>
+A.  The client will use the keyboard setup 0 on the clients machine.  The
+server will use keyboard setup 0 on the servers machine.  These default to
+thrust = keypad8, left = keypad4, right = keypad6, fire = enter,
+special = leftshift.
+
+<h3>Q.  I'm playing on a LAN, with very low ping times, like 5-10 milliseconds,
+but the game feels laggy.  How can I get rid of the lag?</h3>
+A.  Edit server.ini on the server.  A line near the top will look like
+"Lag = 175".  Change the 155 to something lower, like 35 or something.
+
+<h3>Q.  I'm playing with high ping times, and game is slow and jerky
+sometimes... How do I fix this?</h3>
+A.  The slowdowns and/or jerks can be removed by changing the line in
+the servers scp.ini that says "Lag = 175", increasing that by 200.
+Doing this will actually increase how long it takes for your key presses
+to take effect, butit's often worth it to get rid of those annoying
+pauses and slowdowns.  If your ping is sufficiently high you might also
+want to slow down the timescale of the game, by lowering "Turbo" in
+server.ini from 1.0 to 0.7 or even 0.5 .
+
+<h3>Q.  How do I measure my ping time?</h3>
+A.  On one computer, type ping x.x.x.x , where x.x.x.x is the IP address of
+the other machine.  A good ping under 100 ms is good, a ping time under 200
+ms is decent, a ping time under 300 ms is mediocre, and anything over that
+may be too slow or laggy for some people even if the Lag parameter is set
+optimallly.
+
+<h3>Q.  I get the error message "Game has Desynchronized" or
+something like that.</h3>
+A.  Start a new game.  Try to make sure that both your server and client are
+using exactly the same version of TimeWarp (look in version.txt to find out
+what version you have).  Modifications to .ini files won't cause desynchs,
+but modifications (or deletions) of .dat files will.  If none of the above circumstances apply, tell me about it.
+
+<h3>Q.  I don't have anyone to play against.  How do I find someone?</h3>
+A.  Check the TimeWarp webpage (http://timewarp.sf.net/) for
+the latest method of reaching other TimeWarp players.
+
+<h2>Known Bugs</h2>
+<pre>
+Version 0.05u6:
+known major bugs:
+        Networking occaisonally desynchs for no known reason.
+        Reports of sound not working on Windows ME.
+        Windows XP support is reported to be flaky.
+
+known minor bugs:
+	Slylandro lightning messed up again
+
+
+
+Version 0.05u5:
+known major bugs:
+	none
+
+known minor bugs:
+	Joystick setup doesn't work, and some joysticks don't work at all
+	VUX warp-in screwed up
+	Ships warp in near the planet
+</pre>
+
+<h2>How to Report Bugs</h2>
+<pre>
+You can use our <a href="http://bugs.cs.iupui.edu/cgi-bin/bugzilla/">Bugzilla Bug-Tracking Systems</a>
+
+and include this information:
+
+1.  The version where you found the bug (e.g. 0.05u6 or a recent alpha version)
+2.  The executable where you found the bug (e.g. twwin.exe or twdos.exe)
+3.  The circumstances where the bug occured (e.g. sometimes right
+after I select a new ship in combat)
+4.  The manifestation of the bug (e.g. the screen freezes and it won't
+respond to anything).
+5.  Anything else you think is important.  (e.g. I keep my pet gerbil inside
+of my computer, so the processor will keep him toasty warm)
+</pre>
+
+

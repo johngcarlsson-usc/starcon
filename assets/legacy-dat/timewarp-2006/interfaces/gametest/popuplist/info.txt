@@ -1,0 +1,9 @@
+interfaces/gametest/popuplist/text/barver_backgr_y = 16
+interfaces/gametest/popuplist/text/barver_backgr_x = 68
+interfaces/gametest/popuplist/text/down_default_y = 62
+interfaces/gametest/popuplist/text/down_default_x = 23
+interfaces/gametest/popuplist/text/up_default_y = 14
+interfaces/gametest/popuplist/text/up_default_x = 23
+interfaces/gametest/popuplist/text/backgr_y = 16
+interfaces/gametest/popuplist/text/backgr_x = 96
+res = 800

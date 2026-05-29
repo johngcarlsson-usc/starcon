@@ -1,0 +1,13 @@
+interfaces/sc1arena/title_backgr_y = 10
+interfaces/sc1arena/title_backgr_x = 59
+interfaces/sc1arena/text_backgr_y = 76
+interfaces/sc1arena/text_backgr_x = 58
+interfaces/sc1arena/ok_default_y = 10
+interfaces/sc1arena/ok_default_x = 405
+interfaces/sc1arena/next_default_y = 78
+interfaces/sc1arena/next_default_x = 542
+interfaces/sc1arena/prev_default_y = 78
+interfaces/sc1arena/prev_default_x = 13
+
+[FleetInit]
+PlayerAlliance = 12

@@ -1,0 +1,1 @@
+Timewarp is distributed under the GPL license (General Public License).

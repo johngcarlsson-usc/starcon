@@ -1,0 +1,160 @@
+Credits for Star Control: TimeWarp
+
+Anyone still involved can probably be contacted on the chat board:
+http://dynamic.gamespy.com/~starcontrol/boards/timewarp/
+
+Condensed Credits:
+
+1. The Creators of Star Control:
+
+        Fred Ford
+        Paul Reiche III
+
+2. Coders:
+
+        orz
+        The Fly (founder of the project) (inactive)
+        Launchpad
+        S.P.Y. (inactive?)
+        Marcos (inactive)
+        Mr. Sparkle (inactive)
+        Richardyzo
+        Tau
+        Slag-786B
+        Alstar
+
+3. Artists (graphics):
+
+        Launchpad
+        Kris Hauser (inactive)
+        Tsing (inactive)
+        Barak Segal (inactive)
+        Mangoman (inactive)
+        Alstar
+        Richardyzo
+
+4. Artists (sound & music):
+
+        People I don't know about (inactive)
+        Alex Parker
+        Launchpad
+        Reddish
+
+5. Web Page People:
+
+        The Grand Fot
+        Atarex
+        Starfox
+        Alstar
+
+6. Documentation writters:
+
+        orz
+        Launchpad
+
+7. Testers:
+
+        Too many to list
+
+8. Authors of libraries we use:
+
+        Shawn Hargreaves & friends wrote ALLEGRO, a library we use a LOT.
+
+        Michael Buikin wrote AASTR, which our graphics code is based off of. 
+It's homepage is http://www.inp.nsk.su/~bukinm/jado/aastr/
+        Jeffery Guan Foo Wah wrote JGMOD, a library we use for music.
+His homepage is http://www.geocities.com/SiliconValley/Vista/8890/
+        Ivan Baldo wrote the PPCOL library, which our collision code is
+based upon.  However, his website can no longer be found.  
+
+
+
+Long Credits:
+
+The Creators
+        Fred Ford
+        Paul Reiche III
+These two wrote Star Control II, which inspired Star Control: TimeWarp.
+
+The Programmers
+        orz
+        The Fly (founder of the project) (inactive)
+        Launchpad
+        S.P.Y.
+        Marcos (inactive)
+        Mr. Sparkle (inactive)
+        Richardyzo
+        Alstar
+orz (that's me) is currently managing the project.  I've written a lot of
+  the code, and I integrate other peoples code when they send it to me.  
+The Fly did most of the code up until version 0.05, when he joined the
+  (Israeli) military (and started a music band?). 
+Launchpad wrote all of the Star Control 3 ships, many of the TimeWarp
+  original ships, and much of the WussieBot AI. 
+S.P.Y. wrote SpyAI, the old gamma correction, the old options menu, and
+  some bug-fixes.  
+Marcos wrote the smoothing zooming code.  
+Mr. Sparkle wrote some bugfixes and some portability stuff.
+Richardyzo wrote the Zekfahan (sp?) Shocker.  
+Alstar wrote the original Terran Destroyer, though it's been modified since
+  by myself and Launchpad.  
+
+The Artists (graphics):
+        Launchpad
+        Kris Hauser (inactive)
+        Tsing (inactive)
+        Barak Segal (inactive)
+        Mangoman (inactive)
+        Richardyzo
+        Alstar
+Launchpad: Clairconctlar, Daktaklakpak, Doog, Exquivan, Harika & Yorn,
+  Herald, K'tang, Lk, Owa, Ploxis, Vyro-Ingo, Xchagger, Virtao, Terran,
+  Phylxan, Narool, Kterbi, Kahr
+Kris Hauser: Earthling, Mmrnmhrm, Mycon, Slylandro, Supox, Syreen,
+  Thraddash, Umgah, Utwig, Yehat, Zoq-Fot-Pik
+Tsing: Chmmr, Melnorme, Kohr-Ah, Shofixti, Ilwrath
+Korky: Chenjesu, Ur-Quan, Spathi, VUX
+Mango: Pkunk, Druuge, Arilou, Orz, Androsynth
+Richardyzo: Zekfahan
+orz: Estion
+
+Ship Panels:
+Unknown: Pkunk, Yehat, Kohr-Ah
+Stolen from SC2: all other SC1 & SC2 ship panels
+Alstar: Narool, Virtao, Terran, Kahr, Kterbi
+Starfox: Phylxan
+
+Gob:
+The 1st (Supox) Gob station image was done by Drink_Pepsi
+The other two (Orz, Kohr-Ah) were done by Gueest
+
+The Artists (sound & music):
+        People I don't know about (inactive)
+        Alex Parker
+        Launchpad
+        Reddish
+Um, Launchpad did the sound effects for most of the SC3 & original ships?  
+Alex Parker the wrote title screen music for TW.  
+Reddish did the victory song for Phylxan.  
+
+The Web Page Managers:
+        Atarex
+        The Grand Fot
+        Starfox
+        Alstar
+Atarex manages The Pages of Now & Forever, on which TimeWarps web page is
+  hosted.  He used to also manage TimeWarps web page.  
+The Grand Fot now manages TimeWarps web page.  
+I think that Starfox also manages TimeWarps web page?  
+Alstar wrote the descriptions of the original ships in TimeWarp that appear
+  on the web page.  
+
+The Documentation writters:
+        orz
+        Launchpad
+
+orz (that's me again) wrote almost all of the .txt files... like this one.  
+Launchpad wrote newship.txt, a guide to writting new ships, and wussie.txt, 
+  which documents the WussieBot somewhat.  
+The old readme (readme.old) was written by Ultron Debugger & The Fly
+

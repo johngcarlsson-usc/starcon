@@ -1,0 +1,79 @@
+TODO.txt
+
+Revision history:
+2003.08.10 youBastrd! created because he's too lazy to go make a buzilla thingy on sourceforge or elsewhere
+----------------------------------------------------------
+
+This is a temporary file to keep track of what the developers of this project intend to do in the near future.
+(view with wordwrap on)
+
+Put stuff at the top of the list to indicated a higher priority.  Push completed items below uncompleted ones.
+
+Task # is just some arbitrary number, started at a high number to make it look like we've been busy (in case we get confused about which bug we're talking about over email/AIM).  
+
+Status types are: unassigned, assigned, done, lazy (no one wants to do it anytime soon).  
+
+Expected completetion values are: ?? (unknown, for unassigned tasks), an actual date, a release version (let's call the next one 0.06), future (meaning we'll get to it, just not right now).
+
+----------------------------------------------------------
+
+Add a title "Star Control: Timewarp" to the title screen.
+
+Show the version number in the title screen.
+
+Show "Selecting ships" when playing over a multiplayer game and the remote player is selecting a ship.
+
+
+
+
+Task #: 10002
+Status: assigned
+Task: determine the minimal set of library files is and get rid of the rest, including .dll, .lib and .a files.
+Assigned to: Geoman (with Culture20's help with the Linux stuff)
+Expected date of completion: 2003.08.20
+
+Task #: 10001
+Status: assigned
+Task: Move ./*.txt to ./docs and change the format of each to html.  Link them together and make it all pretty n such.
+Assigned to: youBastrd!
+Expected date of completion: 2003.08.20
+
+Task #: 10003
+Status: assigned
+Task: allow the user to specify which .ini files to use on the commandline (this should help testing)
+Assigned to: youbastrd
+Expected date of completion: 2003.08.20
+
+Task #: 10004
+Status: assigned
+Task: figure out a way of storing .ini files such that we're not clobbering each other's file when we configure the game.  (ini factory class?  some CVS trick?)
+Assigned to: youbastrd
+Expected date of completion: 2003.08.30
+
+Task #: 10005
+Status: assigned
+Task: rework directories: put data files in ./data/, etc
+Assigned to: youBastrd!
+Expected date of completion: 2003.08.30
+
+(everything below here should be done)
+---------------------------------------------------
+Task #: 
+Status: 
+Task: 
+Assigned to: 
+Expected date of completion: 
+
+
+Task #: 
+Status: 
+Task: 
+Assigned to: 
+Expected date of completion: 
+
+
+Task #: 
+Status: 
+Task: 
+Assigned to: 
+Expected date of completion: 

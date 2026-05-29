@@ -1,0 +1,98 @@
+This doc describes a possible layout of the Timewarp Homepage.
+  2004.01.20 youBastrd! started 
+
+
+See: http://bugs.cs.iupui.edu/cgi-bin/bugzilla/show_bug.cgi?id=34
+See: http://dynamic.gamespy.com/~timewarp/ikonboard/ikonboard.cgi?s=401174587edaffff;act=ST;f=13;t=36
+
+NOT DONE YET!
+
+
+
+Needs:
+
+N1. Show the name of the project "Timewarp" (!)in text(!).  Show a short summary (one paragraph) of the game.  Show screenshots of what the game looks like.  
+
+N2. Must show logo.
+
+N3. Show technical overview of the game (2 player internet/LAN, multiplayer hot seat, gametypes).
+
+N4. Allow user to download the software.  Allow user to get the latest official release.  User should be able to download the latest official release within 1-3 clicks, the fewer clicks, the better.
+
+N5. USer should be able to find quick solutions to common installation/compilation problems for all supported platforms. (FAQ?)
+
+N6. Show credits for everyone that has participated in the project.  This list must be exhaustive in naming people.  Listing each participant's contribution may prove difficult.  Show things like contact info, active status, etc
+
+N7. must link to forums.
+
+N8. must link to saucecast.  
+
+N9. must show news links.  any chance that these can be commented on in the forum?
+
+N10. Must have banners required by GameSpy, ClassicGaming, Sourceforge
+
+N11. Must have the following keywords in the text and in the head tag: Star Control, StarCon, Timewarp, Star Control 1, Star Control 2, Star Control 3, Ur-Quan Masters, Space Adventure Game, ???
+
+N12. must be compatible with all browsers, must be W3C HTML compliant.  Lynx compatible?
+
+Wants:
+
+W1. Overview of the project's history. 
+
+W2. Detailed, exhastive version info for each version (going back to Sept 2001)
+
+W3. Make it look really cool.
+
+
+Nice to Have:
+
+H1: RSS feeds for news items.
+
+H2: RSS feeds for new posts in the forums
+
+H1: Switch to another forum.  PHPBB is looking pretty good.  Consolidate all the other forums related to TW to this one new forum.  Preseve all content in the process.  Other forums include: Channel 44, http://dynamic.gamespy.com/~starcontrol/boards/timewarp/, all the team-specific boards.  
+
+H3. If needed by specific teams, groups can be set up, and permissions set up for each group such that, for example, only Team Beige members can access the Team Beige forum.
+
+
+Solutions (Layouts):
+
+S1. HTML + CSS
+
+header (file named exactly "header")
+* this file is never really shown.  Instead, it gets inserted into each html file using a perl script, InsertMenu.pl.  This perl script is run off-line, whenever a change is made to any of the html pages.  This script has to be run manually.  It does not appear on the webpage on its own.  
+* meet W3
+
+menu
+* this file is never really shown.  Instead, it gets inserted into each html file using a perl script, InsertMenu.pl.  This perl script is run off-line, whenever a change is made to any of the html pages.  This script has to be run manually.  It does not appear on the webpage on its own.  
+* meet N7 - 12
+* meet W3
+
+footer (file named exactly "footer")
+* this file is never really shown.  Instead, it gets inserted into each html file using a perl script, InsertMenu.pl.  This perl script is run off-line, whenever a change is made to any of the html pages.  This script has to be run manually.  It does not appear on the webpage on its own.  
+* need W3
+
+InsertMenu.pl (does not appear on the webpage)
+* perl script to insert menus, banners and a header into each html page.  Must be used manually.  
+* makes each html page use main.css
+
+main.css
+* declares a bunch of formatting stuff for many html tags.
+* meet W3
+
+index.html
+* meet N1 - N4
+* link to faq.html, history.html
+
+download.html
+* explains how to download TW. 
+* links to the actual files on sourceforge.  Explains what each file is.
+
+faq.html
+* meet N5
+
+history.html
+* meet W1 - W2
+
+
+

@@ -1,0 +1,7 @@
+interfaces/gametest/alert/no_default_y = 63
+interfaces/gametest/alert/no_default_x = 138
+interfaces/gametest/alert/text_backgr_y = 15
+interfaces/gametest/alert/text_backgr_x = 16
+interfaces/gametest/alert/yes_default_y = 63
+interfaces/gametest/alert/yes_default_x = 38
+res = 800

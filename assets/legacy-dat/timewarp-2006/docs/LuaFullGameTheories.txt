@@ -1,0 +1,96 @@
+Ok, so there's a couple of approaches to take with this Lua stuff.  To discuss: what do we want the game to do?  
+
+Needed (from the game, not necessarily done in Lua): ---
+
+N1. the ability to place planets and stars, and to define their positions, orbits, picture(s), techtonics, weather, bio, energy items, etc
+
+
+N2. Speedy data structures for things like collision detection and gameplay.  (TW already does this).  This should not be lost when a full game is added!
+
+
+N3. Ability to assign actions to events for all objects.  That means events like: creation, destruction, collisions, timer events, etc.  Ability to run custom event code before the event (which also allows to cancel the event), and after the event.  Ability to dispatch events from Lua, either triggering the custom events, or specifically not triggering custom events.  see http://java.sun.com/docs/books/tutorial/uiswing/events/
+N3-1. Where possible, use OO to decide what events are valid for a given object.
+
+
+N4. There are distinct "Spaces" when the full game is being played, they can be run independently. 
+
+(ie the Sol system is different from the Alpha Centari, even though they are both in Truespace.  The point (100,100) in Sol is distinct from the point (100,100) in the Alpha Centari system.)  A player should be able to visit one "space," leave to go somewhere else, and the first space should be pretty much the same, but adjusted to show what's changed in the time the player was away.  
+
+
+N5. The code should gracefullly respond to errors.  The code should not crash under normal conditions.  
+
+
+N6. Minimize the number of libraries used (and their sizes), to maximize the number of platforms TW works on (in terms of file size, memory needed and how difficult it is to get a build working).
+
+
+Assumptions: ---
+
+A1. C/C++ is much faster than Lua when doing computational stuff.
+
+A2. C++ functions can be called from Lua.  Lua functions can be called from C++.  
+
+A3. Data structures from C++ and Lua can be used in the other language, but it's more of a pain.  Both processes involve tricky code that at present, I have a difficult time with.  In particular, debugging is difficult, I'll have to find a way to deal with debugging both Lua and C++ simultaneously.  
+
+
+
+
+Solutions: ---
+
+S1. Use one of the C++/Lua libraries (toLua or LuaBind) to expose C++ classes to Lua, and vice versa.  A reasonable selection of C++ classes should be exposed in this manner.
+
+Pro:
+* maximum versatility.  Any C++ class can be subclassed to do whatever is needed.  
+
+Con:
+* extra library is needed.  
+* no real difference between coding everything in C++, except that the debugging will be harder.  
+* May be a security risk to run arbitrary C++ code.  May be mitigated by limiting selection of C++ classes, but hiding things like opening files may require shuffling some methods around to non-exposed classes.
+
+
+S2. Make a minimal API in C++, and use the macro lua_register to expose those C++ functions.
+
+Pro:
+* 
+
+Con:
+* Will require stack manipulation-type coding to handle parameters in C++.  Make a macro for this?  How do other projects do this?
+* Will require some clever coding to 
+
+
+
+
+
+
+Lua Code to have a custom event happen when a ship dies (making up the symbols here):
+
+addShip { 
+   species = "Ur-quan Kzer-za",
+   shipType = "Dreadnaught",
+   x = 100, 
+   y = 100,
+   onDeath = function(killer) {
+       printMessage("I shall be avenged... by these guys!");
+       
+       addShip{ species="Ur-quan Kzer-za",
+                shipType="Dreadnaught",
+                x = this.x + 100,
+                y = this.y + 100,
+                targetID = killer:getID() }
+
+       addShip{ species="Ur-quan Kzer-za",shipType="Dreadnaught" }
+       addShip( {} )
+   end 
+}
+
+
+
+
+
+
+
+
+
+
+
+
+

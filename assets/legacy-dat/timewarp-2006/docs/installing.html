@@ -1,0 +1,202 @@
+<html>
+<head>
+    <title>Star Control: Timewarp - Downloading and Installing</title>
+    <link rel="stylesheet" type="text/css" href="stylesheet.css" />
+</head>
+<body>
+
+<!--MENU--><div id="main">
+	<div id="menu">
+    	<a href="../readme.html">Home</a><br>
+    	<a href="installing.html">Downloading and Installing</a><br>
+    	<a href="playing.html">Playing</a><br>
+    	<a href="GameTypes.html">Game Types</a><br>
+    	<a href="coding.html">Development</a><br>
+    	<a href="faq.html">FAQ</a><br>
+    	<a href="links.html">Links</a>
+	</div>
+
+<!--MENU-->
+
+<h1>Downloading, Installing and Configuring</h1>
+
+<h2>Downloading</h2>
+
+<p>Timewarp runs on Windows, Linux, BeOS, and DOS.  Normally, once the files are
+downloaded, it is necessary to compile the project as well.  This situation may
+be made easier in the future, please be patient.</p>
+
+You can get the latest official release from:
+<ul>
+<li><a taget=_blank href="http://sourceforge.net/project/showfiles.php?group_id=13354">
+SourceForge</a> (you'll want the full version listed under the "Full" catagory,
+</ul>
+
+<p>You may instead get the latest, bleeding edge version via SourceForge CVS.
+Instructions on how to do this can be found
+<a href="http://dynamic.gamespy.com/~timewarp/ikonboard/ikonboard.cgi?s=3f3e5f176dceffff;act=ST;f=13;t=20">
+here</a>.</p>
+
+
+<h2>Installing</h2>
+
+Pick your Operating System and Compiling method of choice:
+<ul>
+    <li><a href="#windows-msvc">Windows - MSVC</a>
+    <li><a href="#windows-mingw">Windows - mingw32</a>    
+    <li><a href="#dos-djgpp">DOS - djgpp</a>
+    <li><a href="#linux">Linux</a>
+    <li><a href="#beos">BeOS</a>
+</ul>
+
+<a name="windows-msvc"><h3>Windows - MSVC</h3></a>
+<pre>
+TimeWarp can be built with Microsoft Visual C++.  Open up ./twwin.dsw and pick
+Build/Rebuild All
+from the menu.
+</pre>
+
+<a name="windows-mingw"><h3>Windows - MinGW</h3></a>
+<pre>
+TimeWarp can be built with Minimalist GNU for Win32. 
+
+Download MingWG:
+http://www.mingw.org/
+Install it.
+
+Download ALLEGRO:
+http://http://www.talula.demon.co.uk/allegro/
+Install it.
+
+Download this ALLEGRO extension:
+http://www.geocities.com/jeffery_guan/jgmod/jgmod.zip
+(optional, but necessary for some features)
+(homepage is http://www.geocities.com/jeffery_guan/ )
+Install it.
+
+    If you have installed jgmod then just type:
+    $ make win32=1
+
+    If you don't have jgmod type:
+    $ make win32=1 NO_JGMOD=1 
+
+    That's it! Run timewarp and have fun!
+
+</pre>
+
+<a name=linux><h3>Linux</h3></a>
+<pre>
+1. Installing Allegro:
+
+    If you already have Allegro installed you can proceed with part 2.
+    If not, then get the recent Allegro beta from:
+    http://alleg.sourceforge.net/allegro/wip.html
+    To compile and install, untar Allegro and cd into Allegro dir.
+    Then type the following commands:
+    $ sh fixunix.sh
+    $ ./configure
+    $ make depend
+    $ make
+    $ su -c "make install"
+
+2. Install Lua
+    If you already have Lua installed you can proceed with part 3
+    if not, then get recent Lua version from: 
+    http://www.lua.org
+    
+3. Installing jgmod (optional)
+
+    If you want music, you'll have to get jgmod from
+    http://www.geocities.com/jeffery_guan/jgmod/jgmod.zip
+    Unzip the jgmod.zip and execute:
+    $ sh fixunix.sh
+    $ make
+    $ su -c "make install"
+
+
+4. Installing cvs
+    
+    You should already have this tool
+
+5. Installing TW
+
+    3.1 Make timewarp directory 
+    $ mkdir timewarp
+    3.2 Enter directory
+    $ cd timewarp
+    3.3 Get latest version from CVS
+    $ cvs -z3 -d:pserver:anonymous@cvs.sourceforge.net:/cvsroot/timewarp co .
+    
+    4 If you have installed jgmod then just type:
+    $ make
+
+    If you don't have jgmod type:
+    $ make NO_JGMOD=1 
+
+    That's it! Run ./timewarp and have fun!
+
+
+6. Updating TW
+
+    Of course you can simply download the newest TW version. But that's
+    a huge download. You could also download the newest patch. But there's
+    a much better way! Update your version:
+    $ cd timewarp; cvs update; make
+    
+</pre>
+
+
+<a name=beos><h3>BeOS</h3></a>
+<pre>
+Star Control: TimeWarp on BeOS
+
+Since BeOS is no longer installed on my computer,
+the latest versions of TimeWarp have not been compiled
+for BeOS.
+
+However, older versions of TimeWarp are known to work
+on BeOS, and there haven't been any significant platform
+changes, so newer versions should also work there.
+
+Furthermore, the BeOS version of Allegro (a library used
+by TimeWarp) has matured substancially with Allegro version
+4.0.0, so a new build of TimeWarp for BeOS should work much
+better than the old ones.
+
+The last time I built TimeWarp for BeOS, everything compiled
+and ran, but TimeWarp would crash after aproximately 10
+minutes, and sound & music were unreliable.
+</pre>
+
+
+
+
+<h2>Configuring</h2>
+<pre>
+Ini files used by TimeWarp:
+
+server.ini : server side game settings (physics, gravity, etc.)
+client.ini : client side game settings (video, sound, view, etc.)
+joys.ini   : joystick calibration settings
+fleets.ini : fleets for normal games
+scp.ini    : keyboard setup, player setup
+tmp.ini    : temporary game initialization data, for the most recent game
+
+
+How to tweak .ini's for slow computers:
+
+	In game (or in client.ini [Video]), change screen width & height to as low as your video card will go, and change bitsperpixel to 8 (hideously ugly) or 15/16 if in fullscreen mode, or whatever your desktop color mode is if windowed.
+	In client.ini [View]
+	change Anti-Aliasing to 0
+	change Mip_min to 1 (may help for low-ram computers)
+	In server.ini [Game]
+	change TicRate to 20 (also helps modem games)
+	In server.ini [Stars]
+	change Number to 100
+	In server.ini [Planet]
+	change GravityRange to 10
+</pre>
+
+</div>
+</body>
+</html>

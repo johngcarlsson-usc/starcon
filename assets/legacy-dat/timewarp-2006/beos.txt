@@ -1,0 +1,20 @@
+Star Control: TimeWarp on BeOS
+
+Since BeOS is no longer installed on my computer, 
+the latest versions of TimeWarp have not been compiled 
+for BeOS.  
+
+However, older versions of TimeWarp are known to work 
+on BeOS, and there haven't been any significant platform 
+changes, so newer versions should also work there.  
+
+Furthermore, the BeOS version of Allegro (a library used 
+by TimeWarp) has matured substancially with Allegro version 
+4.0.0, so a new build of TimeWarp for BeOS should work much 
+better than the old ones.  
+
+The last time I built TimeWarp for BeOS, everything compiled 
+and ran, but TimeWarp would crash after aproximately 10 
+minutes, and sound & music were unreliable.  
+
+orz

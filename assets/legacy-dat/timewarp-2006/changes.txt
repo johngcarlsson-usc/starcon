@@ -1,0 +1,175 @@
+
+
+Star Control: TimeWarp
+ChangeLog
+
+version 0.06u1
+
+ * new ships added, existing ships revised
+ * ship classification into A, B (A=good, B=not so good).
+ * improved AI (?)
+ * 8 player networking
+
+
+Pre-0.05u6 new improvements:
+  * Improved networking lag by a factor of 2 on Windows.  
+  * Improved WussieBot A.I. a lot (thanks to Launchpad)
+  * Improved networking stability and portability.
+  * Networking now autodetects lag.  
+  * Added network prediction
+  * Added frame interpolation (actually extrapolation)
+  * Added MANY MANY MANY original ships (thanks to: Launchpad, Tau,
+    Richardyzo, me, Slag-786B, Standard Time, ][amaraw, Forevian,
+    Cyhawk, Geoman, Varith, more)
+  * ...and all 12 ships from Star Control 3 (thanks (or blame) go to
+    Launchpad)
+  * Added new game modes, including GOB!, Asteroid Field, Hyperspace,
+    Deep Space, Sentient Legue Football, Eternal Arena, more.
+  * Code documentation improved.  
+  * Fixed Joystick support (finally, it actually works!) (thanks to Fly)
+  * Added in-game chat to networking
+  * Networking now supports 2 players per computer.  (temporarily removed)
+  * Fixed some bugs.
+  * Added a diagnostics screen, keyjamming tester, and ship info screen.
+  * Added command line options (-res -bpp -play -fullscreen -window
+    -nosound -nojoystick -nomouse -nokeyboard -noidle)
+  * Improved error handling, anti-aliasing, demo recording / playback
+
+Version 0.05u5 new improvements:
+  * Networking (still rather limited).
+  * Added demo recording / playback
+  * Tons of bug-fixes.  
+  * Good looking new ships (thanks to Launchpad).  
+  * Joystick support added.  (very buggy)
+  * Adjustable screen resolution & color depth.  
+  * Adjustable starfield depth & planet gravity.  
+  * Added help screen (press F1 during combat, still rather limited).  
+  * Improved AIs, gamma corection, 256 color support, more.  
+
+Version 0.05u4 new improvements:
+  * Up to 8 parties can participate in combat (no networking though).
+  * Tons of bug-fixes.
+  * Once again works with old versions of Allegro.  
+  * Added a new AI.
+  * Improved options menu.
+
+Version 0.05u3 new improvements:
+  * The ships can be easily edited with a text editor.  Just go to the ships
+    directory and edit the apropriate file.  (andgu.ini = Androsynth Guardian,
+    arisk.ini = Arilouileilay Skiff, chmav.ini = Chmmr Avatar, etc.)
+  * Portable!  The same code compiles under DOS, windows, & linux (thanks to Allegro & Mr. Sparkle)
+  * Lots of bug-fixes.
+  * Libraries other than Allegro are now optional.
+
+Version 0.05u2 new improvements:
+  * Smooth Zooming (thanks to Marcos)
+  * Improved AIs (thanks to S.P.Y.)
+  * Fixed Black-Screen-Of-Death (oopsie)
+  * A few bug-fixes.  
+
+Version 0.05u1 new improvements:
+  * Added moronic AI
+  * Added gamma correction (thanks to S.P.Y.)
+  * Tons of bug-fixes.  
+
+orz
+
+===< ChangeLog >===
+
+Version 0.05 new features:
+  * All 25 Star Control 1 and 2 ships are implemented in this version, fully
+    functional, 3D rendered, with a few quirks here and there... (see
+    bugs.txt)
+  * Fleet selection has been integrated, and all the fleets which come with
+    Star Control 2 have been incorporated, in addition to a new fleet
+    consisting of all 25 ships. (allships.scf)
+  * F11 allows to save in-game action screen shots, stored in the ScrShots
+    directory
+  * Not all ship data files need be present in order for the game to work
+    (though at least one ship data file is required for the game to operate,
+    and any records of the missing ships when loading a fleet with ships
+    under their ID will be lost)
+  * Amusing anecdote about Star Control 3 (intro) has been removed
+  * Oh, yeah! Almost forgot... I bet no one gives a damn anyway, but full
+    source code (with practically non-existent commenting) has been included.
+
+Version 0.04 new features:
+  * The following ships are implemented in this version, fully functional, 3D
+    rendered, with a few quirks here and there... (see bugs.txt)
+    + Pkunk Fury
+    + Spathi Eluder
+    + Utwig Jugger
+    + Earthling Cruiser
+    + Druuge Mauler
+    + Yehat Terminator
+    + Arilou Skiff
+    + Chenjesu Broodhome
+    + Slylandro Probe
+    + Vux Intruder
+  * Ship phase-in animation added
+  * Default shot explosion sprite added, with custom shot explosion
+    implemented for Druuge Missile and Chenjesu Crystal
+  * Asteroid animation and planet sprites previously ripped have been
+    replaced with original renders
+  * An intro explaining the existence of Star Control clone projects such as
+    this one, with music and text written by The Fly
+  * An interface for selecting ships, with a now updated and built-in
+    bronze-age technology user-hostile advanced keyboard setup section, and
+    music written by Ultron Debugger
+  * Support for 8-bit color and 15-bit color modes, as well as 16-bit color.
+    Animation doesn't seem to be any smoother in 8-bit color mode...
+    Oh, well... at least it looks ugly.
+  * Implemented scp.ini file to keep keyboard settings, color mode, intro
+    playing and music playing settings
+  * F1 key mutes and unmutes music during melee
+  * Random number generation has been fixed to actually give different
+    numbers each time the program runs... WOW!
+  * Project development is back at full pace, as long as The Fly doesn't
+    suddenly get transfered to a combat unit and accidentally points his M-16
+    at himself when it's loaded...
+
+Version 0.03 new features:
+  * New ship graphics, supporting 64 angles (previously 16)
+  * Pkunk weapon shots added (yes, you can actually KILL your opponent!)
+  * Only two players now, since this version is playable. Four player option
+    will be available in following versions, once network support is achieved
+  * Since project development may be frozen for a month, we decided to release
+    a playable version quickly before the time it might come to a temporary
+    halt. So we only had time to make Pkunk ships fully functional
+  * The two Pkunk ships are colored differently for each player
+  * Automatic zooming, continuos space, and mid-point focus have been
+    implemented
+  * 16-bit color graphics. This version's animation may not be as smooth on
+    slower computers. In following versions we will implement support also
+    for 8-bit color graphics, which will look slightly less attractive, but
+    animation will be smoother with it
+  * Added stone-age technology keyboard configuration utility
+
+Version 0.02 new features:
+  * 3D stars (Thanks to Fred Ford)
+  * Asteroids
+  * Collision (planet, ships, asteroids)
+  * Animated panels
+    + Crew & Batt stats
+    + Batt light, when battery is low
+    + Captain animation (IT'S ALIVE!)
+    + Screen off animation at death
+  * New .MOD (music) library JGMOD
+    (will probably prevent crashes caused by the the MikAlleg library used
+    in version 0.01)
+  * Improved sound effects
+    + Pkunk weapon shots and profanities included
+    + Arilou weapon fixed
+    + Ship and asteroid collision with planet SFX
+  * Ship switching using F1-F4 keys
+  * Ship and asteroid explosions
+  * Victory is possible
+    + when one ship stays, while others have been blown up by crashing at
+      the planet)
+    + victory music played for ship remaining...
+
+...the writers of this document get nostalgic at this point, weeping and
+wiping our noses on our sleeves. Therefore, we must stop writing to clean
+them.
+
+Ultron Debugger & The Fly

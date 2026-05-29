@@ -1,0 +1,5 @@
+interfaces/selectmission/alertwin/ok_default_y = 299
+interfaces/selectmission/alertwin/ok_default_x = 137
+interfaces/selectmission/alertwin/OK/default_y = 299
+interfaces/selectmission/alertwin/OK/default_x = 137
+res = 800

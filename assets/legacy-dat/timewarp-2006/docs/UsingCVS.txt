@@ -1,0 +1,151 @@
+This is the place to post questions and answers about using CVS.  Ironically, this file can be found in /docs/UsingCVS.txt in the repository.
+
+[B]This is for the latest, roughest, somewhat untested, bleeding-edge version.  When you get the files, you'll still have to recompile.  If you don't want to compile, get the latest official release here: [URL=http://sourceforge.net/project/showfiles.php?group_id=13354&package_id=11311&release_id=187537][/URL][/B]
+
+Basically, CVS is a way of synchronizing files for multiple users.  The simplest way of using it is to get the latest version of Timewarp (aka TW).  All files, including source code, data files and VC++ project files, are contained in the repository.  
+
+CVS can also be used to make changes to the source.  When you make changes, you commit them to the repository.  Other people can then update their local copy, which will now include your changes.  This keeps everyone in sync.  
+
+("Developers" means folks who have write-access to CVS, which is a small number of people)
+
+Getting started:
+
+[B][U]1.  Get CVS software installed.[/U][/B]
+
+Windows:
+Get [URL=http://www.cygwin.com/]Cygwin[/URL], which are basic UNIX tools.  When you install it, make sure that the tool CVS is installed, which is normally found under the development section.
+
+Linux, UN*X OSes:
+CVS should be installed already.  Honestly I'm the wrong guy to ask what to do if this is not the case.
+
+[B][U]2. Make a local copy of the repository.  [/U][/B]
+
+Bring up a command window, use a cygwin window if you have windows.  Note that you'll have to do a "cd c:" to get to your c: drive and find your way around.  The starting directory for cygwin is C:\cygwin\bin\%USERPROFILE%, in case you get lost.
+
+Make a new directory someplace and cd into it.
+
+[B]Non-developers:[/B]
+
+Go to the sourceforge CVS [URL=http://sourceforge.net/cvs/?group_id=13354]page[/URL] for TW and follow instructions for anonymous access.  Last I checked, the commands are the following:
+cvs -d:pserver:anonymous@cvs.sourceforge.net:/cvsroot/timewarp login 
+
+(press enter at the password prompt)
+
+ cvs -z3 -d:pserver:anonymous@cvs.sourceforge.net:/cvsroot/timewarp co all
+
+This second command will finally download the whole darn thing.  If it stops for some reason, you can resume it safely, and it'll minimise traffic automagically (as in, resume where it left off).
+
+[B]Developers:[/B]
+
+Go to the sourceforge CVS [URL=http://sourceforge.net/cvs/?group_id=13354]page[/URL] for TW and follow instructions for developer access.  Last I checked, the commands are the following:
+
+export CVS_RSH=ssh 
+ 
+cvs -z3 -d:ext:developername@cvs.sourceforge.net:/cvsroot/timewarp co all
+
+(enter your password at the prompt)
+
+This can be resumed if it stops.
+
+[B][U]3. Keep up to date. [/U][/B]
+
+As changes are made to the repository, you want to be able to keep your files up to date.  You can do this with the update command.
+
+Bring up a cygwin/console window again (easier way shown later) and type this in:
+
+[B]Non-developers:[/B]
+
+cvs -z3 -d:pserver:anonymous@cvs.sourceforge.net:/cvsroot/timewarp update
+(no prompt for password)
+
+[B]Developers:[/B]
+
+cvs -z3 -d:ext:developername@cvs.sourceforge.net:/cvsroot/timewarp update
+(enter password)
+
+The output will show filenames of any changed files.  
+* "U" means the file was updated (as in, your local file was old, and a newer one was brought over from the repository)
+* "M" means you have modified a file, and that change has not been brought into the repository
+* "N" means that there is a new file downloaded
+* "?" means you've made a new file or directory that's not in the repository.
+
+[B][U]3. Commit changes (Developers only). [/U][/B]
+
+You've coded something.  Woohoo!  Now how to stick it in the repository for all to see...?
+
+The policy for making changes to this project is as follows.  All steps are manditory.
+
+1. Read and know ./code.txt
+2. Update often.  Remember that this is a living, breathing thing, and stuff will happen in parallel.
+3. Update just before you commit changes.
+4. Do a build and a quick test run before you commit changes.  A small error on your part, which is an understandable thing to happen, will cost you maybe a minute to see, and hopefully not too long to fix. But will save *many others* a lot of time trying to find what code caused an compile-time or run-time error.  
+
+cvs -z3 -d:ext:developername@cvs.sourceforge.net:/cvsroot/timewarp ci -m "This is my changelog message"
+(enter password)
+
+You must enter a meaningful message in the quotes.  Describe in concise, minimal but expressive terms what your change is.
+
+[B][U]4. Use WinCVS/WinGUI to save some time (optional) [/U][/B]
+
+Having a visual representation of what files have changed is really handy.  Get [URL=http://www.wincvs.org/]WinCVS[/URL] or CVSGUI (same thing) and install it.
+
+[B]Non-Developers:[/B]
+
+1. Go make a directory.
+
+2. Start WinCVS.
+
+3. Click the button next to the directory name to choose the directory you just made.  (highlighted with arrow at top)
+[IMG]http://members.rogers.com/youbastrd/wincvs.jpg[/IMG]
+
+4. Pick "Admin/Login..." and use these parameters:
+
+Authentication: pserver
+Path: /cvsroot/timewarp
+Host Address: cvs.sourceforge.net
+User name: anonymous
+CVSROOT: should be made automagically, but it should look like: anonymous@cvs.sourceforge.net:/cvsroot/timewarp
+[IMG]http://members.rogers.com/youbastrd/wincvs_login.jpg[/IMG]
+
+5. Pick "Remote/Checkout module."  Either type the name "all" , without quotes, in the "Module name and Path on server" field, or click the button to the right.  It'll ask the server what modules are available.  This will create a directory called "all" .  You can avoid making the directory by using "." as the module name.
+[IMG]http://members.rogers.com/youbastrd/wincvs.jpg[/IMG]
+
+6. (Optional) Stay up to date by right-clicking the root directory in the left pane (shown with arrow) and picking "Update."  
+
+[B]Developers:[/B]
+
+1. Pick 
+
+Authentication: ssh
+Path: /cvsroot/timewarp
+Host Address: cvs.sourceforge.net
+User name: your sourceforge user name
+CVSROOT: should be made automagically, but it should look like: username@cvs.sourceforge.net:/cvsroot/timewarp
+
+You may also import the settings from another local copy, if you have one.
+
+2. Click on the root folder, and right click (or use ctrl-u) to update your copy.  Developers will have to retype their password ** in the window that appears behind all other windows ** (Man do I hate that, anyone know a workaround?  ... given that you can't use login on a ext server?)
+
+3.  It's really recommened to enable flat view, under the View menu.  That makes all files in subdirectories show up in the right pane.
+
+[B]Developers:[/B]
+4. Developers can commit changes with ctrl-m (with the root directory selected).  A password prompt will show up again, hidden of course
+
+5. New files can be made by actually creating the file locally, then doing an update.  The output should show "N" next to the filename.  Find the file in the right pane, and pick Modify/Add Selection (you can select multiple files).  The system should identify whether a file is binary, but just to be sure that it picks the right file type, pick Modify/Add binary as appropriate.  Note that someone, I'm guessing me, has to declare what file types are binary, ie *.jpg are binary.  If you're using a filetype that is not automatically recognized, let me know and I'll add it to the binary list.
+
+
+Links:
+
+[URL=http://sourceforge.net/cvs/?group_id=13354]Sourceforge Timewarp CVS Repository[/URL]
+
+[URL=http://cvsbook.red-bean.com/]CVS book (free download)[/URL]
+
+Recommended chapters:
+* An Overview of CVS 
+* Basic Concepts 
+* A Day With CVS
+
+
+Revision history:
+2003.07.28 youBastrd! created
+2003.07.31 youBastrd! Made anonymous instructions clearer, with pictures n stuff.

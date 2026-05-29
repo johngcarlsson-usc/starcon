@@ -1,0 +1,9 @@
+interfaces/selectmission/alertlose/no_default_y = 229
+interfaces/selectmission/alertlose/no_default_x = 6
+interfaces/selectmission/alertlose/yes_default_y = 231
+interfaces/selectmission/alertlose/yes_default_x = 282
+interfaces/selectmission/alertlose/NO/default_y = 229
+interfaces/selectmission/alertlose/NO/default_x = 6
+interfaces/selectmission/alertlose/YES/default_y = 231
+interfaces/selectmission/alertlose/YES/default_x = 282
+res = 800

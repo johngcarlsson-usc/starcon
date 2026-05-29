@@ -1,0 +1,194 @@
+<html>
+<head>
+    <title>Star Control: Timewarp - Running</title>
+    <link rel="stylesheet" type="text/css" href="stylesheet.css" />
+</head>
+<body>
+
+<!--MENU--><div id="main">
+	<div id="menu">
+    	<a href="../readme.html">Home</a><br>
+    	<a href="installing.html">Downloading and Installing</a><br>
+    	<a href="playing.html">Playing</a><br>
+    	<a href="GameTypes.html">Game Types</a><br>
+    	<a href="coding.html">Development</a><br>
+    	<a href="faq.html">FAQ</a><br>
+    	<a href="links.html">Links</a>
+	</div>
+
+<!--MENU-->
+
+<h1>Playing</h1>
+
+This doc explains some of the subtleties of playing Timewarp.
+
+<h2>Controls</h2>
+<pre>
+Run twdos.exe in DOS, or twwin.exe in windows, or twlinux in Linux,
+or twbeos on BeOS.  
+These are the options presented to you in the game:
+
+Melee:  Starts a battle.  In battle the following keys do stuff:
+        F1 brings up the help screen (this file, at the moment)
+        F2 brings up the options menu
+        F3 switches camera focus
+        F4 is fast-forward (speeds up in-game time greatly)
+        F5 displays fleet status
+        F6 is chat (for network games)
+        F7 changes game tic rate (physics quality)
+        F8 changes camera mode
+        F9 creates planets (silly "feature")
+        F10 quits (so does ESCAPE)
+        F11 saves screenshots
+        F12 displays framerates / performance data
+        - zooms out on some viewing modes.
+        + (or =) zooms in on some viewing modes.
+        0 and 9 also effect the camera in some viewing modes.  
+        Also, if some controllers are set to keyboard, customizable
+        buttons may cause ship actions.  Be default these are:
+        Config 0:
+                left:   Keypad 4
+                thrust: Keypad 8
+                right:  Keypad 6
+                fire:   Quote (")
+                special:Semicolon (;)
+                next:   Closebrace (])
+                prev:   Openbrace ([)
+                near:   P
+        Config 1:
+                left:   A
+                thrust: S
+                right:  D
+                fire:   B
+                special:V
+                next:   F
+                prev:   G
+                near:   H
+
+Teams:
+        Select Controller:
+              Select the player (i.e. "Player 1" or "Player 2")
+                you wish to alter from the list on the left, and
+                the controller (i.e. "Keyboard", "MoronBot") you
+                want to control that player from the list on the
+                left.  Then either click on the "Select
+                Controller" button or double click on the
+                controller name.
+        Config #:
+               This switches the configuration used by the
+                 currently highlighted controller.
+        Edit Configuration:
+               This is used to setup up keys when the currently
+                 highlighted player is using the keyboard.  It
+                 may eventually allow the configuration of AIs
+                 and calibration of joysticks.
+        Edit Fleet:
+               This button brings up the fleet selection menu for
+                 the currently highlighted player.  
+        Main Menu:
+               This returns to the main menu.
+Options:
+        Most things on this menu are self-explanatory, but a few
+          need special mention.
+
+        Gamma correction:
+                This makes things brighter during combat.  This
+                  should not be changed from the middle of combat,
+                  or colors could get weird.  
+        Antialiasing:
+                If this box is checked then TimeWarp will use
+                  higher quality graphics, but run slower.  
+        Color Depth:
+                You cannot change this from the middle of combat.  
+        Camera Mode:
+                This allows you to control what is shown on your
+                  screen in combat.  
+
+                "Enemy_Discrete"
+                  is just like Star Control on the PC, where
+                  the camera moved to keep both you and your
+                  enemy onscreen, and zoomed in by factors of
+                  2.
+                "Enemy"
+                  is like Star Control on the Genesis or 3DO,
+                  where the camera zoomed in smoothly.
+                "Hero"
+                  makes the camera stay focused on Player 1,
+                  and zoom in/out when + and - are pressed.
+                "Everything"
+                  makes the camera stay on the planet and zoom
+                  way out so that everything is visible.  This
+                  mode is slightly buggy (visual artifacts).  
+</pre>
+
+<h2>TimeWarp Command Line Options:</h2>
+<pre>
+
+-res x y
+Set screen resolution to x by y.
+Example: -res 512 384
+
+-bpp z
+Set screen color depth to z (valid options are 8, 15, 16, 24, or 32
+Example: -bpp 8
+
+-low_quality
+Not Yet Implemented
+Causes TW to use lower quality graphics.  This will use less
+RAM.
+
+-play game gametype
+-play demo demofile
+-play net1client serverIP [port]
+-play net1server gametype [port]
+Bypasses the main menu, putting you directly into a game.
+Note that game names are case-sensitive, and that underscores (_)
+should be used in place of spaces.
+The 'type' parameter must be either 'game', 'demo', 'net1client',
+or 'net1server'.  If the port parameter is omitted then it will
+default to port 15515, as specified in client.ini.  
+Example: -play game Melee
+Example: -play game Melee_in_Asteroid_Field
+Example: -play demo mydemo.dmo
+Example: -play net1client 131.215.72.49
+Example: -play net1server Melee_in_Asteroid_Field 15515
+Example: -play net1client josh.joshesdomain.net 15515
+
+-fullscreen
+Set screen mode to fullscreen.  This is the opposite of -window
+
+-window
+Set screen mode to windowed.  This is the opposite of -fullscreen
+
+-nosound
+Disables sound support.  
+
+-nojoystick
+Disables joystick support
+
+-nomouse
+Disables mouse support
+
+-nokeyboard
+Disables keyboard support (a bad idea...)
+
+-noidle
+When this option is enabled, TW will attempt to use 100% of available 
+CPU time.  Generally, using the -interpolate_frames option is more 
+useful, but this option may be useful in working around possible 
+hardware bugs or TW bugs.  
+
+Notes:
+
+1.  x & y do not have to match a normal resolution; you can
+use combinations of x, y that don't show up in the normal screen
+selection.  For instance, to run twdos.exe in VGA mode 13, you
+would type "twdos.exe -res 320 200 -bpp 8".
+Also, strange Mode-X modes are allowed on platforms where you have
+direct hardware access (DOS, unix w/ root), allowing resolutions like
+these: 256x256, 320x240, 360x240, etc.
+</pre>
+
+</div>
+</body>
+</html>

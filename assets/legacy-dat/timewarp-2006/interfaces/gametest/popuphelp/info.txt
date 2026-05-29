@@ -1,0 +1,11 @@
+interfaces/gametest/popuphelp/text/close_default_y = 213
+interfaces/gametest/popuphelp/text/close_default_x = 558
+interfaces/gametest/popuphelp/text/barver_backgr_y = 14
+interfaces/gametest/popuphelp/text/barver_backgr_x = 33
+interfaces/gametest/popuphelp/text/down_default_y = 51
+interfaces/gametest/popuphelp/text/down_default_x = 7
+interfaces/gametest/popuphelp/text/up_default_y = 3
+interfaces/gametest/popuphelp/text/up_default_x = 7
+interfaces/gametest/popuphelp/text/backgr_y = 21
+interfaces/gametest/popuphelp/text/backgr_x = 66
+res = 800

@@ -1,0 +1,5 @@
+interfaces/selectmission/popupinfo/text/barver_backgr_y = 29
+interfaces/selectmission/popupinfo/text/barver_backgr_x = 30
+interfaces/selectmission/popupinfo/text/backgr_y = 32
+interfaces/selectmission/popupinfo/text/backgr_x = 83
+res = 800

@@ -1,0 +1,270 @@
+A guide to a few of the wierder issues with programming for TimeWarp.  
+
+
+Separation of Physics & Rendering:
+
+Rendering functions (things like SpaceObject::animate()) are NOT allowed
+to do any physics.  Not even a little bit.  This means that they are not
+allowed to change any values in any SpaceObjects.  Of convenience sake,
+animate_predict() does change some things, but it changes them back right
+afterwards.  If you don't do this, networking will break.
+
+Random Number Generation:
+
+On the same topic, there are two random number generators used by TW;
+the libc one, rand(), and a custom one, random().  Use random() when doing
+physics, rand() when doing other things.  The reason for this is that
+random() is synchronized in network games; rand() is not.  Using rand()
+for something that's synchronized will desynchronize the game; and using
+random() for something that's not synchronized can desynchronize the game.
+Note: there is now a method of Control called rand(), which calls the
+normal ::rand() or ::random() as appropriate, so you should use that one
+for AI logic.
+If you don't understand this, try this rule of thumb: always use random()
+unless you're in a method named animate or in a Control.
+Additional Notes: random() returns a random number over the range of all
+non-negative integer values.  random(7) is equivalent to (random()%7) in
+that it returns an integer from 0 to 6 inclusive.  random(7) is faster than
+(random()%7).  However, there are some subtleties to passing arguments to
+random().  random(7.0) returns a real number X such that 0 <= X < 7.
+random(-7.0) returns a real number X such that 0 >= X > -7.  random(-7)
+will return gobbly-gook: random() should not be called with a negative
+integer.  random(-3, 5) returns a real number from X such that -3 <= X < 5.
+random(Vector2(3,1)) returns a random vector V such that 0 <= V.x < 3 and
+0 <= V.y < 1.  You don't get all these convienient helpers when calling
+::rand() or Control::rand().  
+Final Note: The implementation of tw_random() is available as a class.  
+If you need additional streams of random numbers or some other strangeness, 
+you can create your own instance of it.  Starfields are handled that way.  
+
+Trivial Conventions:
+
+It would be nice if the following conventions were followed in TW code:
+1.  The proper indentation amount is 1 tab.  If you don't like that (or if
+your editor produces spaces when you hit tab), then try 2 spaces instead.
+If you don't like that either, AT LEAST BE INTERNALLY CONSISTENT IN YOUR
+INDENTATION POLICY!  YES, THIS MEANS YOU!!!
+2.  In the same vein, do not use an editor that transparently replaces N
+spaces with the "equivalent" tabs.  Or, if you must do so, make sure that
+your indentation amount exactly matches the tab size.  Otherwise your
+indentation will apear totally fucked up on other editors with different tab
+sizes.  And don't use an editor that replaces tabs with spaces either.  
+2.  Don't exceed DOSes 8.3 file name length limits.  Also, don't use strange
+characters in file names.  To be specific, the 26 english characters and
+underscores and up to one period per file name are okay.  I guess numbers
+would be ok too.  Use lower case letters, never upper case.  
+3.  Don't name two source files exactly the same thing, even if they're in 
+different directories.  RHIDE doesn't like that.  The same rule applies to 
+headers.  
+4.  All source files should have extensions of either .cpp or .h .  No .c or
+.cc files.  Exception: .c files are permitted in the util directory.  
+5.  The following code is incorrect
+for (int i = 0; i < 100; i++) blah();
+instead, do this
+int i;
+for (i = 0; i < 100; i++) blah();
+Why?  Because Visual C and gcc will scope i in different ways in the first
+example, potentially causing issues when switching compilers.  
+
+Collisions:
+
+If you want to know whether or not you can collide with something, call 
+int canCollide(SpaceLocation *other) and other->canCollide(this).  Things 
+can only collide if BOTH return non-zero.  
+If you want to change what you can collide with you can either override 
+canCollide or you can modify the member variables collide_flag_ally and 
+collide_flag_anyone.  If you override canCollide, never return true, always 
+return either false or a base class' canCollide(other).  
+
+Messages:
+
+There is a global variable called message.  This allows you to display
+messages at the top of the screen during gameplay.  Use it like this:
+message.out ("Hello World!");
+// prints "Hello World!" for 1 second in pallete color 15 (white)
+message.out ("Hello World!", 4500);
+// prints "Hello World!" for 4500 milliseconds in pallete color 15 (white)
+message.out ("Hello World", 4500, 9);
+// prints "Hello World!" for 4500 milliseconds in pallete color 9 (light blue).
+message.print (4500, 9, 0, "Hello World (number %d, string %s)", 99, "cheese");
+// prints "Hello World (number 99, string cheese)" for 4500 milliseconds in pallete color 9
+This stuff behaves somewhat differently if you use it before a game is 
+started or while the game is paused.  
+Oh, and you have to include mview.h (or melee/mview.h or ../melee/mview.h)
+to do this.
+
+Reporting Errors:
+
+If you wish to report an error condition, you can say something like:
+tw_error("Oh no! an error occured!");
+//simple error message
+tw_error("This error was brought to you by the letter %c and the number %d", 'g', 3);
+//error message using more complex printf-style stuff
+When you report an error in this manner, a box will pop up and tell
+the user your message, and the source file and line number from which
+tw_error() was called.  The user will be presented with a number of buttons,
+like "Abort", "Retry", and "Debug".  The "Abort" button will cause the game
+to abort and dump the user back at the main menu.  The "Retry" button will
+cause the tw_error() call to return as if nothing happened.  The "Debug"
+button will attempt to stop the program in a debugger friendly manner so
+that you can see the exact circumstances in which the error occured if you
+have a good debugger installed.  
+Update: there is now also an "Ignore" button, which causes future error
+messages to be suppressed.  Currently it causes all future error messages 
+to be suppressed, but in the future it may only cause error messages 
+generated by the same tw_error() call to be suppressed.  
+
+TW also keeps a log of certain events for debugging reason.  It's not
+recommended, but you can add your own events to that log.  Simply call
+debug_log() with printf-style parameters and your stuff will be added.
+The log is written to tw_sys.log.  The log is used very sparingly in TW, 
+primarily for initialization of IO stuff.  
+
+Query:
+
+Query is an interface for finding items based upon position & layer.  You
+call Query::begin( item, layers, radius) and it will search for items that
+match these criteria:
+1.  within radius of item (measured from center of gravity for objects, from
+beginning for lines)
+2.  within a layer specified by layers (using the same format as
+collide_flag_anyone and collide_flag_ally)
+3.  not item itself
+At that point, Query::current will contain the first item found, or NULL
+if none were found.  If you are sure that Query returned only objects, you
+can refer to Query::currento instead, or if you're sure it returned only
+lines, refer to Query::currentl.  Call Query::next() when you want to find
+the next item.  Query searches intelligently by location (i.e. it is fast 
+if there are few objects in the region you are searching).
+Note: there are now some additional types of queries available that don't
+require that the search center around an item...
+Update: now a Query2 is also available, which uses attributes instead of
+layers.  Eventually Query will be phased out in favor of Query2, at which
+time Query2 will be renamed to Query.  I'll document how to use Query2
+later...
+
+Controls:
+
+There is a class called Control, which is commented in melee/mcontrol.h.
+This class should be used by all things that control ships: keyboards,
+joysticks, AIs, etc..  It is intended to allow AIs to monitor any important
+events like which ships are added to the game.  
+
+Layers:
+
+(note: layers will be removed from the code eventually, and replaced by
+attributes...)
+Each item (SpaceObject or SpaceLine) in TimeWarp is in a layer.  The layer
+also helps determine what things an object can collide with.  Some of the
+layers are:
+LAYER_SHOTS       (for non-laser weapons, do NOT assume type Shot))
+LAYER_LINES       (for lasers/lines.  you may assume type SpaceLine)
+LAYER_SHIPS       (for ships, do NOT assume type Ship)
+LAYER_EXPLOSIONS  (for explosions)
+LAYER_CBODIES     (for cellestial bodies, i.e. asteroids and planets)
+LAYER_HOTSPOTS    (for hotspots)
+There are a number of things that deal with sets of layers.  For instance,
+an item L can only collide with allies that are in layers that are in the
+the set L.collide_flag_ally.  There is a similiar set, collide_flag_anyone
+used for non-allies.  (Ally in this sense means things associated with the
+same Control).  Additionally, Querys (described above) search for items in
+sets of layers.  These are ways to describe the sets of layers:
+ALL_LAYERS        every normal layer
+OBJECT_LAYERS     every layer that contains only SpaceObjects
+LINE_LAYERS       every layer that contains only SpaceLines
+bit(L)            only the layer L
+0                 no layers
+Additionally, given two sets of layers, S1 and S2, 
+int S3 = S1 | S2      S3 is all layers that are in either S1 or S2 (or both)
+int S3 = S1 & S2      S3 is those layers in S1 that are also in S2
+int S3 = S1 &~S2      S3 is those layers in S1 that are not in S2
+Sorry if this stuff is a bit complicated... 
+
+NOTE: Layers no longer determine the rendering order (which things are 
+drawn on top when to items overlap).  Now that is determined by depth
+void SpaceLocation::set_depth ( double d)
+and
+double SpaceLocation::get_depth()
+Standard depths include:
+DEPTH_STARS     (yes, you can draw things under the starfield if you want to)
+DEPTH_HOTSPOTS
+DEPTH_LINES
+DEPTH_SHOTS
+DEPTH_SHIPS
+DEPTH_EXPLOSIONS
+DEPTH_PRESENCE
+
+Attributes:
+
+Currently, attributes are rather incomplete.  But eventually Query will
+be modified to replace the layers parameter with an attributes parameter.  
+You can determine whether an object is derived from a common base-class
+in the engine by checking it's attributes.  In addition, the following
+attributes are defined at the moment:
+ATTRIB_SYNCHED        describes the objects role in a network game
+ATTRIB_INGAME         should generally be true
+ATTRIB_TARGET         true if the item is a valid target
+ATTRIB_FOCUS          true if the item is a camera focus (this attribute is not synched in network games)
+ATTRIB_STANDARD_INDEX if true then SpaceObject::calculate will set sprite_index
+ATTRIB_STRICT_RECT    if true then the item should only draw within its rectangle
+
+
+Units used in TW
+
+For many things, TW uses 2 different kinds of units - external units and
+internal units.  Internal units are used in physics calculations and
+everything else in-game.  External units are used in .ini files for
+configuration purposes.  Units are converted when they are read from .ini
+files.  Here is a list of unit types, their internal representations, 
+external representations, and conversions.  
+
+Time: internally milliseconds, externally SC2-time-units.
+int ms = scale_frames(sc2_time);
+Warning: the conversion is non-linear and rather weird.
+Note: Many .ini files use milliseconds externally instead of SC2-time-units
+
+Angle: internally Radians, externally Degrees.
+double radians = degrees * ANGLE_RATIO;
+
+Turning-rate: internally radians / millisecond, externally
+SC2-turning-units.
+double turning = scale_turning(sc2_turning);
+Warning: the conversion is non-linear and rather weird.
+
+Distance: internally game-pixels, externally range-units.
+double game_pixels = scale_range(range_units);
+
+Velocity: internally game-pixels per millisecond, externally
+SC2-velocity-units.
+double vel = scale_velocity ( ext_veloc );
+
+Acceleration: internally game-pixels per millisecond per millisecond,
+externally... for most things it's in SC2-velocity-units per SC2-frames,
+but for ships it's in a combination of an SC2-velocity-units # and an
+SC2-time-units #.  It's kinda funky, but that's the format of the data
+we ripped from SC2 data files.
+double accel = scale_acceleration( sc2_vel_units_per_sc2_frame );
+double ship_accel = scale_acceleration ( sc2_vel_units, sc2_time_units);
+Warning: If SC2-time-units are used then the conversion is non-linear and
+weird.
+
+Class derivation tree for game objects:
+
+Presence (mframe.cpp)                                      //any item in the game
+        SpaceLocation (mframe.cpp)                         //any item in the game that has a location
+                SpaceObject                                //any item with a sprite (only SpaceObjects can bounce)
+                        Animation (manim.cpp)              //an item that doesn't interact with things, just is there for graphics, to display a little animation
+                                FixedAnimation             //the same as above, but this stays on top of something even as it moves around
+                        Shot (mshot.cpp)                   //a bullet with a range
+                                AnimatedShot               //a shot that uses a sequence of images over time
+                                Missile                    //a shot that uses an image depending upon which angle it's pointing
+                                        HomingMissile      //a missile that turns towards its target
+                        Ship (mship.cpp)                   //exactly what is sounds like
+                        Planet (mcbodies.cpp)              //exactly what is sounds like
+                        Asteroid                           //exactly what is sounds like
+                SpaceLine (mframe.cpp)                     //an item that appears as a line.  these can only collide with SpaceObjects, but not other lines.  
+                        Laser (mshot.cpp)
+                                PointLaser (mshot.cpp)
+
+
+orz

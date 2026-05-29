@@ -1,0 +1,10 @@
+locy = -365
+locx = -215
+interfaces/multiplayer/gamelist/list_backgr_y = 19
+interfaces/multiplayer/gamelist/list_backgr_x = 20
+res = 800
+autoplace = 1
+
+[Network]
+Nhumans = 2
+Nbots = 0

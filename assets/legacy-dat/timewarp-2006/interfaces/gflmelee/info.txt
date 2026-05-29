@@ -1,0 +1,34 @@
+interfaces/gflmelee/text2_backgr_y = 198
+interfaces/gflmelee/text2_backgr_x = 289
+interfaces/gflmelee/text1_backgr_y = 55
+interfaces/gflmelee/text1_backgr_x = 12
+interfaces/gflmelee/ok_default_y = 120
+interfaces/gflmelee/ok_default_x = 184
+interfaces/gflmelee/down2_default_y = 239
+interfaces/gflmelee/down2_default_x = 315
+interfaces/gflmelee/up2_default_y = 166
+interfaces/gflmelee/up2_default_x = 310
+interfaces/gflmelee/down1_default_y = 96
+interfaces/gflmelee/down1_default_x = 38
+interfaces/gflmelee/up1_default_y = 23
+interfaces/gflmelee/up1_default_x = 34
+interfaces/gflmelee/text2/backgr_y = 198
+interfaces/gflmelee/text2/backgr_x = 289
+interfaces/gflmelee/text1/backgr_y = 55
+interfaces/gflmelee/text1/backgr_x = 12
+interfaces/gflmelee/ok/default_y = 120
+interfaces/gflmelee/ok/default_x = 184
+interfaces/gflmelee/down2/default_y = 239
+interfaces/gflmelee/down2/default_x = 315
+interfaces/gflmelee/up2/default_y = 166
+interfaces/gflmelee/up2/default_x = 310
+interfaces/gflmelee/down1/default_y = 96
+interfaces/gflmelee/down1/default_x = 38
+interfaces/gflmelee/up1/default_y = 23
+interfaces/gflmelee/up1/default_x = 34
+res = 800
+
+[FleetInit]
+PlayerAlliance = 16
+EnemyAlliance = 18
+

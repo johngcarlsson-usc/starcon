@@ -1,0 +1,619 @@
+<html>
+<head>
+    <title>Star Control: Timewarp - FAQ</title>
+    <link rel="stylesheet" type="text/css" href="stylesheet.css" />
+</head>
+<body>
+
+<!--MENU--><div id="main">
+	<div id="menu">
+    	<a href="../readme.html">Home</a><br>
+    	<a href="installing.html">Downloading and Installing</a><br>
+    	<a href="playing.html">Playing</a><br>
+    	<a href="GameTypes.html">Game Types</a><br>
+    	<a href="coding.html">Development</a><br>
+    	<a href="faq.html">FAQ</a><br>
+    	<a href="links.html">Links</a>
+	</div>
+
+<!--MENU-->
+
+<h1>Development</h1>
+
+This document describes some of the issues concerning contributing to Timewarp.
+
+<h2>How to become and Timewarp Developer</h2>
+<pre>
+
+We're always on the lookout for new blood.
+
+"Ahh... fresh meat for my ever-growing army of the undead!"
+"Mr. Burns, you have to let go of the intercom button."
+"Son of a bi-"
+
+What sort of experience do you have?  Have you worked on a big project before?
+What kind of work do you want to do on this project, is there any type of
+technology you want experience with?
+
+The normal algorithm is:
+* read the forums Channel 44 (here) and here, also see here
+
+* learn the codebase as well as you can, probably by making disposable changes 
+to things like the ships
+
+* keep your local version up-to-date via CVS (note that you won't have
+permission to write to it yet, and you might have to deal with merging files if
+someone's working on the same thing you are)
+
+* when you feel you've learned the codebase well enough, make a small change to
+the code, like a bug-fix, zip up the affected files, and send them to youBastrd!
+or someone else who pretends they know what they're doing
+
+* if you post enough good bug-fixes and make enough good suggestions in the
+forums, you might be given developer access to CVS (write access)
+</pre>
+
+
+
+<h2>A guide to a few of the wierder issues with programming for TimeWarp.</h2>
+<pre>
+Separation of Physics & Rendering:
+
+Rendering functions (things like SpaceObject::animate()) are NOT allowed
+to do any physics.  Not even a little bit.  This means that they are not
+allowed to change any values in any SpaceObjects.  Of convenience sake,
+animate_predict() does change some things, but it changes them back right
+afterwards.  If you don't do this, networking will break.
+
+Random Number Generation:
+
+On the same topic, there are two random number generators used by TW;
+the libc one, rand(), and a custom one, random().  Use random() when doing
+physics, rand() when doing other things.  The reason for this is that
+random() is synchronized in network games; rand() is not.  Using rand()
+for something that's synchronized will desynchronize the game; and using
+random() for something that's not synchronized can desynchronize the game.
+Note: there is now a method of Control called rand(), which calls the
+normal ::rand() or ::random() as appropriate, so you should use that one
+for AI logic.
+If you don't understand this, try this rule of thumb: always use random()
+unless you're in a method named animate or in a Control.
+Additional Notes: random() returns a random number over the range of all
+non-negative integer values.  random(7) is equivalent to (random()%7) in
+that it returns an integer from 0 to 6 inclusive.  random(7) is faster than
+(random()%7).  However, there are some subtleties to passing arguments to
+random().  random(7.0) returns a real number X such that 0 <= X < 7.
+random(-7.0) returns a real number X such that 0 >= X > -7.  random(-7)
+will return gobbly-gook: random() should not be called with a negative
+integer.  random(-3, 5) returns a real number from X such that -3 <= X < 5.
+random(Vector2(3,1)) returns a random vector V such that 0 <= V.x < 3 and
+0 <= V.y < 1.  You don't get all these convienient helpers when calling
+::rand() or Control::rand().  
+Final Note: actually, there is now third random number generator included
+in TW, called fs_random(), but you probably don't need to know about that
+one, and it might get removed sometime.  
+
+Trivial Conventions:
+
+It would be nice if the following conventions were followed in TW code:
+1.  The proper indentation amount is 1 tab.  If you don't like that (or if
+your editor produces spaces when you hit tab), then try 2 spaces instead.
+If you don't like that either, AT LEAST BE INTERNALLY CONSISTENT IN YOUR
+INDENTATION POLICY!  YES, THIS MEANS YOU!!!
+2.  In the same vein, do not use an editor that transparently replaces N
+spaces with the "equivalent" tabs.  Or, if you must do so, make sure that
+your indentation amount exactly matches the tab size.  Otherwise your
+indentation will apear totally fucked up on other editors with different tab
+sizes.  And don't use an editor that replaces tabs with spaces either.  
+2.  Don't exceed DOSes 8.3 file name length limits.  Also, don't use strange
+characters in file names.  To be specific, the 26 english characters and
+underscores and up to one period per file name are okay.  I guess numbers
+would be ok too.  Use lower case letters, never upper case.  
+3.  Don't name two source files exactly the same thing, even if they're in 
+different directories.  RHIDE doesn't like that.  
+4.  All source files should have extensions of either .cpp or .h .  No .c or
+.cc files.  Exception: .c files are permitted in the util directory.  
+5.  The following code is incorrect
+for (int i = 0; i < 100; i++) blah();
+instead, do this
+int i;
+for (i = 0; i < 100; i++) blah();
+Why?  Because Visual C and gcc will scope i in different ways in the first
+example, potentially causing issues when switching compilers.  
+
+Collisions:
+
+If you want to know whether or not you can collide with something, call 
+int canCollide(SpaceLocation *other) and other->canCollide(this).  Things 
+can only collide if BOTH return non-zero.  
+If you want to change what you can collide with you can either override 
+canCollide or you can modify the member variables collide_flag_ally and 
+collide_flag_anyone.  If you override canCollide, never return true, always 
+return either false or a base class' canCollide(other).  
+
+Messages:
+
+There is a global variable called message.  This allows you to display
+messages at the top of the screen during gameplay.  Use it like this:
+message.out ("Hello World!");
+// prints "Hello World!" for 1 second in pallete color 15 (white)
+message.out ("Hello World!", 4500);
+// prints "Hello World!" for 4500 milliseconds in pallete color 15 (white)
+message.out ("Hello World", 4500, 9);
+// prints "Hello World!" for 4500 milliseconds in pallete color 9 (light blue).
+message.print (4500, 9, 0, "Hello World (number %d, string %s)", 99, "cheese");
+// prints "Hello World (number 99, string cheese)" for 4500 milliseconds in pallete color 9
+This stuff behaves somewhat differently if you use it before a game is 
+started or while the game is paused.  
+Oh, and you have to include mview.h (or melee/mview.h or ../melee/mview.h)
+to do this.
+
+Reporting Errors:
+
+If you wish to report an error condition, you can say something like:
+tw_error("Oh no! an error occured!");
+//simple error message
+tw_error("This error was brought to you by the letter %c and the number %d", 'g', 3);
+//error message using more complex printf-style stuff
+When you report an error in this manner, a box will pop up and tell
+the user your message, and the source file and line number from which
+tw_error() was called.  The user will be presented with a number of buttons,
+like "Abort", "Retry", and "Debug".  The "Abort" button will cause the game
+to abort and dump the user back at the main menu.  The "Retry" button will
+cause the tw_error() call to return as if nothing happened.  The "Debug"
+button will attempt to stop the program in a debugger friendly manner so
+that you can see the exact circumstances in which the error occured if you
+have a good debugger installed.
+Warning: Due to the funky way in which tw_error is implemented, it can
+behave incorrectly in certain unusual circumstances.  If you seem to be
+getting a compile or run-time error on a line with a call to tw_error(),
+try surround it with curly brackets, like this:
+        {tw_error("My error message");}
+Update: there is now also an "Ignore" button, which causes future error
+messages to be suppressed.  
+
+TW also keeps a log of certain events for debugging reason.  It's not
+recommended, but you can add your own events to that log.  Simply call
+debug_log() with printf-style parameters and your stuff will be added.
+The log is written to tw_sys.log.  The log is used very sparingly in TW.  
+
+Query:
+
+Query is an interface for finding items based upon position & layer.  You
+call Query::begin( item, layers, radius) and it will search for items that
+match these criteria:
+1.  within radius of item (measured from center of gravity for objects, from
+beginning for lines)
+2.  within a layer specified by layers (using the same format as
+collide_flag_anyone and collide_flag_ally)
+3.  not item itself
+At that point, Query::current will contain the first item found, or NULL
+if none were found.  If you are sure that Query returned only objects, you
+can refer to Query::currento instead, or if you're sure it returned only
+lines, refer to Query::currentl.  Call Query::next() when you want to find
+the next item.  Query searches intelligently by location (i.e. it is fast 
+if there are few objects in the region you are searching).
+Note: there are now some additional types of queries available that don't
+require that the search center around an item...
+Update: now a Query2 is also available, which uses attributes instead of
+layers.  Eventually Query will be phased out in favor of Query2, at which
+time Query2 will be renamed to Query.  I'll document how to use Query2
+later...
+
+Controls:
+
+There is a class called Control, which is commented in melee/mcontrol.h.
+This class should be used by all things that control ships: keyboards,
+joysticks, AIs, etc..  It is intended to allow AIs to monitor any important
+events like which ships are added to the game.  
+
+Layers:
+
+(note: layers will be removed from the code eventually, and replaced by
+attributes...)
+Each item (SpaceObject or SpaceLine) in TimeWarp is in a layer.  The layer
+also helps determine what things an object can collide with.  Some of the
+layers are:
+LAYER_SHOTS       (for non-laser weapons, do NOT assume type Shot))
+LAYER_LINES       (for lasers/lines.  you may assume type SpaceLine)
+LAYER_SHIPS       (for ships, do NOT assume type Ship)
+LAYER_EXPLOSIONS  (for explosions)
+LAYER_CBODIES     (for cellestial bodies, i.e. asteroids and planets)
+LAYER_HOTSPOTS    (for hotspots)
+There are a number of things that deal with sets of layers.  For instance,
+an item L can only collide with allies that are in layers that are in the
+the set L.collide_flag_ally.  There is a similiar set, collide_flag_anyone
+used for non-allies.  (Ally in this sense means things associated with the
+same Control).  Additionally, Querys (described above) search for items in
+sets of layers.  These are ways to describe the sets of layers:
+ALL_LAYERS        every normal layer
+OBJECT_LAYERS     every layer that contains only SpaceObjects
+LINE_LAYERS       every layer that contains only SpaceLines
+bit(L)            only the layer L
+0                 no layers
+Additionally, given two sets of layers, S1 and S2, 
+int S3 = S1 | S2      S3 is all layers that are in either S1 or S2 (or both)
+int S3 = S1 & S2      S3 is those layers in S1 that are also in S2
+int S3 = S1 &~S2      S3 is those layers in S1 that are not in S2
+Sorry if this stuff is a bit complicated... 
+
+NOTE: Layers no longer determine the rendering order (which things are 
+drawn on top when to items overlap).  Now that is determined by depth
+void SpaceLocation::set_depth ( double d)
+and
+double SpaceLocation::get_depth()
+Standard depths include:
+DEPTH_STARS     (yes, you can draw things under the starfield if you want to)
+DEPTH_HOTSPOTS
+DEPTH_LINES
+DEPTH_SHOTS
+DEPTH_SHIPS
+DEPTH_EXPLOSIONS
+DEPTH_PRESENCE
+
+Attributes:
+
+Currently, attributes are rather incomplete.  But eventually Query will
+be modified to replace the layers parameter with an attributes parameter.  
+You can determine whether an object is derived from a common base-class
+in the engine by checking it's attributes.  In addition, the following
+attributes are defined at the moment:
+ATTRIB_SYNCHED        describes the objects role in a network game
+ATTRIB_INGAME         should generally be true
+ATTRIB_TARGET         true if the item is a valid target
+ATTRIB_FOCUS          true if the item is a camera focus (this attribute is not synched in network games)
+ATTRIB_STANDARD_INDEX if true then SpaceObject::calculate will set sprite_index
+ATTRIB_STRICT_RECT    if true then the item should only draw within its rectangle
+
+
+Units used in TW
+
+For many things, TW uses 2 different kinds of units - external units and
+internal units.  Internal units are used in physics calculations and
+everything else in-game.  External units are used in .ini files for
+configuration purposes.  Units are converted when they are read from .ini
+files.  Here is a list of unit types, their internal representations, 
+external representations, and conversions.  
+
+Time: internally milliseconds, externally SC2-time-units.
+int ms = scale_frames(sc2_time);
+Warning: the conversion is non-linear and rather weird.
+Note: Many .ini files use milliseconds externally instead of SC2-time-units
+
+Angle: internally Radians, externally Degrees.
+double radians = degrees * ANGLE_RATIO;
+
+Turning-rate: internally radians / millisecond, externally
+SC2-turning-units.
+double turning = scale_turning(sc2_turning);
+Warning: the conversion is non-linear and rather weird.
+
+Distance: internally game-pixels, externally range-units.
+double game_pixels = scale_range(range_units);
+
+Velocity: internally game-pixels per millisecond, externally
+SC2-velocity-units.
+double vel = scale_velocity ( ext_veloc );
+
+Acceleration: internally game-pixels per millisecond per millisecond,
+externally... for most things it's in SC2-velocity-units per SC2-frames,
+but for ships it's in a combination of an SC2-velocity-units # and an
+SC2-time-units #.  It's kinda funky, but that's the format of the data
+we ripped from SC2 data files.
+double accel = scale_acceleration( sc2_vel_units_per_sc2_frame );
+double ship_accel = scale_acceleration ( sc2_vel_units, sc2_time_units);
+Warning: If SC2-time-units are used then the conversion is non-linear and
+weird.
+
+Class derivation tree for game objects:
+
+Presence (mframe.cpp)                                      //any item in the game
+        SpaceLocation (mframe.cpp)                         //any item in the game that has a location
+                SpaceObject                                //any item with a sprite (only SpaceObjects can bounce)
+                        Animation (manim.cpp)              //an item that doesn't interact with things, just is there for graphics, to display a little animation
+                                FixedAnimation             //the same as above, but this stays on top of something even as it moves around
+                        Shot (mshot.cpp)                   //a bullet with a range
+                                AnimatedShot               //a shot that uses a sequence of images over time
+                                Missile                    //a shot that uses an image depending upon which angle it's pointing
+                                        HomingMissile      //a missile that turns towards its target
+                        Ship (mship.cpp)                   //exactly what is sounds like
+                        Planet (mcbodies.cpp)              //exactly what is sounds like
+                        Asteroid                           //exactly what is sounds like
+                SpaceLine (mframe.cpp)                     //an item that appears as a line.  these can only collide with SpaceObjects, but not other lines.  
+                        Laser (mshot.cpp)
+                                PointLaser (mshot.cpp)
+
+orz
+</pre>
+
+<h2>How to hack Star Control: TimeWarp</h2>
+<pre>
+1     Hacking the Ship configs:
+
+	In the ships directory there are 25 (or more) shp?????.dat files,
+and an equal number of ?????.ini files, one of each sort of files for each
+ship, with the first three ?s matching the first three letters of a species
+name, and the next two matching that species ship class.  For examples,
+Chmmr Avatars use the files shpchmav.dat and chmav.ini.  Don't touch the
+.dat files, it's harder to change them and easier to screw things up when
+changing them.  Use your favorite text editor (for instance, edit or
+notepad) on the .ini files.  Inside there will be a bunch of lines like
+"Damage = 2", organized into sections like "[Weapon]".  You can change the
+stuff on the right hand side of the "="s, and ships in the game will change
+properties!  Neato.
+	(If you really want to change the .dat files, you can, but a text
+editor alone won't work, you'll need to use the Allegro grabber first)
+
+2     Compiling TimeWarp:
+
+	You've edited the ships .ini files, but that's not enough.  You want
+to hack directly at the source.  How do you start?  
+	Well first you need a C++ compiler and Allegro.  If you don't
+already have a compiler then we recommend DJGPP, a free DOS C++ compiler,
+closely related to the standard GNU/linux compiler gcc.  tw05u5 has also
+been shown to compile with Micro$oft Visual C++ (version 6.0) and ordinary
+gcc (version 2.95 on linux).
+        A detailed step-by-step walk-through of downloading & installing
+everything necessary to build a DOS version of TimeWarp using DJGPP is
+included in the file "djgpp.txt".
+        The windows executables distributed with most TimeWarp versions are
+compiled using Visual C++.  If you can't afford VC++, and wish to make a
+windows version, it might also be possible with Borlands free compiler or
+with MingW.  MingW and DJGPP are related to gcc.  
+
+3     The Source Code:
+
+        Read code.txt if you are planning on submitting code for use in the TimeWarp project.  
+
+        The rest of the information in this file may be out of date.  
+
+        The code is object oriented C++.  Any method named calculate() is 
+probably called once per frame of physics, while any method named animate() 
+is probably called once per frame of graphics.  Text search (ts.exe) or a
+similiar utility (grep) can be very helpfull when editing SCTW; you frequently 
+need to findwhat file something is defined in, and without an IDE that does 
+that for you things can get difficult.  
+
+
+	games/gsample.cpp is thouroughly documented.  Read it for a
+description of how to write new game types for TimeWarp, and as an
+introduction to TimeWarps style of doing things.
+	The code for all the ships can be found in the various ships
+directories (sc1ships, sc2ships, sc3ships, newships).  None of the
+ships are commented, but since there are so many you can frequently
+find a ship doing exactly what you want to do.
+	Many of the header files (.h files) are partially documented.
+Read them for information on how to interact with the various components
+of TimeWarp.  In particular, read melee/mframe.h, as it contains the
+most important stuff.
+</pre>
+
+<h2>A guide to making new ships for Star Control: TimeWarp</h2>
+<pre>
+(this is a little out of date...)
+(also, there's another guide to writting ships at this address:
+http://www.richardyzo.hpg.com.br/timewarp/tutorial/index.html )
+
+Sorry this took so long to get done but I deleted it once by mistake.
+To do this properly one must have good C++ understanding, if you don't,
+well don't even try this.
+
+STEP 1: INSTALLATION
+
+To start out you need a compiler for C++, my suggestion are VC++ if you want
+to do a windows build, and have it.  If you don't I suggest DJGPP, because if
+it works in that it will work in VC++.  Since I don't have VC++ this FAQ will
+only explain it from DJGPP standpoint.  The first this to do is to install
+DJGPP, get rhide editor with it.  Install it using the install instruction.
+Don't forget to include your PATH and ENV lines in you config.sys.
+
+Next you will need the following package to go with the compiler.  Allegro
+(get the latest beta version) AASTR, and JGMOD.  Goto to the DJGPP site and
+there should be links to all.  For AASTR and JGMOD no assembly required.
+Just put in your DJGPP directory and go.  For Allegro though you will have
+to build it.  Just run the makefile include with it and it will handle the
+rest.  You should get some sample programs with it.  Go ahead and try them
+out.
+
+(more detailed installation instructions for DJGPP, Allegro, and related
+packages are included in the file djgpp.txt)
+
+STEP 2: PACKAGING
+
+Now, you have to make a perimalary version of Star Control Melee,  First
+create a project in RHIDE.  Add all the .cpp files to this,  make sure you
+have all of them and no .h or other files.  Then make sure to include the .h
+directories in the include line under the directory pull down.  This include
+directories for allegro,JGmod,and AASTR.  Also make sure to include -lalleg
+in the library windows.  At this point it should compile.  (Hopefully)
+
+STEP 3: DESIGN
+
+Now comes the fun part, figure out what you want to do with your ship.  One
+thing is to remeber the constrants of the code.  Try not to do anything to
+wild to start out.  Think about the current ships already in timewarp and
+look at their code.  See what you like, what is hard and what is easy.  For
+the most basic ship type of ship see the terran destroyer or the earthling
+crusier.  Experiment with the current ships.  Get to know the code etc.  One
+thing to note thought is due to the fact that some ships where made at
+different times look at several examples.  Take for example the collisions.
+You can allow turn off collisons using a flag for types of collison or edit
+the canCollide function.  Thus look at many example to find the best way of
+doing things.
+
+STEP 4: CODING
+
+Like every program (or fragment thereof) you eventually have to come down to
+out it into code.  So if you don't know how to program in C++, go learn
+because you've hit the end of the road, else keep reading.  First thing you
+should do is rip the starting code from another ship...  This will give you
+a skeleton to work from.  It should contain the ship class and one or more
+weapons.  Below is a listing of functions that one could use and what each
+contains:
+
+calculate  Returns void
+
+This is used for anthing that need constant updating.  Make sure you class
+the parent of this class because it control the batt recharge, the ship
+sprite, the weapon and special recharge, ship controls, hotspots, and
+gravity.  In older version you would update by one but in the newer there is
+a delay that you should add called frame_time It will be between 1 and 50 ms.
+
+animate  Returns void
+This function draws the current frame.
+
+handle_damage  Returns void
+
+This calculates fuel sapage, speed loss, damage (stuff that has to go
+through sheild etc), direct damage (stuff that hits no mater what), and
+repairs.
+
+calculate_(five controls) returns void
+
+This checks to see if you can use these controls.  The fire and special
+checks recharge rate and energy usage.
+
+activate_weapon (special) returns int
+
+This actual creates the weapon and returns the true or false.
+
+can_Collide Return int
+
+Send you a pointer then you find out wither you can hit it.  Return a true
+or false.  There is also a flags that can be set to determine classes that
+can hit our not.
+
+
+This list is not complete but should give you most of the function you will
+need.  Look in mship.cpp and mcbodies.cpp for the rest and other details.
+Now lets look at weapon, there are five types of weapons in SCTW.  They are:
+
+Laser :Straight line for a certain time.
+
+Shot : sprite weapon with only one frame.
+
+Animate Shot : sprite weapon with multi frames.  Changes frame after time
+delay.
+
+Missle : sprite weapon with multi frames.  Changes frame using facing
+direction.
+
+HomingMissle : simular to missle except homes (DUH)
+
+With all of these items the most important functions are calculate, animate, 
+can_Collide, and handle_damage.  Also when you create a weapon, don't forget
+to include in the spaceFrame otherwise it won't be updated.
+
+Step 5 : DEBUGGING
+
+This is your last step, the only piece of advise is that if it crashes to
+the DOS prompt, I find that it is usually caused by incorrectly accessing
+the sprites in the .dat file.  Hope this helps, and have fun.
+</pre>
+
+<h2>Porting</h2>
+<pre>
+In theory, allegrotw should compile just about anywhere Allegro compiles.
+In theory anyway.
+
+Portability:
+criteria                status
+
+
+simple C                no (requires C++ compiler)
+
+simple C++              yes (no templates, but uses zero-sized arrays
+                        post-pended on structd (non-standard but works on
+                        most compilers))
+
+instruction set         any (only IA32 tested)
+
+OS portable             yes
+
+Required Libraries      Allegro 4
+
+Recommended Libraries   JGMOD
+
+endian portable         yes (only little-endian tested)
+
+misalignment portable   yes (not tested)
+
+integer size            32 bit works, 64 might (doubtful), 16 won't
+
+pointer size            32 bit works, 64 should work
+</pre>
+
+<h2>WussieBot AI Documentation</h2>
+<pre>
+Unknown = Stardard implementation of weapon or special:
+  For weapon it is Front,Proximtiy.
+  For special it is Feild,MaxBattery
+
+None = Weapon or Special is not used by Wussiebot.
+
+Front = Causes ship to fire if enemy is in front (+/- sweep degrees)
+  in front of ship, normal sweep is 20 degrees, not need for weapon.
+
+No_Front = Doesn't cause ship to fire if enemy is in front.
+  Can be used with field to make ship fire except when enemey is in front.
+
+Sides = Causes ship to fire if enemy is to the left or right.
+
+Back = Cause ship to fire if enemy is behind ship.
+
+Field = Cause ship to fire if enemy is anywhere can be use with No_Front
+
+Narrow = Changes sweep to +/- 5 degrees
+
+Homing = Changes sweep to +/- 45 degrees
+
+No_range = Cause ship to not use proximity to determine wiether
+           to fire or not, Use with weapon.
+
+Proximity = Cause ship to use weapon/special when enemy is with in range
+ - Weapon_Range/Special_Range = Use to determine range if you wish it to
+       be different from default set in weapon/special section
+
+Precedence = Cause ship to not use other ability if it can use this one.
+
+Defense = Use ability to defend ship against attacks
+ - WeaponFreq/SpecialFreq = Determines how much damage is must see
+                            before using it
+
+Max_Battery = use ability when battery is full.
+
+Battery = Uses ability when battery drops below level of BattRecharge
+
+Reserve_Battery= Doesn't use ability when battery drops below level
+
+ - BattRecharge = Use with Battery and Reserve_Battery
+
+Cloak = Use ability to cloak
+
+Hold = Use this for when ablity should be held down before releasing to use
+
+ - Weapon_Timer/Special_Timer = Sets delay between pressing button
+
+Plus_Fire = cause fire button to be pressed along with this ability
+
+Plus_Special = cause special button to be pressed along with this ability
+
+Launched = cause ability to be held down until can't get closer (ie. Broodhome)
+
+No_Proximity = cause ability to be use in enemy is outside of range
+
+Next_State = Cause ship to go to next state (Recommended Timer of
+  at least 50)
+
+Reset_State = Cause ship to go back to first state (Recommended Timer of
+  at least 50)
+
+Alway_When_Full = Cause ship to use ability no matter the other options when
+  battery is full.
+
+Mine = Uses ability when enemy is approaching.
+
+To get into multiple states use [AI3_Default] for state 1 (start-up)
+  [AI3_Default2] for state 2, ect.. Current max is 3 states.
+  Use Next_State and Reset_State to advance states.
+</pre>

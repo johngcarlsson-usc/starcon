@@ -1,0 +1,14 @@
+interfaces/selectmission/briefing/right_default_y = 35
+interfaces/selectmission/briefing/right_default_x = 400
+interfaces/selectmission/briefing/left_default_y = 35
+interfaces/selectmission/briefing/left_default_x = 19
+interfaces/selectmission/briefing/title_backgr_y = 42
+interfaces/selectmission/briefing/title_backgr_x = 81
+interfaces/selectmission/briefing/quit_default_y = 119
+interfaces/selectmission/briefing/quit_default_x = 344
+interfaces/selectmission/briefing/accept_default_y = 96
+interfaces/selectmission/briefing/accept_default_x = 144
+interfaces/selectmission/briefing/info_backgr_y = 110
+interfaces/selectmission/briefing/info_backgr_x = 79
+
+res = 800

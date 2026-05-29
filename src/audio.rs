@@ -24,7 +24,13 @@ impl Plugin for AudioPlugin {
             .add_systems(OnExit(AppState::MainMenu), stop_music)
             .add_systems(OnExit(AppState::InMatch), stop_music)
             .add_systems(OnEnter(AppState::MainMenu), start_title_music)
-            .add_systems(OnEnter(AppState::InMatch), start_combat_music)
+            // Sequence after `ship::spawn_match` so the ship query
+            // sees the freshly-spawned opponent and we can key combat
+            // music off their race instead of falling back to MELEEMUS.
+            .add_systems(
+                OnEnter(AppState::InMatch),
+                start_combat_music.after(crate::ship::spawn_match),
+            )
             .add_systems(
                 Update,
                 (play_ship_death_boom, play_victory_ditty).run_if(in_state(AppState::InMatch)),
@@ -62,20 +68,80 @@ fn start_title_music(
     track.0 = Some(e);
 }
 
-/// Canon `melee.dat:MELEEMUS_MOD` — 107 s combat loop the original
-/// plays for the duration of a battle.
+/// Canon Star Control 2 race-theme music as combat loop. Each race
+/// has its own tracker module shipped in `timewarp_2006_06_05.zip`'s
+/// `gamedata/dialogs/<race>.mod` — the canon SC2 battle themes. We
+/// pick the *opponent's* theme (slot 1 in 1v1) the way the original
+/// game played the enemy's faction music. Ships whose race has no
+/// theme in the upstream data (Chenjesu, Androsynth, Mmrnmhrm, Alarian
+/// — TimeWarp's `gamedata/dialogs/` doesn't ship a clip for them) fall
+/// back to the original TW-Light `melee.dat:MELEEMUS_MOD` combat loop.
+///
+/// `start_combat_music` is sequenced via `add_systems(OnEnter, ...)`
+/// AFTER `ship::spawn_match`, so the ship query already has the
+/// opponent's class component when this runs.
 fn start_combat_music(
     mut commands: Commands,
     assets: Res<AssetServer>,
     mut track: ResMut<MusicTrack>,
+    ships: Query<&Ship>,
 ) {
+    // Slot 1 is the canonical "opponent" in our 1v1 / vs-AI flow.
+    // Falls back to ANY ship if slot 1 hasn't spawned (multi-slot
+    // free-for-all). Fallback fallback is MELEEMUS.
+    let theme = ships
+        .iter()
+        .find(|s| s.player_slot == 1)
+        .or_else(|| ships.iter().next())
+        .and_then(|s| race_theme_stem(s.stats.code.as_str()));
+
+    let path = match theme {
+        Some(stem) => format!("music/race/{}.ogg", stem),
+        None => "music/melee.mp3".to_string(),
+    };
     let e = commands
         .spawn((
-            AudioPlayer::<AudioSource>(assets.load("music/melee.mp3")),
+            AudioPlayer::<AudioSource>(assets.load(path)),
             PlaybackSettings::LOOP,
         ))
         .id();
     track.0 = Some(e);
+}
+
+/// Maps a ship code to its faction's race-theme stem under
+/// `assets/music/race/<stem>.ogg`. The original tracker modules are in
+/// `timewarp_2006_06_05/gamedata/dialogs/<stem>.mod`. Returns `None`
+/// for ships whose race has no upstream theme (defaults the caller to
+/// MELEEMUS). Both Ur-Quan factions share "urquan" in canon.
+fn race_theme_stem(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "earcr" => "human",
+        "spael" => "spathi",
+        "yehte" => "yehat",
+        "chmav" => "chmmr",
+        "kzedr" => "urquan",
+        "mycpo" => "mycon",
+        "shosc" => "shofixty",
+        "arisk" => "arilou",
+        "pkufu" => "pkunk",
+        "ilwav" => "ilwrath",
+        "thrto" => "thraddash",
+        "vuxin" => "vux",
+        "supbl" => "supox",
+        "kohma" => "korah",
+        "syrpe" => "syreen",
+        "druma" => "druuge",
+        "utwju" => "utwig",
+        "zfpst" => "zoqfot",
+        "orzne" => "orz",
+        "slypr" => "sylandro",
+        "umgdr" => "umgah",
+        "meltr" => "melnorme",
+        // Chenjesu / Androsynth / Mmrnmhrm / Alarian don't have a
+        // dedicated theme in TimeWarp's `gamedata/dialogs/`. The
+        // caller falls back to MELEEMUS for these.
+        _ => return None,
+    })
 }
 
 /// Canon `melee.dat:BOOMSHIP_WAV` (2.1 s, 22 kHz mono) — played from

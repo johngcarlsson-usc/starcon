@@ -1,0 +1,67 @@
+
+Important variables (for networking):
+--------------------
+
+const int max_connections = 20;
+
+maximum number of connections allowed.
+
+
+max_network
+num_network:
+
+number of computers connected in a network
+this defines the # of unique channels
+
+num_hotseat:
+
+number of people behind each computer
+they share a channel
+no limit
+
+num_bots:
+
+number of AI bots
+always on channel_none
+no limit
+
+max_player
+num_players:
+
+total number of "players" in the game, namely, all people and the bots.
+their properties are stored in Control
+player_control[i]->channel, should be one of num_network channels.
+
+
+IMPORTANT OTHER VARIABLES:
+
+p_local:
+
+the local network number; each is unique, and the host is labeled 0.
+
+channel_current:
+
+in some cases, used as a short-cut for log_int.
+
+log_synched:
+
+indicates read-mode for channel-data, which is always synched between games. This can only be used together with log_setmode(), which is used to tweak the degault read/write permissions to enter either total read- or total write-state (this is used in events).
+
+
+CHANNELS:
+
+channel_init, channel_network[]:
+
+Channels are owned by a player. Usually each player is assigned two channels with write-permission, except the host, which also has write-permission on special channels for file-sharing and initialization.
+
+channel_conn_recv:
+
+Because of the above, a channel is usually specific to a network-connection (channel-info is only received from the network-player who has write permission). Each time a conenction receives information on a certain channel, the connection-number that is active at that time is recorded in channel_conn_recv. Then, through knowledge of the channel of a player, you can find the connection of that player. You need to have shared a little data before this is usable !!
+
+
+PITFALLS:
+
+checks on networked values are sometimes difficult, cause because of the lag, a remote computer could already have sent you values, from a part of your program, that your own running version hasn't reached yet.
+
+rand() should be avoided. However, using random() for host-side init-calculations (which are typically non-synched, e.g. the host is the only one who can select something in a menu), can also cause a desynch.
+

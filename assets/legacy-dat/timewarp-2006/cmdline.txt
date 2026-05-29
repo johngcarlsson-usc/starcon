@@ -1,0 +1,65 @@
+TimeWarp Command Line Options:
+
+-res x y
+Set screen resolution to x by y.  
+Example: -res 512 384
+
+-bpp z
+Set screen color depth to z (valid options are 8, 15, 16, 24, or 32
+Example: -bpp 8
+
+-low_quality
+Not Yet Implemented
+Causes TW to use lower quality graphics.  This will use less 
+RAM.  
+
+-play game gametype
+-play demo demofile
+-play net1client serverIP [port]
+-play net1server gametype [port]
+Bypasses the main menu, putting you directly into a game.  
+Note that game names are case-sensitive, and that underscores (_)
+should be used in place of spaces.
+The 'type' parameter must be either 'game', 'demo', 'net1client',
+or 'net1server'.  If the port parameter is omitted then it will
+default to port 15515, as specified in client.ini.  
+Example: -play game Melee
+Example: -play game Melee_in_Asteroid_Field
+Example: -play demo mydemo.dmo
+Example: -play net1client 131.215.72.49
+Example: -play net1server Melee_in_Asteroid_Field 15515
+Example: -play net1client josh.joshesdomain.net 15515
+
+-fullscreen
+Set screen mode to fullscreen.  This is the opposite of -window
+
+-window
+Set screen mode to windowed.  This is the opposite of -fullscreen
+
+-nosound
+Disables sound support.  
+
+-nojoystick
+Disables joystick support
+
+-nomouse
+Disables mouse support
+
+-nokeyboard
+Disables keyboard support (a bad idea...)
+
+-noidle
+When this option is enabled, TW will attempt to use 100% of available 
+CPU time.  Generally, using the -interpolate_frames option is more 
+useful, but this option may be useful in working around possible 
+hardware bugs or TW bugs.  
+
+Notes:
+
+1.  x & y do not have to match a normal resolution; you can
+use combinations of x, y that don't show up in the normal screen
+selection.  For instance, to run twdos.exe in VGA mode 13, you
+would type "twdos.exe -res 320 200 -bpp 8".
+Also, strange Mode-X modes are allowed on platforms where you have
+direct hardware access (DOS, unix w/ root), allowing resolutions like
+these: 256x256, 320x240, 360x240, etc.
