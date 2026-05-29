@@ -666,6 +666,13 @@ pub struct UltimatePortraitTag;
 #[derive(Component)]
 pub struct ArilouVoicePlayer;
 
+/// Marker on the audio entity playing ANY ultimate's voice line
+/// (captain speech). `audio::tick_music_ducking` watches this to
+/// fade the combat music down while the captain talks and back up
+/// once the clip self-despawns.
+#[derive(Component)]
+pub struct UltimateVoicePlayer;
+
 /// Stinger SFX entity spawned at the start of `ArilouUnleashing`.
 /// `tick_arilou_stinger` fades its volume from 1.0 → 0.0 over the
 /// attack window so the SFX matches the duration of the
@@ -1386,6 +1393,8 @@ fn hyper_trigger(
     let mut voice = commands.spawn((
         AudioPlayer::<AudioSource>(assets.load(voice_path(state.variant))),
         PlaybackSettings::DESPAWN,
+        // Universal marker for the music-ducking hook in `audio.rs`.
+        UltimateVoicePlayer,
     ));
     if state.variant == UltimateVariant::Arilou {
         voice.insert(ArilouVoicePlayer);

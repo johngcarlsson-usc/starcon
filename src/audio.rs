@@ -27,10 +27,20 @@ impl Plugin for AudioPlugin {
             .add_systems(OnEnter(AppState::InMatch), start_combat_music)
             .add_systems(
                 Update,
-                (play_ship_death_boom, play_victory_ditty).run_if(in_state(AppState::InMatch)),
+                (play_ship_death_boom, play_victory_ditty, tick_music_ducking)
+                    .run_if(in_state(AppState::InMatch)),
             );
     }
 }
+
+/// Volume the combat loop ducks to while a captain's ultimate voice
+/// line is playing. Low enough to clear the speech, not so low the
+/// loop dies entirely (sudden silence would feel like a bug).
+const DUCK_VOLUME: f32 = 0.15;
+/// Linear lerp rate in volume-units per second. ~3.0 = ~0.3 s for a
+/// full 1.0 → 0.0 fade — slow enough to feel intentional, fast enough
+/// not to step on a one-word voice line.
+const DUCK_FADE_RATE: f32 = 3.0;
 
 /// Handle to whatever music entity is currently playing (title theme,
 /// combat loop). Stored so we can despawn it cleanly on state exit
@@ -175,5 +185,36 @@ fn victory_ditty_stem(code: &str) -> &'static str {
         // without a faction mapping — keeps the audio system silent
         // instead of panicking on a missing file.
         _ => "for",
+    }
+}
+
+/// While any `UltimateVoicePlayer` entity is alive, lerp the combat
+/// music's sink volume down to `DUCK_VOLUME`; lerp it back to 1.0 the
+/// moment the voice entity self-despawns. `AudioSink` is added by
+/// bevy_audio once playback starts, so we tolerate it being absent
+/// for the first few frames after `start_combat_music`.
+fn tick_music_ducking(
+    time: Res<Time<Real>>,
+    track: Res<MusicTrack>,
+    voices: Query<(), With<crate::ultimate::UltimateVoicePlayer>>,
+    mut sinks: Query<&mut AudioSink>,
+) {
+    let Some(music_entity) = track.0 else { return };
+    let Ok(mut sink) = sinks.get_mut(music_entity) else {
+        return;
+    };
+    let target = if voices.is_empty() { 1.0 } else { DUCK_VOLUME };
+    let current = sink.volume().to_linear();
+    let dt = time.delta_secs();
+    let next = if current < target {
+        (current + DUCK_FADE_RATE * dt).min(target)
+    } else {
+        (current - DUCK_FADE_RATE * dt).max(target)
+    };
+    // Skip the per-frame write when we're already at the target —
+    // avoids touching the sink (and its mutation tracking) every
+    // tick during the steady state.
+    if (next - current).abs() > 1e-4 {
+        sink.set_volume(bevy::audio::Volume::Linear(next));
     }
 }
