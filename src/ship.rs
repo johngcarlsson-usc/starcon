@@ -7256,11 +7256,18 @@ fn tick_kohma_blade(
         if just_released {
             // Tag the most recent blade as passive. The dedicated
             // passive-tick system below handles the slow-homing /
-            // stop-on-no-target logic from canon.
+            // stop-on-no-target logic from canon. The blade may
+            // already have been despawned this frame by a projectile-
+            // vs-ship collision (the despawn is queued and the
+            // projectile_alive query saw it as alive at system
+            // start) — `get_entity` short-circuits in that case so
+            // we don't queue an insert on a stale ID.
             if let Some(blade) = carrier.current.take() {
-                commands.entity(blade).try_insert(KohrAhBladePassive {
-                    launch_speed: blade_velocity,
-                });
+                if let Ok(mut ec) = commands.get_entity(blade) {
+                    ec.try_insert(KohrAhBladePassive {
+                        launch_speed: blade_velocity,
+                    });
+                }
             }
         }
     }
