@@ -206,6 +206,11 @@ pub struct NetSocket {
     /// doesn't expose a connected-peer list (that's on
     /// `MatchboxSocket`), so we cache it here at handshake time.
     pub peers: Vec<PeerId>,
+    /// Full sorted peer list, indexed by match slot. Slot N's peer
+    /// is `slot_to_peer[N]`. Used on the host to map an incoming
+    /// `NetMessage::Input` from `peer` back to the slot whose
+    /// `NetInputs.current` entry the host should write into.
+    pub slot_to_peer: Vec<PeerId>,
 }
 
 /// Host snapshot cadence. 20 Hz matches the canonical SC2 frame
@@ -227,6 +232,18 @@ impl Plugin for NetcodePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetRole>()
             .init_resource::<NetIdAllocator>()
+            // Local-input → NetInputs writer. Runs in FixedUpdate
+            // BEFORE `gather_slot_inputs` (the consumer side) so
+            // each tick's local key state lands in `NetInputs` in
+            // time for the gameplay pipeline to read it the same
+            // tick. Runs only in online mode — local hotseat takes
+            // a different path through `gather_slot_inputs`.
+            .add_systems(
+                FixedUpdate,
+                push_local_input_to_netinputs
+                    .before(crate::input::SlotInputProducerSet)
+                    .run_if(resource_exists::<NetSocket>),
+            )
             // Heartbeat + receive loop. Both gate on the
             // `NetSocket` resource existing, which only happens
             // after the matchbox handshake — so they're no-ops
@@ -255,6 +272,56 @@ pub fn role_is_authoritative(role: Res<NetRole>) -> bool {
 /// application.
 pub fn role_is_guest(role: Res<NetRole>) -> bool {
     role.is_guest()
+}
+
+/// Per-FixedUpdate, online only: rotate `NetInputs.previous = current`,
+/// then write THIS peer's local key state into
+/// `NetInputs.current[local_slot]`. Slot 0's keymap is the canonical
+/// "online" keymap (arrows + slash + period) — every peer uses it
+/// regardless of which match slot they own, so an online peer in
+/// slot 1 still steers with arrow keys, not WASD.
+///
+/// On the guest, also fire a `NetMessage::Input` to the host so the
+/// host's authoritative sim sees the guest's input on its own slot.
+/// Host writes that incoming input into its own `NetInputs.current`
+/// from `drain_messages`.
+fn push_local_input_to_netinputs(
+    keys: Res<bevy::input::ButtonInput<KeyCode>>,
+    virt: Res<crate::input::VirtualInput>,
+    local: Res<LocalHandle>,
+    role: Res<NetRole>,
+    mut net: ResMut<crate::input::NetInputs>,
+    mut sock: ResMut<NetSocket>,
+) {
+    let slot = local.0.min(3);
+    let local_input = crate::input::read_local_input_with_virtual(&keys, Some(&virt), 0);
+
+    net.previous = net.current;
+    net.current[slot] = local_input;
+
+    // Guest forwards its own input to the host on every tick.
+    // Cheap (a handful of bytes) and gives the host a fresh value
+    // even when the guest is idle — host's `gather_slot_inputs`
+    // reads `NetInputs.current[guest_slot]` directly.
+    if !role.is_guest() {
+        return;
+    }
+    let msg = NetMessage::Input {
+        tick: 0,
+        input: local_input,
+    };
+    let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) else {
+        return;
+    };
+    let peers = sock.peers.clone();
+    let Some(channel) = sock.channel.as_mut() else {
+        return;
+    };
+    for peer in peers {
+        if let Err(e) = channel.try_send(bytes.clone().into(), peer) {
+            warn!("netcode: input send to {peer:?} failed: {e:?}");
+        }
+    }
 }
 
 fn send_heartbeat(
@@ -382,6 +449,7 @@ fn send_ship_snapshot(
 fn drain_messages(
     mut sock: ResMut<NetSocket>,
     role: Res<NetRole>,
+    mut net_inputs: ResMut<crate::input::NetInputs>,
     mut ships: Query<
         (
             &crate::ship::Ship,
@@ -395,6 +463,9 @@ fn drain_messages(
     >,
     mut last_snapshot_tick: Local<u32>,
 ) {
+    // Snapshot the slot lookup before taking the channel mut-borrow so
+    // we don't fight the borrow checker mid-loop.
+    let slot_to_peer = sock.slot_to_peer.clone();
     let Some(channel) = sock.channel.as_mut() else {
         return;
     };
@@ -406,8 +477,23 @@ fn drain_messages(
             continue;
         };
         match msg {
-            NetMessage::Input { tick, .. } => {
-                debug!("netcode: rx Input tick={tick} from {peer:?}");
+            NetMessage::Input { tick: _, input } => {
+                // Only the host applies inbound inputs. Guests get
+                // their own slot's input from `push_local_input_to_netinputs`
+                // and discover everyone else's via snapshots.
+                if !role.is_authoritative() {
+                    continue;
+                }
+                let Some(slot) = slot_to_peer.iter().position(|&p| p == peer) else {
+                    continue;
+                };
+                if slot < net_inputs.current.len() {
+                    // `previous` rotation for this slot is handled
+                    // each tick by `push_local_input_to_netinputs`.
+                    // Overwriting `current` here lands the freshest
+                    // guest input ahead of the next `gather_slot_inputs`.
+                    net_inputs.current[slot] = input;
+                }
             }
             NetMessage::Snapshot { tick, entities } => {
                 // Guest applies snapshots onto its local ships;
