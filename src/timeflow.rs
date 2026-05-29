@@ -85,7 +85,7 @@ impl Plugin for TimeflowPlugin {
 fn debug_controls(
     keys: Res<ButtonInput<KeyCode>>,
     mut scale: ResMut<TimeScale>,
-    session: Option<Res<bevy_ggrs::Session<crate::netplay::Config>>>,
+    session: Option<Res<crate::netcode::NetSocket>>,
 ) {
     // Bail in netplay: this reads local `KeyCode` and writes into
     // `TimeScale`, which `apply_time_scale` then bakes into

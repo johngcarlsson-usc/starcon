@@ -140,7 +140,7 @@ fn resume_from_reset(
 fn request_rematch(
     slot_inputs: Res<input::SlotInputs>,
     phase: Res<hud::MatchPhase>,
-    session: Option<Res<bevy_ggrs::Session<netplay::Config>>>,
+    session: Option<Res<netcode::NetSocket>>,
     mut next: ResMut<NextState<AppState>>,
 ) {
     // Solo / local-hotseat instant rematch on the FLAG_REMATCH vote.

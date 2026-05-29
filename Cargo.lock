@@ -944,20 +944,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bevy_ggrs"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "737a133f676e4ff2de2118eac53789de3e9c03cff117648d83504c96e148474e"
-dependencies = [
- "bevy",
- "disqualified",
- "ggrs 0.12.0",
- "log",
- "seahash",
- "serde",
-]
-
-[[package]]
 name = "bevy_gizmos"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3313,22 +3299,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ggrs"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "777d9da4dfd802a272f1795a7a1887d6078fd31487e7e68d689596c4c5298046"
-dependencies = [
- "bincode 1.3.3",
- "bitfield-rle",
- "instant",
- "js-sys",
- "parking_lot",
- "rand 0.8.6",
- "serde",
- "tracing",
-]
-
-[[package]]
 name = "ghash"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4158,7 +4128,7 @@ dependencies = [
  "futures-channel",
  "futures-timer",
  "futures-util",
- "ggrs 0.11.1",
+ "ggrs",
  "js-sys",
  "log",
  "matchbox_protocol",
@@ -5828,12 +5798,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "seahash"
-version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
-
-[[package]]
 name = "sec1"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6142,12 +6106,10 @@ version = "0.0.1"
 dependencies = [
  "avian2d",
  "bevy",
- "bevy_ggrs",
  "bevy_matchbox",
  "bincode 2.0.1",
  "bytemuck",
  "fastrand",
- "ggrs 0.12.0",
  "image",
  "js-sys",
  "rust-ini",

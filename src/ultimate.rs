@@ -745,7 +745,7 @@ impl Plugin for UltimatePlugin {
         // thus GgrsSchedule) halts when `Time<Virtual>` is
         // paused — those go in Update.
         .add_systems(
-            bevy_ggrs::GgrsSchedule,
+            FixedUpdate,
             (
                 tick_ultimate_beams,
                 tick_earthling_blast,
@@ -762,7 +762,7 @@ impl Plugin for UltimatePlugin {
             ),
         )
         .add_systems(
-            bevy_ggrs::GgrsSchedule,
+            FixedUpdate,
             (
                 tick_thraddash_burn,
                 tick_mmrxf_tangled_laser,
@@ -1209,7 +1209,7 @@ fn hyper_trigger(
     mut color_mats: ResMut<Assets<SoftBladeMaterial>>,
     assets: Res<AssetServer>,
     mut virt: ResMut<Time<Virtual>>,
-    session: Option<Res<bevy_ggrs::Session<crate::netplay::Config>>>,
+    session: Option<Res<crate::netcode::NetSocket>>,
 ) {
     // Ultimates are disabled in netplay: the cinematic phase machine
     // (`tick_ultimate_phases`) runs in `Update` and drives state

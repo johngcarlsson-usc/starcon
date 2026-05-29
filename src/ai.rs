@@ -137,7 +137,7 @@ impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource_if_absent::<AiDifficulty>()
             .add_systems(
-                bevy_ggrs::GgrsSchedule,
+                FixedUpdate,
                 tick_ai_pilots
                     .after(crate::input::SlotInputProducerSet)
                     .before(crate::ship::apply_player_input)

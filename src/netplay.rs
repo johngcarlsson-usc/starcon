@@ -109,53 +109,11 @@
 //! peers; the public test server at `match.helsing.studio` is
 //! intermittently up but fine for development.
 
-use bevy::ecs::schedule::{LogLevel, ScheduleBuildSettings};
-use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::prelude::*;
-use bevy_ggrs::ggrs::{Message as GgrsMessage, NonBlockingSocket, PlayerType, SessionBuilder};
-use bevy_ggrs::{
-    GgrsPlugin, GgrsSchedule, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs, RollbackApp,
-    Session,
-};
-use bevy_matchbox::matchbox_socket::{RtcIceServerConfig, WebRtcChannel};
+use bevy_matchbox::matchbox_socket::RtcIceServerConfig;
 use bevy_matchbox::prelude::*;
 
 use crate::AppState;
-
-/// GGRS session type. Input = our `PlayerInput`. Address =
-/// matchbox `PeerId` because peers are identified by WebRTC
-/// peer-id rather than UDP socket address.
-pub type Config = bevy_ggrs::GgrsConfig<crate::input::PlayerInput, PeerId>;
-
-/// Adapter that bridges a matchbox `WebRtcChannel` to GGRS
-/// 0.12's `NonBlockingSocket<PeerId>` trait.
-///
-/// `matchbox_socket` 0.14 ships its own `NonBlockingSocket`
-/// impl, but against the ggrs 0.11 trait — and bevy_ggrs 0.21
-/// requires ggrs 0.12. We can't impl a foreign trait on a
-/// foreign type, so we newtype the channel and re-implement the
-/// serde<->packet bridge using bincode 2.
-pub struct GgrsChannelAdapter(WebRtcChannel);
-
-impl NonBlockingSocket<PeerId> for GgrsChannelAdapter {
-    fn send_to(&mut self, msg: &GgrsMessage, addr: &PeerId) {
-        let bytes = bincode::serde::encode_to_vec(msg, bincode::config::standard())
-            .expect("ggrs message serialize");
-        self.0.send(bytes.into_boxed_slice(), *addr);
-    }
-
-    fn receive_all_messages(&mut self) -> Vec<(PeerId, GgrsMessage)> {
-        self.0
-            .receive()
-            .into_iter()
-            .filter_map(|(id, packet)| {
-                bincode::serde::decode_from_slice(&packet, bincode::config::standard())
-                    .ok()
-                    .map(|(msg, _)| (id, msg))
-            })
-            .collect()
-    }
-}
 
 /// Maximum players per match. The lobby waits for exactly the
 /// number of HUMANS in `LobbyState.target_humans` (any remaining
@@ -441,93 +399,13 @@ pub struct NetplayPlugin;
 
 impl Plugin for NetplayPlugin {
     fn build(&self, app: &mut App) {
-        // GgrsPlugin: registers the rollback schedule + input
-        // collection scaffolding. Idle when no `Session<Config>`
-        // resource exists, so it costs nothing for local play.
-        app.add_plugins(GgrsPlugin::<Config>::default())
-            // bevy_ggrs sets `ambiguity_detection: LogLevel::
-            // Error` on GgrsSchedule for strict determinism.
-            // Our existing gameplay has many implicit-ordering
-            // ambiguities that silently worked under FixedUpdate
-            // (where the default is LogLevel::Ignore). Resolving
-            // every pair explicitly is days of work; instead we
-            // relax the check back to Warn. Cross-peer
-            // determinism still holds because both peers run the
-            // same Rust binary with the same system registration
-            // order, so the parallel executor produces the same
-            // run order on each.
-            .edit_schedule(GgrsSchedule, |s| {
-                s.set_build_settings(ScheduleBuildSettings {
-                    ambiguity_detection: LogLevel::Warn,
-                    ..default()
-                });
-            })
-            // ---- Rollback components ----
-            //
-            // Every component that mutates during gameplay needs
-            // to be registered so bevy_ggrs can snapshot it before
-            // the predicted frames and restore it on rollback.
-            // Avian's physics state (Position / Rotation /
-            // LinearVelocity / AngularVelocity) is Copy, as are
-            // our cooldown/stat components.
-            .rollback_component_with_copy::<Position>()
-            .rollback_component_with_copy::<Rotation>()
-            .rollback_component_with_copy::<LinearVelocity>()
-            .rollback_component_with_copy::<AngularVelocity>()
-            .rollback_component_with_copy::<crate::ship::Crew>()
-            .rollback_component_with_copy::<crate::ship::Battery>()
-            .rollback_component_with_copy::<crate::ship::WeaponCooldown>()
-            .rollback_component_with_copy::<crate::ship::SpecialCooldown>()
-            // ---- Gameplay components mutated every tick in GgrsSchedule ----
-            //
-            // Anything that GgrsSchedule writes to MUST be snapshotted,
-            // or rollback restores the registered state and the
-            // re-simulation double-applies the mutation. The classic
-            // example: `Projectile.lifetime -= dt` each frame. Without
-            // rollback the value drifts faster than wall-clock, the
-            // projectile dies early on one peer and not the other, and
-            // damage applications diverge. Same shape for shields,
-            // beams, sub-entity timers, AI tactical state, and so on.
-            .rollback_component_with_clone::<crate::ship::Projectile>()
-            .rollback_component_with_clone::<crate::ship::Beam>()
-            .rollback_component_with_clone::<crate::ship::Homing>()
-            .rollback_component_with_clone::<crate::ship::Limpet>()
-            .rollback_component_with_clone::<crate::ship::DamageZone>()
-            .rollback_component_with_clone::<crate::ship::AttachedDamageZone>()
-            .rollback_component_with_clone::<crate::ship::ShieldActive>()
-            .rollback_component_with_clone::<crate::ship::DamageToBattery>()
-            .rollback_component_with_clone::<crate::ship::PointDefenseActive>()
-            .rollback_component_with_clone::<crate::ship::TractorBeam>()
-            .rollback_component_with_clone::<crate::ship::SubEntity>()
-            .rollback_component_with_clone::<crate::ship::SubEntityAi>()
-            .rollback_component_with_clone::<crate::ship::Invisible>()
-            .rollback_component_with_clone::<crate::ship::AlaryTorpedo>()
-            .rollback_component_with_clone::<crate::ship::Asteroid>()
-            .rollback_component_with_clone::<crate::ship::Planet>()
-            .rollback_component_with_clone::<crate::ship::KohrAhBladeCarrier>()
-            .rollback_component_with_clone::<crate::ship::KohrAhBladePassive>()
-            .rollback_component_with_clone::<crate::ship::OrzTurret>()
-            .rollback_component_with_clone::<crate::ship::OrzMarineBoarded>()
-            .rollback_component_with_clone::<crate::ship::SlylandroDrift>()
-            .rollback_component_with_clone::<crate::ship::MeltrChargeState>()
-            .rollback_component_with_clone::<crate::ship::ShofixtiGlory>()
-            .rollback_component_with_clone::<crate::ship::CrystalCarrier>()
-            .rollback_component_with_clone::<crate::ship::ChmmrSatellite>()
-            .rollback_component_with_clone::<crate::ship::MyconPlasmaPulse>()
-            .rollback_component_with_clone::<crate::ai::AiControlled>()
-            .rollback_component_with_clone::<crate::ai::AiBrain>()
-            // ---- Rollback resources ----
-            //
-            // GameRng owns the per-match deterministic stream;
-            // it MUST be snapshot/restored on rollback or peers
-            // will diverge after the first re-simulation.
-            .rollback_resource_with_clone::<crate::rng::GameRng>()
-            // MatchPhase + MatchOutcome are now mutated by death/winner
-            // detection running in GgrsSchedule, so they get the same
-            // treatment as GameRng.
-            .rollback_resource_with_clone::<crate::hud::MatchPhase>()
-            .rollback_resource_with_clone::<crate::hud::MatchOutcome>()
-            .init_resource::<LobbyRequest>()
+        // GGRS rollback is gone — see `NETCODE_REFACTOR.md`. Gameplay
+        // now ticks on plain `FixedUpdate`, and the
+        // `netcode::NetSocket` host/guest path syncs state instead of
+        // re-simulating from a shared deterministic seed. The matchbox
+        // socket setup + lobby UI stay; everything that's downstream
+        // of "are we connected to a peer?" is unchanged.
+        app.init_resource::<LobbyRequest>()
             .init_resource::<LobbyState>()
             .init_resource::<SignalingOverride>()
             .init_resource::<IceOverride>()
@@ -545,31 +423,12 @@ impl Plugin for NetplayPlugin {
                 )
                     .run_if(in_state(AppState::LobbyOnline)),
             )
-            // GGRS calls into the `ReadInputs` schedule once per
-            // frame to ask "what input did the local player made
-            // this frame?". We answer by reading the local
-            // keyboard (always slot-0 keymap, since each peer
-            // owns exactly one slot in an online match) and
-            // stashing it in `LocalInputs<Config>` keyed by the
-            // local handle.
-            .add_systems(ReadInputs, read_local_inputs)
-            // Bridge: inside GgrsSchedule (which only runs when
-            // a `Session<Config>` is present) we read the
-            // freshly-confirmed `PlayerInputs<Config>` and
-            // write them into our long-lived `NetInputs`
-            // resource. The next FixedUpdate's
-            // `gather_slot_inputs` then routes those inputs to
-            // each slot.
-            // `net_inputs_bridge` must run BEFORE `gather_slot_inputs`
-            // (which sits in `SlotInputProducerSet`) so `NetInputs.current`
-            // reflects THIS tick's GGRS-managed inputs, including the
-            // local handle's. Otherwise the local slot gets last tick's
-            // input on the first frame after a rollback, while every
-            // remote slot already has this tick's.
-            .add_systems(
-                GgrsSchedule,
-                net_inputs_bridge.before(crate::input::SlotInputProducerSet),
-            );
+            ;
+        // `read_local_inputs` + `net_inputs_bridge` (the old GGRS
+        // input pipeline) are now dead code under the new netcode.
+        // Guest input forwarding goes through `netcode::NetMessage::
+        // Input` instead; host reads its own keyboard via the
+        // existing `gather_slot_inputs` local-handle path.
     }
 }
 
@@ -954,53 +813,27 @@ fn update_lobby(
     // is harmless and keeps the resource consistent.
     commands.insert_resource(crate::netcode::NetIdAllocator::default());
 
-    let players: Vec<PlayerType<PeerId>> = peer_ids
-        .iter()
-        .map(|&id| {
-            if id == our_id {
-                PlayerType::Local
-            } else {
-                PlayerType::Remote(id)
-            }
-        })
-        .collect();
-    if players.len() < humans {
+    if peer_ids.len() < humans {
         return;
     }
 
-    // GGRS 0.12 made the builder methods fallible.
-    let mut builder = match SessionBuilder::<Config>::new().with_num_players(humans) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!("netplay: bad num_players config: {e:?}");
-            state.status = LobbyStatus::Failed("invalid GGRS num_players");
-            return;
-        }
-    };
-    builder = builder.with_input_delay(INPUT_DELAY);
-    builder = match builder.with_fps(FPS) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!("netplay: bad fps config: {e:?}");
-            state.status = LobbyStatus::Failed("invalid GGRS fps config");
-            return;
-        }
-    };
-    let mut local_handle: usize = 0;
-    for (handle, player) in players.into_iter().enumerate() {
-        if matches!(player, PlayerType::Local) {
-            local_handle = handle;
-        }
-        builder = match builder.add_player(player, handle) {
-            Ok(b) => b,
-            Err(e) => {
-                warn!("netplay: add_player {handle} failed: {e:?}");
-                state.status = LobbyStatus::Failed("ggrs add_player failed");
-                return;
-            }
-        };
-    }
-    let channel = match socket.take_channel(0) {
+    // Local-handle = position of `our_id` in the sorted PeerId list.
+    // Host is index 0; guest is 1+.
+    let local_handle: usize = peer_ids
+        .iter()
+        .position(|&p| p == our_id)
+        .unwrap_or(0);
+
+    // Channel 0 used to go to GGRS; now it's the host/guest
+    // `NetMessage` path. Cache the remote peer list alongside the
+    // channel because `WebRtcChannel` doesn't expose connected
+    // peers directly.
+    let remote_peers: Vec<PeerId> = peer_ids
+        .iter()
+        .copied()
+        .filter(|id| *id != our_id)
+        .collect();
+    let net_channel = match socket.take_channel(0) {
         Ok(c) => c,
         Err(e) => {
             warn!("netplay: take_channel(0) failed: {e:?}");
@@ -1008,40 +841,21 @@ fn update_lobby(
             return;
         }
     };
-    // Take channel 1 too — this is the host/guest NetMessage path.
-    // For now the host/guest split isn't actually driving gameplay
-    // yet (GGRS still ticks the simulation), but the channel needs
-    // to be claimed before the socket gets dropped on InMatch
-    // entry so the new code can use it. Cache the remote peer list
-    // alongside the channel — `WebRtcChannel` itself doesn't expose
-    // connected peers, only `MatchboxSocket` does.
-    let remote_peers: Vec<PeerId> = peer_ids
-        .iter()
-        .copied()
-        .filter(|id| *id != our_id)
-        .collect();
-    if let Ok(net_channel) = socket.take_channel(1) {
-        commands.insert_resource(crate::netcode::NetSocket {
-            channel: Some(net_channel),
-            heartbeat_s: 0.0,
-            peers: remote_peers,
-        });
-    } else {
-        warn!("netplay: take_channel(1) failed — NetMessage transport unavailable");
-    }
-    let session = match builder.start_p2p_session(GgrsChannelAdapter(channel)) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("netplay: start_p2p_session failed: {e:?}");
-            state.status = LobbyStatus::Failed("ggrs session start failed");
-            return;
-        }
-    };
+    commands.insert_resource(crate::netcode::NetSocket {
+        channel: Some(net_channel),
+        heartbeat_s: 0.0,
+        peers: remote_peers,
+    });
+    // Channel 1 (the reliable one) goes unused for the moment — the
+    // lobby-vote re-routing in step 5 of NETCODE_REFACTOR.md will
+    // claim it once we move votes off the unreliable snapshot path.
+    let _ = socket.take_channel(1);
+    commands.insert_resource(crate::netcode::LocalHandle(local_handle));
 
     // Apply the chosen humans/AI mix to MatchConfig so
     // `spawn_match` knows what to spawn. Human slots take the
-    // lowest indices (so handles 0..humans map to slots
-    // 0..humans), then AI slots fill the rest.
+    // lowest indices (so peer 0..humans map to slots 0..humans),
+    // then AI slots fill the rest.
     use crate::ship::{PlayerKind, ShipClass, SlotConfig};
     let ai_count = state.target_ai.min(MAX_PLAYERS.saturating_sub(humans));
     let class_palette = [
@@ -1057,13 +871,6 @@ fn update_lobby(
             kind: PlayerKind::Remote,
         });
     }
-    // Local player overrides their own slot kind to Human so
-    // `apply_player_input` reads the kbd for their slot. (The
-    // shared GGRS input pipeline isn't wired into the gameplay
-    // dispatch yet — see netplay.rs module docs — so for now
-    // the local kbd is what actually drives the local slot,
-    // and remote slots stay still. The infrastructure is in
-    // place for the GgrsSchedule migration.)
     if let Some(slot) = slots.get_mut(local_handle) {
         slot.kind = PlayerKind::Human;
     }
@@ -1075,11 +882,10 @@ fn update_lobby(
     }
     config.slots = slots;
 
-    // Derive a shared per-match seed from the sorted PeerId
-    // list. Both peers see the same sort order so they hash
-    // to the same seed; the seed is mixed into `GameRng` on
-    // OnEnter(InMatch) so all peers consume the same RNG
-    // stream.
+    // Per-match seed still derives from the sorted PeerId list —
+    // host + guest both compute the same `GameRng` start so any
+    // single-machine RNG draws (planet quadrant, asteroid spawns)
+    // come out identical on both sides without explicit sync.
     {
         use std::hash::{BuildHasher, Hash, Hasher};
         let mut hasher = bevy::platform::hash::FixedHasher::default().build_hasher();
@@ -1087,11 +893,9 @@ fn update_lobby(
         seed.0 = hasher.finish();
     }
 
-    commands.insert_resource(Session::P2P(session));
-    commands.insert_resource(LocalPlayers(vec![local_handle]));
     info!(
-        "netplay: GGRS session started — {} humans + {} AI, local handle = {}, seed = {:#x}",
-        humans, ai_count, local_handle, seed.0
+        "netplay: session up — role = {:?}, {} humans + {} AI, local handle = {}, seed = {:#x}",
+        role, humans, ai_count, local_handle, seed.0
     );
     next.set(AppState::InMatch);
 }
@@ -1103,41 +907,10 @@ fn update_lobby(
 /// stashes the result in `LocalInputs<Config>` keyed by the
 /// local handle. GGRS picks this resource up before the
 /// rollback schedule runs.
-fn read_local_inputs(
-    mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    virt: Res<crate::input::VirtualInput>,
-    local_players: Option<Res<LocalPlayers>>,
-    // Lobby state needs to ride on the GGRS wire too, not just into
-    // local `SlotInputs`. Without this, the local peer's class pick
-    // and Ready toggle never reach the remote peer.
-    config: Option<Res<crate::ship::MatchConfig>>,
-    lobby: Option<Res<crate::lobby::LobbyVote>>,
-    phase: Option<Res<crate::hud::MatchPhase>>,
-) {
-    let Some(local_players) = local_players else {
-        return;
-    };
-    let mut map = bevy::platform::collections::HashMap::default();
-    let mut input = crate::input::read_local_input_with_virtual(&keys, Some(&virt), 0);
-    // Stuff the lobby vote into the input that GGRS will ship.
-    if let (Some(config), Some(local_slot)) =
-        (config.as_ref(), local_players.0.first().copied())
-    {
-        if let Some(slot_cfg) = config.slots.get(local_slot) {
-            input.class = crate::ship::class_to_index(slot_cfg.class);
-        }
-    }
-    let in_post_match =
-        phase.as_ref().map(|p| **p == crate::hud::MatchPhase::PostMatch).unwrap_or(false);
-    if in_post_match && lobby.as_ref().map(|l| l.ready).unwrap_or(false) {
-        input.flags |= crate::input::FLAG_READY;
-    }
-    for handle in &local_players.0 {
-        map.insert(*handle, input);
-    }
-    commands.insert_resource(LocalInputs::<Config>(map));
-}
+// `read_local_inputs` + `net_inputs_bridge` removed — the GGRS
+// input pipeline they fed is gone. Guest input forwarding lives
+// in `netcode::NetMessage::Input` now; host reads its own keyboard
+// via the existing `gather_slot_inputs` local-handle path.
 
 /// Render the current lobby status + picker counts into their
 /// respective text nodes. Pulled out from `update_lobby` so the
@@ -1207,29 +980,6 @@ fn lobby_back_to_menu(
     }
 }
 
-/// Bridge `PlayerInputs<Config>` (which only lives inside
-/// `GgrsSchedule`) into our long-lived `NetInputs` resource so
-/// `gather_slot_inputs` (running in FixedUpdate) can read it.
-///
-/// Each tick we shift `current → previous` then write the
-/// freshly-received per-handle inputs into `current`. Edge
-/// detection (just_pressed / just_released) is then computed
-/// by `gather_slot_inputs` as a per-bit diff between the two.
-fn net_inputs_bridge(
-    inputs: Option<Res<PlayerInputs<Config>>>,
-    mut net: ResMut<crate::input::NetInputs>,
-) {
-    let Some(inputs) = inputs else {
-        return;
-    };
-    net.previous = net.current;
-    // GGRS gives us a Vec<(Input, InputStatus)> indexed by
-    // handle. Map handle → slot 1:1 (handles are 0..H, slots
-    // also start at 0). `InputStatus` is ignored here; we just
-    // trust the most recent confirmed/predicted input.
-    for (handle, (input, _status)) in inputs.iter().enumerate() {
-        if handle < 4 {
-            net.current[handle] = *input;
-        }
-    }
-}
+// `net_inputs_bridge` removed with the GGRS pipeline. Guest input
+// arrives via `netcode::drain_messages` and gets written into
+// `NetInputs.current[guest_slot]` from there.

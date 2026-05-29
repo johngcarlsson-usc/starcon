@@ -77,7 +77,7 @@ impl Plugin for HudPlugin {
             // permanent and the remote peer's later despawn produced
             // a divergent world.
             .add_systems(
-                bevy_ggrs::GgrsSchedule,
+                FixedUpdate,
                 (destroy_zero_crew_ships, detect_winner)
                     .chain()
                     .run_if(in_state(crate::AppState::InMatch)),
@@ -448,7 +448,7 @@ fn update_status_banner(
     outcome: Res<MatchOutcome>,
     config: Res<crate::ship::MatchConfig>,
     slot_inputs: Res<crate::input::SlotInputs>,
-    session: Option<Res<bevy_ggrs::Session<crate::netplay::Config>>>,
+    session: Option<Res<crate::netcode::NetSocket>>,
     mut q: Query<&mut Text, With<StatusBanner>>,
 ) {
     let n = config.slot_count().min(4);

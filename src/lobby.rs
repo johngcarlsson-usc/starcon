@@ -46,7 +46,7 @@ impl Plugin for LobbyPlugin {
                     // current class so the wire-format value is
                     // never garbage, but the Ready toggle and the
                     // all-ready check are no-ops.
-                    .run_if(resource_exists::<bevy_ggrs::Session<crate::netplay::Config>>),
+                    .run_if(resource_exists::<crate::netcode::NetSocket>),
             );
     }
 }
@@ -74,14 +74,13 @@ fn reset_lobby_at_match_start(mut lobby: ResMut<LobbyVote>) {
 fn tick_local_class_cycle(
     keys: Res<ButtonInput<KeyCode>>,
     phase: Res<MatchPhase>,
-    local_players: Option<Res<bevy_ggrs::LocalPlayers>>,
+    local_players: Option<Res<crate::netcode::LocalHandle>>,
     mut config: ResMut<MatchConfig>,
 ) {
     if *phase != MatchPhase::PostMatch {
         return;
     }
-    let Some(local_slot) = local_players.as_ref().and_then(|lp| lp.0.first().copied())
-    else {
+    let Some(local_slot) = local_players.as_ref().map(|lh| lh.0) else {
         return;
     };
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -129,14 +128,13 @@ fn tick_local_ready_toggle(
 /// selection — that way a peer that joins mid-match still gets the
 /// correct ship.
 fn project_local_vote_into_inputs(
-    local_players: Option<Res<bevy_ggrs::LocalPlayers>>,
+    local_players: Option<Res<crate::netcode::LocalHandle>>,
     config: Res<MatchConfig>,
     lobby: Res<LobbyVote>,
     phase: Res<MatchPhase>,
     mut slot_inputs: ResMut<SlotInputs>,
 ) {
-    let Some(local_slot) = local_players.as_ref().and_then(|lp| lp.0.first().copied())
-    else {
+    let Some(local_slot) = local_players.as_ref().map(|lh| lh.0) else {
         return;
     };
     if let Some(slot_cfg) = config.slots.get(local_slot) {

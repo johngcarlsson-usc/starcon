@@ -794,13 +794,15 @@ pub struct PointDefenseActive {
 /// because two of these markers were inserted together), don't
 /// re-insert.
 fn auto_add_rollback(
-    mut world: bevy::ecs::world::DeferredWorld,
-    ctx: bevy::ecs::lifecycle::HookContext,
+    _world: bevy::ecs::world::DeferredWorld,
+    _ctx: bevy::ecs::lifecycle::HookContext,
 ) {
-    if world.get::<bevy_ggrs::Rollback>(ctx.entity).is_some() {
-        return;
-    }
-    world.commands().entity(ctx.entity).try_insert(bevy_ggrs::Rollback);
+    // No-op. Used to attach `bevy_ggrs::Rollback` for snapshotting.
+    // After the host/guest refactor there's no rollback to snapshot
+    // INTO, so the hook is left as a stub purely so the
+    // `#[component(on_add = auto_add_rollback)]` attributes scattered
+    // across this file keep compiling. Remove once those attrs are
+    // cleaned up.
 }
 
 /// In-flight projectile. Owner is tracked so we can ignore self-hits.
@@ -854,13 +856,9 @@ fn projectile_on_add(
         .and_then(|e| world.get::<Ship>(e).map(|s| s.player_slot))
         .unwrap_or(0);
     let layers = projectile_layers(slot);
-    let need_rb = world.get::<bevy_ggrs::Rollback>(ctx.entity).is_none();
     let need_layers = world.get::<CollisionLayers>(ctx.entity).is_none();
     let mut commands = world.commands();
     let mut ec = commands.entity(ctx.entity);
-    if need_rb {
-        ec.try_insert(bevy_ggrs::Rollback);
-    }
     if need_layers {
         ec.try_insert(layers);
     }
@@ -1221,7 +1219,7 @@ impl Plugin for ShipPlugin {
         // groups (the order across groups is unconstrained, but each
         // system inside this plugin is independent so that's fine).
         app.add_systems(
-            bevy_ggrs::GgrsSchedule,
+            FixedUpdate,
             (
                 process_mode_toggle_requests,
                 tick_ship_modes,
@@ -1251,7 +1249,7 @@ impl Plugin for ShipPlugin {
         // gameplay-schedule set. The .after dependency is what
         // lets it override the leader's player input on the clones.
         app.add_systems(
-            bevy_ggrs::GgrsSchedule,
+            FixedUpdate,
             crate::ultimate::tick_pkunk_aggressive_clones
                 .after(apply_player_input),
         );
@@ -1265,7 +1263,7 @@ impl Plugin for ShipPlugin {
         // the persistent half as a steady DPS while the ship is in the
         // planet's CollidingEntities set.
         app.add_systems(
-            bevy_ggrs::GgrsSchedule,
+            FixedUpdate,
             (
                 apply_planet_gravity.before(cap_velocity),
                 tick_planet_contact,
@@ -1278,7 +1276,7 @@ impl Plugin for ShipPlugin {
         // drift similarly overrides thrust/rotation on rising-edge of
         // thrust to flip the probe 180°.
         app.add_systems(
-            bevy_ggrs::GgrsSchedule,
+            FixedUpdate,
             (
                 tick_orz_turret.after(apply_player_input),
                 tick_slylandro_drift.after(apply_player_input),
@@ -1286,7 +1284,7 @@ impl Plugin for ShipPlugin {
             ),
         );
         app.add_systems(
-            bevy_ggrs::GgrsSchedule,
+            FixedUpdate,
             (
                 tick_damage_to_battery,
                 tick_sub_entities,
@@ -1492,7 +1490,7 @@ fn class_picker_input(
     mut config: ResMut<MatchConfig>,
     mut next_state: ResMut<NextState<crate::AppState>>,
     current_state: Res<State<crate::AppState>>,
-    session: Option<Res<bevy_ggrs::Session<crate::netplay::Config>>>,
+    session: Option<Res<crate::netcode::NetSocket>>,
 ) {
     // Online: classes are negotiated in the lobby, not via hotkeys.
     // Bail before reading any keys so a stray Tab can't damage the
@@ -1802,8 +1800,8 @@ fn spawn_ship(
     let mut entity = commands.spawn((gameplay, visual, physics));
     // Rollback marker: bevy_ggrs only snapshots / restores
     // entities tagged with this. Ships are the primary gameplay
-    // entity, so they're always tagged.
-    entity.insert(bevy_ggrs::Rollback);
+    // (Used to insert `bevy_ggrs::Rollback` here for the rollback
+    // snapshot set. The host/guest refactor doesn't need it.)
     // Attach the data-driven ability manifest. Every class has one
     // today; the dispatcher in `src/ability.rs` reads it and produces
     // the right ECS spawns.
@@ -3436,7 +3434,7 @@ pub(crate) fn apply_player_input(
 fn cycle_angular_override(
     keys: Res<ButtonInput<KeyCode>>,
     mut override_mode: ResMut<AngularControlOverride>,
-    session: Option<Res<bevy_ggrs::Session<crate::netplay::Config>>>,
+    session: Option<Res<crate::netcode::NetSocket>>,
 ) {
     // Bail in netplay: local KeyM mutates `AngularControlOverride`,
     // which `apply_player_input` (GgrsSchedule) reads. Without a
@@ -7503,7 +7501,6 @@ pub fn spawn_asteroids(
         let ang_vel = rng.signed_unit() * 0.3;
         commands.spawn((
             Asteroid,
-            bevy_ggrs::Rollback,
             Sprite {
                 image: assets.load(sprite_path),
                 color: Color::WHITE,
@@ -8075,7 +8072,6 @@ fn replenish_asteroids(
     let ang_vel = rng.signed_unit() * 0.3;
     commands.spawn((
         Asteroid,
-        bevy_ggrs::Rollback,
         Sprite {
             image: assets.load(sprite_path),
             color: Color::WHITE,

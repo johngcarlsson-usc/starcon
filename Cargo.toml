@@ -31,13 +31,14 @@ bevy = { version = "0.18", default-features = false, features = [
     "webgl2",
     "default_font",
 ] }
-bevy_ggrs = "0.21"
+# `matchbox_socket` is our WebRTC transport for netplay. The `ggrs`
+# feature isn't needed anymore (we dropped bevy_ggrs in the
+# authoritative-host refactor — see NETCODE_REFACTOR.md) but leaving
+# the feature on costs nothing and keeps the door open if we ever
+# want to re-add rollback alongside the host/guest model.
 bevy_matchbox = { version = "0.14", features = ["ggrs"] }
-ggrs = "0.12"
-# Needed by the GgrsChannelAdapter in netplay.rs: matchbox_socket
-# 0.14 ships a ggrs-0.11 NonBlockingSocket impl on WebRtcChannel,
-# but bevy_ggrs 0.21 needs the ggrs-0.12 trait. We re-do the
-# serde<->packet bridge ourselves over matchbox's raw bytes.
+# bincode 2 with serde feature: encodes `netcode::NetMessage` for
+# the host/guest wire format.
 bincode = { version = "2", features = ["serde"] }
 # 2D physics. `parallel` is disabled so physics runs single-threaded — needed
 # for cross-machine determinism under GGRS rollback (M4).

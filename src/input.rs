@@ -380,7 +380,7 @@ impl Plugin for InputPlugin {
             // every rollback frame with the (predicted) inputs
             // for that frame.
             .add_systems(
-                bevy_ggrs::GgrsSchedule,
+                FixedUpdate,
                 gather_slot_inputs.in_set(SlotInputProducerSet),
             );
     }
@@ -411,15 +411,13 @@ pub fn gather_slot_inputs(
     keys: Res<ButtonInput<KeyCode>>,
     virt: Res<VirtualInput>,
     net: Res<NetInputs>,
-    local_players: Option<Res<bevy_ggrs::LocalPlayers>>,
-    session: Option<Res<bevy_ggrs::Session<crate::netplay::Config>>>,
+    local_players: Option<Res<crate::netcode::LocalHandle>>,
+    session: Option<Res<crate::netcode::NetSocket>>,
     config: Res<crate::ship::MatchConfig>,
     mut slot_inputs: ResMut<SlotInputs>,
 ) {
     let online = session.is_some();
-    let local_handle = local_players
-        .as_ref()
-        .and_then(|lp| lp.0.first().copied());
+    let local_handle = local_players.as_ref().map(|lh| lh.0);
 
     let n = config.slot_count().min(4);
     for slot in 0..n {

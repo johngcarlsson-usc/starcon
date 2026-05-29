@@ -181,6 +181,13 @@ pub struct LobbySlot {
     pub ready: bool,
 }
 
+/// Which slot the local peer owns. Replaces `bevy_ggrs::LocalPlayers`
+/// post-refactor. `0` is the default — it's also the slot the lone
+/// peer in a solo / hotseat game is on, so the default is harmless
+/// when this resource hasn't been written by the netplay handshake.
+#[derive(Resource, Debug, Default, Clone, Copy)]
+pub struct LocalHandle(pub usize);
+
 /// Owns the second matchbox channel (the one NOT given to GGRS) for
 /// authoritative-host traffic: input forwarding, state snapshots,
 /// lobby votes. Inserted by `netplay::start_p2p_session` after
