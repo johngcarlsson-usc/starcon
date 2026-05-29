@@ -4,6 +4,7 @@ mod audio;
 mod collider;
 mod hud;
 mod lobby;
+mod netcode;
 mod indicator;
 mod input;
 mod menu;
@@ -89,6 +90,7 @@ fn main() {
             indicator::IndicatorPlugin,
             audio::AudioPlugin,
             lobby::LobbyPlugin,
+            netcode::NetcodePlugin,
         ))
         .init_resource::<ship::PreloadedAssets>()
         .add_systems(Startup, (setup_camera, ship::preload_all_assets))
