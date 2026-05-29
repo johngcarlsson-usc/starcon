@@ -478,12 +478,55 @@ impl Plugin for NetplayPlugin {
             .rollback_component_with_copy::<crate::ship::Battery>()
             .rollback_component_with_copy::<crate::ship::WeaponCooldown>()
             .rollback_component_with_copy::<crate::ship::SpecialCooldown>()
+            // ---- Gameplay components mutated every tick in GgrsSchedule ----
+            //
+            // Anything that GgrsSchedule writes to MUST be snapshotted,
+            // or rollback restores the registered state and the
+            // re-simulation double-applies the mutation. The classic
+            // example: `Projectile.lifetime -= dt` each frame. Without
+            // rollback the value drifts faster than wall-clock, the
+            // projectile dies early on one peer and not the other, and
+            // damage applications diverge. Same shape for shields,
+            // beams, sub-entity timers, AI tactical state, and so on.
+            .rollback_component_with_clone::<crate::ship::Projectile>()
+            .rollback_component_with_clone::<crate::ship::Beam>()
+            .rollback_component_with_clone::<crate::ship::Homing>()
+            .rollback_component_with_clone::<crate::ship::Limpet>()
+            .rollback_component_with_clone::<crate::ship::DamageZone>()
+            .rollback_component_with_clone::<crate::ship::AttachedDamageZone>()
+            .rollback_component_with_clone::<crate::ship::ShieldActive>()
+            .rollback_component_with_clone::<crate::ship::DamageToBattery>()
+            .rollback_component_with_clone::<crate::ship::PointDefenseActive>()
+            .rollback_component_with_clone::<crate::ship::TractorBeam>()
+            .rollback_component_with_clone::<crate::ship::SubEntity>()
+            .rollback_component_with_clone::<crate::ship::SubEntityAi>()
+            .rollback_component_with_clone::<crate::ship::Invisible>()
+            .rollback_component_with_clone::<crate::ship::AlaryTorpedo>()
+            .rollback_component_with_clone::<crate::ship::Asteroid>()
+            .rollback_component_with_clone::<crate::ship::Planet>()
+            .rollback_component_with_clone::<crate::ship::KohrAhBladeCarrier>()
+            .rollback_component_with_clone::<crate::ship::KohrAhBladePassive>()
+            .rollback_component_with_clone::<crate::ship::OrzTurret>()
+            .rollback_component_with_clone::<crate::ship::OrzMarineBoarded>()
+            .rollback_component_with_clone::<crate::ship::SlylandroDrift>()
+            .rollback_component_with_clone::<crate::ship::MeltrChargeState>()
+            .rollback_component_with_clone::<crate::ship::ShofixtiGlory>()
+            .rollback_component_with_clone::<crate::ship::CrystalCarrier>()
+            .rollback_component_with_clone::<crate::ship::ChmmrSatellite>()
+            .rollback_component_with_clone::<crate::ship::MyconPlasmaPulse>()
+            .rollback_component_with_clone::<crate::ai::AiControlled>()
+            .rollback_component_with_clone::<crate::ai::AiBrain>()
             // ---- Rollback resources ----
             //
             // GameRng owns the per-match deterministic stream;
             // it MUST be snapshot/restored on rollback or peers
             // will diverge after the first re-simulation.
             .rollback_resource_with_clone::<crate::rng::GameRng>()
+            // MatchPhase + MatchOutcome are now mutated by death/winner
+            // detection running in GgrsSchedule, so they get the same
+            // treatment as GameRng.
+            .rollback_resource_with_clone::<crate::hud::MatchPhase>()
+            .rollback_resource_with_clone::<crate::hud::MatchOutcome>()
             .init_resource::<LobbyRequest>()
             .init_resource::<LobbyState>()
             .init_resource::<SignalingOverride>()

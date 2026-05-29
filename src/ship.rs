@@ -758,7 +758,7 @@ impl ShipPhysicsDerived {
 
 /// While present, the ship takes reduced damage from projectiles and rams.
 /// Timer decrements every FixedUpdate; the component is removed on expiry.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct ShieldActive {
     pub remaining: f32,
     /// Multiplier on incoming damage (0.0 = invulnerable, 1.0 = none).
@@ -771,7 +771,7 @@ pub struct ShieldActive {
 /// says Range=5 → 200 world units, Damage=1 per frame for Frames=100
 /// frames at 20 Hz ≈ 5 s. We use a shorter `remaining` and rely on
 /// `damage_per_tick` ticking at FixedUpdate rate.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct PointDefenseActive {
     pub remaining: f32,
     pub range: f32,
@@ -808,7 +808,7 @@ fn auto_add_rollback(
 /// the projectile's state participates in rollback snapshots
 /// without having to remember to add the marker at every spawn
 /// site.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 #[component(on_add = projectile_on_add)]
 pub struct Projectile {
     pub owner: Entity,
@@ -874,7 +874,7 @@ fn projectile_on_add(
 /// `target` is cached across ticks for stability and zeroed out if the
 /// targeted entity is despawned (the ship was destroyed); the next tick
 /// re-acquires the nearest survivor.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct Homing {
     pub target: Option<Entity>,
     /// Max rad/sec the projectile can re-aim. Comes from a VolleySpec
@@ -892,7 +892,7 @@ pub struct Homing {
 /// inside `radius` whose entity ≠ `source`. Set `source = None` for
 /// "no friendly fire exemption" (Glory Device kills the firer too).
 /// `lifetime` decrements every tick; on expiry the zone despawns.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 #[component(on_add = auto_add_rollback)]
 pub struct DamageZone {
     pub radius: f32,
@@ -961,7 +961,7 @@ pub(crate) fn spawn_damage_zone(
 ///
 /// Friendly-fire immunity is automatic (owner is never damaged by its
 /// own attached zone, same as `DamageZone::source = Some(owner)`).
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct AttachedDamageZone {
     pub owner: Entity,
     pub local_offset: Vec2,
@@ -1032,7 +1032,7 @@ pub struct ShipFrames {
 /// space marine (costs 1 crew, capped at MAX_MARINES). With special
 /// released, primary fires in the TURRET's facing (ship angle +
 /// `offset_rad`), not the hull's.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Debug, Default, Clone)]
 pub struct OrzTurret {
     /// Turret aim relative to the ship's facing, in radians. The
     /// `OverlaySprite::extra_angle` mirrors this each tick so the art
@@ -1059,7 +1059,7 @@ pub struct OrzTurret {
 ///       * +1/10000 chance per ms · 50 ms ≈ 0.5% per tick → marine dies.
 /// `roll_accum_s` is the 50-ms tick accumulator so the system rolls at
 /// the canonical 20 Hz cadence regardless of our actual physics rate.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 #[component(on_add = auto_add_rollback)]
 pub struct OrzMarineBoarded {
     pub host: Entity,
@@ -1072,7 +1072,7 @@ pub struct OrzMarineBoarded {
 /// changes are instant rather than gradual. `tick_slylandro_drift`
 /// detects the rising edge against `last_thrust_held` and writes the
 /// rotation/thrust override after `apply_player_input`.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Debug, Default, Clone)]
 pub struct SlylandroDrift {
     pub last_thrust_held: bool,
 }
@@ -1080,7 +1080,7 @@ pub struct SlylandroDrift {
 /// Per-ship state for Melnorme charge-and-release primary. Continuous
 /// linear interpolation of damage / scale / colour from base to max
 /// over `max_charge_s` of hold time.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Debug, Default, Clone)]
 pub struct MeltrChargeState {
     pub active: Option<Entity>,
     /// Seconds the fire key has been held since this charge started.
@@ -1109,13 +1109,13 @@ pub struct MeltrChargeState {
 /// Shofixti Glory Device arming state: the suicide blast needs three
 /// `special` presses to confirm. Presses reset if you wait too long, so
 /// a stray tap doesn't leave you primed to die.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Debug, Default, Clone)]
 pub struct ShofixtiGlory {
     pub presses: u8,
     pub since_last_s: f32,
 }
 
-#[derive(Component, Debug, Default)]
+#[derive(Component, Debug, Default, Clone)]
 pub struct CrystalCarrier {
     pub current: Option<Entity>,
     /// Rolling state mirror — same idea as `LastTurnInput`. Bevy's
@@ -1167,7 +1167,7 @@ pub struct AlaryTurrets {
 /// collisions"); when it closes within `proximity` world units of an
 /// enemy ship it despawns and spawns five homing warheads fanned at
 /// `[0, ±50°, ±75°]` off its heading.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct AlaryTorpedo {
     pub owner: Entity,
     pub proximity: f32,
@@ -3691,7 +3691,7 @@ pub struct Barrel {
 ///
 /// Generic enough for future uses: any "drag X toward me" or "push X
 /// away" mechanic is `force_per_tick` with sign and direction.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct TractorBeam {
     pub owner: Entity,
     pub local_origin: Vec2,
@@ -3759,7 +3759,7 @@ pub(crate) fn spawn_tractor(
 /// until the player either re-presses Special (toggle off) OR fires
 /// the primary weapon (which uncloaks as a side effect of the shot).
 /// So this is just a marker — no `remaining` field, no `tick_invisible`.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct Invisible;
 
 /// Per-tick state for "incoming damage tops up battery instead of
@@ -3767,7 +3767,7 @@ pub struct Invisible;
 /// handler routes `floor(damage · conversion)` to `Battery::current`
 /// (clamped to max) and zeroes the crew loss. Collisions are not
 /// affected — fortitude buffers projectile damage, not rams.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct DamageToBattery {
     pub remaining: f32,
     pub conversion: f32,
@@ -3782,7 +3782,7 @@ pub struct DamageToBattery {
 ///
 /// `auto_aim` switches the world direction each tick to point at the
 /// nearest enemy in range (Arilou's canonical auto-targeting halo).
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct Beam {
     pub owner: Entity,
     pub local_origin: Vec2,
@@ -3997,7 +3997,7 @@ fn tick_ship_modes(
 ///
 /// .ini Vuxin Special: `Slowdown = 0.5` — each hit halves the
 /// target's speed. Stacks multiplicatively across hits.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct Limpet {
     pub slowdown_factor: f32,
 }
@@ -4080,7 +4080,7 @@ fn update_overlay_sprites(
 /// Generic enough to cover four canonical mechanics by varying the AI
 /// component alone. Living off the existing Avian collision events;
 /// `handle_sub_entity_collisions` dispatches the right effect per AI.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 #[component(on_add = auto_add_rollback)]
 pub struct SubEntity {
     /// Which ship spawned this — used for friendly-fire filtering and
@@ -4097,7 +4097,7 @@ pub struct SubEntity {
 /// Behaviour variants for `SubEntity`. Carried as a separate
 /// component so it can be queried/mutated independently of the body
 /// state. New canonical mechanics extend this enum.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub enum SubEntityAi {
     /// Steer toward the nearest non-friendly ship; on contact deal
     /// `damage_on_hit` crew damage and `batt_sap` battery drain.
@@ -6894,7 +6894,7 @@ pub struct MyconPlasmaShooter;
 /// Per-projectile state for the plasma cloud animation. Set on
 /// projectile spawn by `tick_mycon_plasma_birth`; consumed each
 /// tick by `tick_mycon_plasma`.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct MyconPlasmaPulse {
     pub start_pos: Vec2,
     pub max_damage: i32,
@@ -7007,7 +7007,7 @@ pub struct NeedsChmmrSatellites;
 /// One of three satellites orbiting a Chmmr Avatar. Position is
 /// driven each tick relative to the owner; on hit it loses armour;
 /// on owner death the satellite despawns.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 #[component(on_add = auto_add_rollback)]
 pub struct ChmmrSatellite {
     pub owner: Entity,
@@ -7247,7 +7247,7 @@ fn tick_chmmr_satellites(
 
 /// Per-ship state: tracks the currently-armed blade entity and
 /// edge-detects fire press/release across FixedUpdate ticks.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Debug, Default, Clone)]
 pub struct KohrAhBladeCarrier {
     pub current: Option<Entity>,
     pub last_fire_held: bool,
@@ -7452,7 +7452,7 @@ fn tick_kohma_passive_blades(
 /// arena isn't empty space. They don't damage on contact (canon
 /// VSmallAsteroid is similar) — they're physical inertia for
 /// projectiles and ships to interact with.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 #[component(on_add = auto_add_rollback)]
 pub struct Asteroid;
 
@@ -7560,7 +7560,7 @@ pub fn spawn_asteroids(
 // ---------------------------------------------------------------------------
 
 /// Central gravity-well body. Static (never moves); pulls dynamic bodies in.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 #[component(on_add = auto_add_rollback)]
 pub struct Planet {
     /// Solid collision radius (world units).

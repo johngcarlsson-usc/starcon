@@ -49,7 +49,7 @@ pub enum MatchPhase {
 /// Per-slot match scores. Index = player_slot (0..=3). The
 /// length is fixed at 4 even when fewer players are in the
 /// match — unused slots just stay at 0.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Clone)]
 pub struct MatchOutcome {
     pub winner: Option<usize>,
     pub wins: [u32; 4],

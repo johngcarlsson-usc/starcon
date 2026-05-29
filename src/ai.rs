@@ -38,7 +38,7 @@ use crate::ship::{
 };
 
 /// Marker: this ship is driven by the AI instead of by player input.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct AiControlled;
 
 /// Global difficulty preset. `Resource` so the settings menu can swap
@@ -103,7 +103,7 @@ impl AiDifficulty {
 }
 
 /// Per-ship AI runtime state. Edge-detect, gates, retreat memory.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Debug, Default, Clone)]
 pub struct AiBrain {
     pub last_buttons: u8,
     pub special_tick_counter: u32,
