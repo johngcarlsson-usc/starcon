@@ -35,8 +35,9 @@ impl Plugin for AudioPlugin {
 
 /// Volume the combat loop ducks to while a captain's ultimate voice
 /// line is playing. Low enough to clear the speech, not so low the
-/// loop dies entirely (sudden silence would feel like a bug).
-const DUCK_VOLUME: f32 = 0.15;
+/// loop dies entirely (sudden silence would feel like a bug). User
+/// asked for ~10 %.
+const DUCK_VOLUME: f32 = 0.10;
 /// Linear lerp rate in volume-units per second. ~3.0 = ~0.3 s for a
 /// full 1.0 → 0.0 fade — slow enough to feel intentional, fast enough
 /// not to step on a one-word voice line.

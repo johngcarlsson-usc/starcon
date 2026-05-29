@@ -1384,6 +1384,16 @@ fn hyper_trigger(
     virt.pause();
     state.was_paused = true;
 
+    // Sword-schwing SFX hits the same tick the cinematic opens. Plays
+    // alongside the captain's voice line, both over the ducked combat
+    // music — `tick_music_ducking` in `audio.rs` keys off
+    // `UltimateVoicePlayer` so the schwing self-cleans without needing
+    // its own marker.
+    commands.spawn((
+        AudioPlayer::<AudioSource>(assets.load("ultimate/schwing.mp3")),
+        PlaybackSettings::DESPAWN,
+    ));
+
     // Vocal sample. `PlaybackSettings::DESPAWN` removes the
     // AudioPlayer entity when the clip finishes so we don't
     // accumulate. The Arilou variant additionally tags the
