@@ -35,6 +35,13 @@ pub const INPUT_BACKWARD: u8 = 1 << 7;
 /// `request_rematch` consumes this on EITHER peer's slot to trigger
 /// `AppState::Resetting` for both sides simultaneously.
 pub const FLAG_REMATCH: u8 = 1 << 0;
+/// Player is signalling "ready to start the next match" from the
+/// netplay post-match ship-select lobby. While held, the lobby system
+/// counts this slot as a yes-vote; the new match begins only when
+/// EVERY active human slot has `FLAG_READY` set this tick. Local
+/// toggle is on KeyR (same key as the legacy rematch — netplay shows
+/// "Ready" semantics, hotseat keeps the instant rematch).
+pub const FLAG_READY: u8 = 1 << 1;
 
 /// Holding turn-left + turn-right + backward together fires the
 /// ultimate. Deliberately NOT fire/special — pressing those would
@@ -73,13 +80,18 @@ pub struct PlayerInput {
     pub aim_y: i8,
     /// Global-state votes that need to ride through the GGRS input
     /// channel but aren't gameplay buttons. See `FLAG_*` constants
-    /// above — currently just the rematch trigger. Keeping these
-    /// separate from `buttons` means edge-detection logic and the
-    /// per-slot gameplay path don't see them, and adding new votes
-    /// later doesn't risk collisions with weapon bits. Five
-    /// 1-byte fields make `PlayerInput` `[u8; 5]` — Pod-safe with
-    /// no implicit padding under `repr(C)`.
+    /// above (rematch, ready). Keeping these separate from `buttons`
+    /// means edge-detection logic and the per-slot gameplay path
+    /// don't see them.
     pub flags: u8,
+    /// Lobby class vote — index into `ALL_CLASSES`. This is what
+    /// the local peer wants to fly NEXT match; the lobby system
+    /// reads `held[slot].class` for every slot when starting a new
+    /// match. Outside the post-match lobby this just echoes the
+    /// peer's currently-active class so the value is meaningful at
+    /// any tick. Six 1-byte fields make `PlayerInput` `[u8; 6]` —
+    /// still Pod-safe with no implicit padding under `repr(C)`.
+    pub class: u8,
 }
 
 impl PlayerInput {
@@ -143,6 +155,12 @@ impl SlotInputs {
     /// (rematch) that don't care which peer pressed.
     pub fn any_flag_just_pressed(&self, mask: u8) -> bool {
         self.just_pressed.iter().any(|i| i.flag(mask))
+    }
+    /// True iff the given slot is HOLDING the `FLAG_*` bit on its
+    /// current input. Used by the netplay lobby to detect "this peer
+    /// is ready" — Ready is a level-triggered vote, not an edge.
+    pub fn flag(&self, slot: usize, mask: u8) -> bool {
+        slot < 4 && self.held[slot].flag(mask)
     }
 }
 
@@ -263,7 +281,7 @@ pub fn read_local_input(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput
     // `AppState::Resetting` on BOTH peers simultaneously. R is global
     // — pressing it on any slot's keyboard counts.
     let flags = if keys.pressed(KeyCode::KeyR) { FLAG_REMATCH } else { 0 };
-    PlayerInput { buttons, turn, aim_x: 0, aim_y: 0, flags }
+    PlayerInput { buttons, turn, aim_x: 0, aim_y: 0, flags, class: 0 }
 }
 
 /// Same as `read_local_input` but also OR's in the virtual touch
@@ -313,7 +331,7 @@ pub fn read_local_just_pressed(keys: &ButtonInput<KeyCode>, slot: usize) -> Play
         }
     }
     let flags = if keys.just_pressed(KeyCode::KeyR) { FLAG_REMATCH } else { 0 };
-    PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0, flags }
+    PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0, flags, class: 0 }
 }
 
 pub fn read_local_just_pressed_with_virtual(
@@ -343,7 +361,7 @@ pub fn read_local_just_released(keys: &ButtonInput<KeyCode>, slot: usize) -> Pla
         }
     }
     let flags = if keys.just_released(KeyCode::KeyR) { FLAG_REMATCH } else { 0 };
-    PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0, flags }
+    PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0, flags, class: 0 }
 }
 
 pub struct InputPlugin;
@@ -435,6 +453,11 @@ pub fn gather_slot_inputs(
                         aim_x: 0,
                         aim_y: 0,
                         flags: flag_press,
+                        // `class` on edge inputs is meaningless (it's
+                        // a level-triggered vote, not a press/release
+                        // event). Keep at 0; lobby logic reads the
+                        // held `class` instead.
+                        class: 0,
                     },
                     PlayerInput {
                         buttons: edge_release,
@@ -442,6 +465,7 @@ pub fn gather_slot_inputs(
                         aim_x: 0,
                         aim_y: 0,
                         flags: flag_release,
+                        class: 0,
                     },
                 )
             }

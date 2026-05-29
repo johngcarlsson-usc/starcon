@@ -421,6 +421,29 @@ impl MatchConfig {
     }
 }
 
+/// Convert a `ShipClass` to its position in `ALL_CLASSES`. Used as the
+/// wire-format byte for the netplay lobby's class vote
+/// (`PlayerInput.class`). Returns 0 (`Earcr`) if for some reason the
+/// class isn't found — should never happen since `ALL_CLASSES` covers
+/// every variant.
+pub fn class_to_index(class: ShipClass) -> u8 {
+    ALL_CLASSES
+        .iter()
+        .position(|c| *c == class)
+        .unwrap_or(0) as u8
+}
+
+/// Inverse of `class_to_index`. An out-of-range byte (peer running a
+/// stale wire format, garbled packet, etc.) decodes to `Earcr` — the
+/// safest fallback since it's the canonical first ship and is always
+/// implemented.
+pub fn class_from_index(idx: u8) -> ShipClass {
+    ALL_CLASSES
+        .get(idx as usize)
+        .copied()
+        .unwrap_or(ShipClass::Earcr)
+}
+
 impl Default for MatchConfig {
     fn default() -> Self {
         Self::local_two(ShipClass::Earcr, ShipClass::Spael)

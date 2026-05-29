@@ -3,6 +3,7 @@ mod ai;
 mod audio;
 mod collider;
 mod hud;
+mod lobby;
 mod indicator;
 mod input;
 mod menu;
@@ -84,7 +85,11 @@ fn main() {
             rng::RngPlugin,
             settings_menu::SettingsMenuPlugin,
         ))
-        .add_plugins((indicator::IndicatorPlugin, audio::AudioPlugin))
+        .add_plugins((
+            indicator::IndicatorPlugin,
+            audio::AudioPlugin,
+            lobby::LobbyPlugin,
+        ))
         .init_resource::<ship::PreloadedAssets>()
         .add_systems(Startup, (setup_camera, ship::preload_all_assets))
         .add_systems(OnEnter(AppState::Loading), ship::load_ship_catalog)
@@ -133,15 +138,16 @@ fn resume_from_reset(
 fn request_rematch(
     slot_inputs: Res<input::SlotInputs>,
     phase: Res<hud::MatchPhase>,
+    session: Option<Res<bevy_ggrs::Session<netplay::Config>>>,
     mut next: ResMut<NextState<AppState>>,
 ) {
-    // Read the rematch vote from `SlotInputs` (synced through the
-    // GGRS input channel as `PlayerInput.flags & FLAG_REMATCH`) so
-    // either peer pressing R triggers `AppState::Resetting` on both
-    // sides simultaneously. Previously this read `KeyCode::KeyR`
-    // straight off the local `ButtonInput`, which is invisible to
-    // the remote peer — the rematch worked locally but the other
-    // tab stayed stuck on the PostMatch summary.
+    // Solo / local-hotseat instant rematch on the FLAG_REMATCH vote.
+    // In netplay the `lobby` plugin owns the post-match flow (class
+    // pick + Ready toggle) so the instant-R path must NOT fire — R
+    // is the local Ready toggle there.
+    if session.is_some() {
+        return;
+    }
     if *phase == hud::MatchPhase::PostMatch
         && slot_inputs.any_flag_just_pressed(input::FLAG_REMATCH)
     {

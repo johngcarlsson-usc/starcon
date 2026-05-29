@@ -68,13 +68,27 @@ impl Plugin for HudPlugin {
             // the app needs to add two more panels.
             .add_systems(OnEnter(crate::AppState::InMatch), setup_hud)
             .add_systems(OnExit(crate::AppState::InMatch), despawn_hud)
+            // Death + winner detection ride in `GgrsSchedule` so they
+            // tick once per confirmed GGRS frame on BOTH peers — same
+            // schedule that mutates `Crew`. In `Update` they fired at
+            // render-rate (different on each peer) with a non-rollback
+            // `commands.try_despawn` that left the ship dead even when
+            // rollback restored its `Crew>0`, so the local death felt
+            // permanent and the remote peer's later despawn produced
+            // a divergent world.
+            .add_systems(
+                bevy_ggrs::GgrsSchedule,
+                (destroy_zero_crew_ships, detect_winner)
+                    .chain()
+                    .run_if(in_state(crate::AppState::InMatch)),
+            )
+            // Pure visuals — keep in Update so the HUD stays responsive
+            // at render-rate without burdening the deterministic loop.
             .add_systems(
                 Update,
                 (
                     update_stat_labels,
                     update_bar_fills,
-                    destroy_zero_crew_ships,
-                    detect_winner,
                     update_status_banner,
                     compact_hud_for_touch,
                 )
@@ -433,6 +447,8 @@ fn update_status_banner(
     phase: Res<MatchPhase>,
     outcome: Res<MatchOutcome>,
     config: Res<crate::ship::MatchConfig>,
+    slot_inputs: Res<crate::input::SlotInputs>,
+    session: Option<Res<bevy_ggrs::Session<crate::netplay::Config>>>,
     mut q: Query<&mut Text, With<StatusBanner>>,
 ) {
     let n = config.slot_count().min(4);
@@ -447,10 +463,35 @@ fn update_status_banner(
             // middle of the screen and got in the way. The
             // post-match banner still shows the winner + score.
             MatchPhase::Live => String::new(),
-            MatchPhase::PostMatch => match outcome.winner {
-                Some(w) => format!("P{} WINS  ({})\n[R] rematch", w + 1, score_str),
-                None => format!("DRAW  ({})\n[R] rematch", score_str),
-            },
+            MatchPhase::PostMatch => {
+                let head = match outcome.winner {
+                    Some(w) => format!("P{} WINS  ({})", w + 1, score_str),
+                    None => format!("DRAW  ({})", score_str),
+                };
+                if session.is_some() {
+                    // Netplay: show the per-slot Ready vote + class
+                    // pick so each peer can see what the OTHER side
+                    // has chosen and whether they're ready.
+                    let mut lines = String::new();
+                    for (i, slot_cfg) in config.slots.iter().enumerate().take(n) {
+                        let ready = slot_inputs.flag(i, crate::input::FLAG_READY);
+                        let mark = if ready { "READY" } else { "..." };
+                        // Display class name from the live `MatchConfig`
+                        // — that's where the user-driven cycle writes.
+                        lines.push_str(&format!(
+                            "\nP{}: {:?}  {}",
+                            i + 1,
+                            slot_cfg.class,
+                            mark
+                        ));
+                    }
+                    format!(
+                        "{head}{lines}\n[Tab] change ship   [R] toggle ready"
+                    )
+                } else {
+                    format!("{head}\n[R] rematch")
+                }
+            }
         };
     }
 }

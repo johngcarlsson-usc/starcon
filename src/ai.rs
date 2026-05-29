@@ -668,6 +668,9 @@ fn write_input(slot_inputs: &mut SlotInputs, slot: usize, brain: &mut AiBrain, b
         aim_x: 0,
         aim_y: 0,
         flags: 0,
+        // AI doesn't participate in the lobby — keep class at 0.
+        // The lobby system only looks at human slots' votes.
+        class: 0,
     };
     slot_inputs.just_pressed[slot] = PlayerInput {
         buttons: pressed,
@@ -675,6 +678,7 @@ fn write_input(slot_inputs: &mut SlotInputs, slot: usize, brain: &mut AiBrain, b
         aim_x: 0,
         aim_y: 0,
         flags: 0,
+        class: 0,
     };
     slot_inputs.just_released[slot] = PlayerInput {
         buttons: released,
@@ -682,6 +686,7 @@ fn write_input(slot_inputs: &mut SlotInputs, slot: usize, brain: &mut AiBrain, b
         aim_x: 0,
         aim_y: 0,
         flags: 0,
+        class: 0,
     };
     brain.last_buttons = bits;
 }
