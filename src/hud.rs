@@ -471,17 +471,25 @@ fn update_status_banner(
                 if session.is_some() {
                     // Netplay: show the per-slot Ready vote + class
                     // pick so each peer can see what the OTHER side
-                    // has chosen and whether they're ready.
+                    // has chosen and whether they're ready. The class
+                    // index must be read from `SlotInputs` (the
+                    // GGRS-synced source) not `MatchConfig` — the
+                    // local peer's Tab cycle updates `MatchConfig`
+                    // locally, but the REMOTE peer's Tab presses only
+                    // arrive through `SlotInputs.held[remote].class`.
+                    // `MatchConfig` is the post-match-restart target,
+                    // not the live picker view.
                     let mut lines = String::new();
-                    for (i, slot_cfg) in config.slots.iter().enumerate().take(n) {
+                    for (i, _) in config.slots.iter().enumerate().take(n) {
                         let ready = slot_inputs.flag(i, crate::input::FLAG_READY);
                         let mark = if ready { "READY" } else { "..." };
-                        // Display class name from the live `MatchConfig`
-                        // — that's where the user-driven cycle writes.
+                        let class = crate::ship::class_from_index(
+                            slot_inputs.held[i].class,
+                        );
                         lines.push_str(&format!(
                             "\nP{}: {:?}  {}",
                             i + 1,
-                            slot_cfg.class,
+                            class,
                             mark
                         ));
                     }

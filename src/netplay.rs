@@ -1054,12 +1054,31 @@ fn read_local_inputs(
     keys: Res<ButtonInput<KeyCode>>,
     virt: Res<crate::input::VirtualInput>,
     local_players: Option<Res<LocalPlayers>>,
+    // Lobby state needs to ride on the GGRS wire too, not just into
+    // local `SlotInputs`. Without this, the local peer's class pick
+    // and Ready toggle never reach the remote peer.
+    config: Option<Res<crate::ship::MatchConfig>>,
+    lobby: Option<Res<crate::lobby::LobbyVote>>,
+    phase: Option<Res<crate::hud::MatchPhase>>,
 ) {
     let Some(local_players) = local_players else {
         return;
     };
     let mut map = bevy::platform::collections::HashMap::default();
-    let input = crate::input::read_local_input_with_virtual(&keys, Some(&virt), 0);
+    let mut input = crate::input::read_local_input_with_virtual(&keys, Some(&virt), 0);
+    // Stuff the lobby vote into the input that GGRS will ship.
+    if let (Some(config), Some(local_slot)) =
+        (config.as_ref(), local_players.0.first().copied())
+    {
+        if let Some(slot_cfg) = config.slots.get(local_slot) {
+            input.class = crate::ship::class_to_index(slot_cfg.class);
+        }
+    }
+    let in_post_match =
+        phase.as_ref().map(|p| **p == crate::hud::MatchPhase::PostMatch).unwrap_or(false);
+    if in_post_match && lobby.as_ref().map(|l| l.ready).unwrap_or(false) {
+        input.flags |= crate::input::FLAG_READY;
+    }
     for handle in &local_players.0 {
         map.insert(*handle, input);
     }
