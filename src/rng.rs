@@ -97,7 +97,18 @@ impl Plugin for RngPlugin {
             // sequence is reproducible from the seed. The seed
             // itself can be mutated by the netplay handshake
             // (or by tests) before entering InMatch.
-            .add_systems(OnEnter(crate::AppState::InMatch), reseed_for_match);
+            //
+            // **Must** run before `ship::spawn_match` — that's the
+            // first consumer of the per-match RNG (planet quadrant
+            // + jitter, asteroid placements). Without an explicit
+            // `.before(spawn_match)`, Bevy is free to schedule
+            // `reseed_for_match` either side of `spawn_match`, and
+            // when it runs after, every peer's planet draws from
+            // stale RNG state — desync.
+            .add_systems(
+                OnEnter(crate::AppState::InMatch),
+                reseed_for_match.before(crate::ship::spawn_match),
+            );
     }
 }
 
