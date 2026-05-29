@@ -411,6 +411,25 @@ pub enum UltimateVariant {
     /// (visual + collider). One-time only — once grown, the
     /// ultimate can't double it again.
     Alary,
+    // ---- Cinematic-only placeholders ----
+    // Each of these maps to a unique class so the schwing + voice +
+    // (eventually) portrait swap is class-specific, but the actual
+    // gameplay payoff is just the zoom-in → zoom-out → brief
+    // `GenericFlourish` finale — no new spawns, no damage, no state
+    // changes. Safe to ship while the real per-ship cinematics get
+    // designed. Mapped via `variant_for_class` and run through
+    // `UltimatePhase::GenericFlourish` for the post-zoom-out beat.
+    KzerZa,
+    Ilwrath,
+    Vux,
+    Supox,
+    Syreen,
+    Androsynth,
+    Utwig,
+    ZoqFotPik,
+    Orz,
+    Umgah,
+    Melnorme,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -549,6 +568,14 @@ pub enum UltimatePhase {
     /// `AlaryDoubled` marker is stamped so it can never grow
     /// again. The 2× scale is permanent (not restored on exit).
     AlaryGrowing,
+    /// Unpaused. Cinematic-only finale shared by the placeholder
+    /// variants (`KzerZa`, `Ilwrath`, `Vux`, `Supox`, `Syreen`,
+    /// `Androsynth`, `Utwig`, `ZoqFotPik`, `Orz`, `Umgah`,
+    /// `Melnorme`). No spawns, no damage — the portrait has
+    /// already faded out at the end of zoom-out, so this is just
+    /// a short tail where time has resumed and the cinematic
+    /// settles back into normal play before exiting.
+    GenericFlourish,
 }
 
 /// True only for the two dramatic beats where the cinematic owns the
@@ -1036,6 +1063,12 @@ const ALARY_GROW_S: f32 = 0.8;
 /// Final scale multiplier (one-time, permanent).
 const ALARY_GROW_FACTOR: f32 = 2.0;
 
+/// Duration of the `GenericFlourish` placeholder finale. Long enough
+/// that the schwing + voice + zoom-out feel like a complete beat,
+/// short enough that nothing of consequence happens while time is
+/// running before the cinematic exits.
+const GENERIC_FLOURISH_S: f32 = 0.6;
+
 fn portrait_path(variant: UltimateVariant) -> &'static str {
     match variant {
         UltimateVariant::Earthling => "ultimate/portrait_earcr.png",
@@ -1048,6 +1081,17 @@ fn portrait_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Mmrnmhrm => "ultimate/portrait_mmrxf.png",
         UltimateVariant::Chmmr => "ultimate/portrait_chmav.png",
         UltimateVariant::Alary => "ultimate/portrait_alabc.png",
+        UltimateVariant::KzerZa => "ultimate/portrait_kzedr.png",
+        UltimateVariant::Ilwrath => "ultimate/portrait_ilwav.png",
+        UltimateVariant::Vux => "ultimate/portrait_vuxin.png",
+        UltimateVariant::Supox => "ultimate/portrait_supbl.png",
+        UltimateVariant::Syreen => "ultimate/portrait_syrpe.png",
+        UltimateVariant::Androsynth => "ultimate/portrait_andgu.png",
+        UltimateVariant::Utwig => "ultimate/portrait_utwju.png",
+        UltimateVariant::ZoqFotPik => "ultimate/portrait_zfpst.png",
+        UltimateVariant::Orz => "ultimate/portrait_orzne.png",
+        UltimateVariant::Umgah => "ultimate/portrait_umgdr.png",
+        UltimateVariant::Melnorme => "ultimate/portrait_meltr.png",
         _ => "ultimate/portrait_arisk.png",
     }
 }
@@ -1068,6 +1112,17 @@ fn voice_path(variant: UltimateVariant) -> &'static str {
         UltimateVariant::Mmrnmhrm => "ultimate/mmrxf_voi.wav",
         UltimateVariant::Chmmr => "ultimate/chmav_voi.wav",
         UltimateVariant::Alary => "ultimate/alabc_voi.wav",
+        UltimateVariant::KzerZa => "ultimate/kzedr_voi.wav",
+        UltimateVariant::Ilwrath => "ultimate/ilwav_voi.wav",
+        UltimateVariant::Vux => "ultimate/vuxin_voi.wav",
+        UltimateVariant::Supox => "ultimate/supbl_voi.wav",
+        UltimateVariant::Syreen => "ultimate/syrpe_voi.wav",
+        UltimateVariant::Androsynth => "ultimate/andgu_voi.wav",
+        UltimateVariant::Utwig => "ultimate/utwju_voi.wav",
+        UltimateVariant::ZoqFotPik => "ultimate/zfpst_voi.wav",
+        UltimateVariant::Orz => "ultimate/orzne_voi.wav",
+        UltimateVariant::Umgah => "ultimate/umgdr_voi.wav",
+        UltimateVariant::Melnorme => "ultimate/meltr_voi.wav",
         _ => "ultimate/arisk_voi.wav",
     }
 }
@@ -1088,7 +1143,22 @@ fn variant_for_class(class: ShipClass) -> UltimateVariant {
         ShipClass::Thrto => UltimateVariant::Thraddash,
         ShipClass::Chmav => UltimateVariant::Chmmr,
         ShipClass::Alabc => UltimateVariant::Alary,
-        _ => UltimateVariant::Arilou,
+        // Cinematic-only placeholders. Each gets its own variant so
+        // portrait + voice + schwing are class-specific, and the
+        // `GenericFlourish` finale keeps the cinematic harmless.
+        ShipClass::Kzedr => UltimateVariant::KzerZa,
+        ShipClass::Ilwav => UltimateVariant::Ilwrath,
+        ShipClass::Vuxin => UltimateVariant::Vux,
+        ShipClass::Supbl => UltimateVariant::Supox,
+        ShipClass::Syrpe => UltimateVariant::Syreen,
+        ShipClass::Andgu => UltimateVariant::Androsynth,
+        ShipClass::Utwju => UltimateVariant::Utwig,
+        ShipClass::Zfpst => UltimateVariant::ZoqFotPik,
+        ShipClass::Orzne => UltimateVariant::Orz,
+        ShipClass::Umgdr => UltimateVariant::Umgah,
+        ShipClass::Meltr => UltimateVariant::Melnorme,
+        // Arilou is the original fallback; keep it explicit.
+        ShipClass::Arisk => UltimateVariant::Arilou,
     }
 }
 
@@ -1377,7 +1447,22 @@ fn hyper_trigger(
         | UltimateVariant::Thraddash
         | UltimateVariant::Chmmr
         | UltimateVariant::Alary
-        | UltimateVariant::None => {}
+        | UltimateVariant::KzerZa
+        | UltimateVariant::Ilwrath
+        | UltimateVariant::Vux
+        | UltimateVariant::Supox
+        | UltimateVariant::Syreen
+        | UltimateVariant::Androsynth
+        | UltimateVariant::Utwig
+        | UltimateVariant::ZoqFotPik
+        | UltimateVariant::Orz
+        | UltimateVariant::Umgah
+        | UltimateVariant::Melnorme
+        | UltimateVariant::None => {
+            // Placeholder variants have no per-prep setup — they
+            // own the cinematic shell only. Real-mechanic variants
+            // above spawn their effect entities here.
+        }
     }
 
     // Pause everything else.
@@ -1555,6 +1640,12 @@ fn tick_ultimate_phases(
                 (CHMMR_VOLLEY_S, 1.0 - p, false, 0.0, false)
             }
             UltimatePhase::AlaryGrowing => (ALARY_GROW_S, 1.0, false, 0.0, true),
+            UltimatePhase::GenericFlourish => {
+                // Time has resumed; portrait already faded out by
+                // zoom-out. Nothing to animate — just hold the
+                // beat for `GENERIC_FLOURISH_S` then exit cleanly.
+                (GENERIC_FLOURISH_S, 0.0, false, 0.0, false)
+            }
             UltimatePhase::Idle => unreachable!(),
         };
 
@@ -1704,6 +1795,24 @@ fn tick_ultimate_phases(
             (UltimatePhase::DramaticZoomOut, UltimateVariant::Alary) => {
                 UltimatePhase::AlaryGrowing
             }
+            // Placeholder variants: hand off to the shared
+            // cinematic-only finale. No new mechanics — they exist
+            // for the per-class voice + portrait + schwing identity
+            // while the real per-ship cinematics get designed.
+            (
+                UltimatePhase::DramaticZoomOut,
+                UltimateVariant::KzerZa
+                | UltimateVariant::Ilwrath
+                | UltimateVariant::Vux
+                | UltimateVariant::Supox
+                | UltimateVariant::Syreen
+                | UltimateVariant::Androsynth
+                | UltimateVariant::Utwig
+                | UltimateVariant::ZoqFotPik
+                | UltimateVariant::Orz
+                | UltimateVariant::Umgah
+                | UltimateVariant::Melnorme,
+            ) => UltimatePhase::GenericFlourish,
             // Final phases: exit.
             (UltimatePhase::ArilouUnleashing, _)
             | (UltimatePhase::EarthlingBlasting, _)
@@ -1719,7 +1828,8 @@ fn tick_ultimate_phases(
             | (UltimatePhase::MyconHurricane, _)
             | (UltimatePhase::ThraddashBurning, _)
             | (UltimatePhase::ChmmrVolley, _)
-            | (UltimatePhase::AlaryGrowing, _) => {
+            | (UltimatePhase::AlaryGrowing, _)
+            | (UltimatePhase::GenericFlourish, _) => {
                 exit_cinematic(&mut state, &mut commands, &mut virt, &mut zoom_state);
                 return;
             }
