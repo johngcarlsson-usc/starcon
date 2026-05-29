@@ -366,6 +366,20 @@ fn dispatch_primary(
         };
         apply_kind(&mut ctx, &abilities.primary.kind);
         cd.0 = abilities.primary.cooldown_s;
+        // Canon weapon SFX. `mshpdata.cpp` loads `sampleWeapon[]`
+        // from the ship's `.dat`; `wave_a01.wav` is sampleWeapon[0]
+        // (the primary fire sound). Mmrnmhrm's X-form uses
+        // sampleWeapon[1] = wave_a02.wav while the ultimate's
+        // alternate body is active.
+        let primary_sfx = if mmrxf_active.is_some() {
+            format!("ships/{}/sounds/wave_a02.wav", ship.stats.code)
+        } else {
+            format!("ships/{}/sounds/wave_a01.wav", ship.stats.code)
+        };
+        commands.spawn((
+            AudioPlayer::<AudioSource>(assets.load(primary_sfx)),
+            PlaybackSettings::DESPAWN,
+        ));
     }
 }
 
@@ -463,6 +477,22 @@ fn dispatch_special(
         };
         apply_kind(&mut ctx, &abilities.special.kind);
         cd.0 = abilities.special.cooldown_s;
+        // Canon special SFX. sampleSpecial[0] = wave_b01.wav for
+        // every ship. Pkunk is the only canon ship with multiple
+        // sampleSpecial entries (the 14 taunt clips); pick one
+        // determinism-style via the seeded RNG so peers agree on
+        // which line plays.
+        let special_sfx = if ship.stats.code == "pkufu" {
+            // 14 Pkunk taunt clips, wave_b01.wav .. wave_b14.wav.
+            let idx = rng.usize_range(1..15);
+            format!("ships/pkufu/sounds/wave_b{:02}.wav", idx)
+        } else {
+            format!("ships/{}/sounds/wave_b01.wav", ship.stats.code)
+        };
+        commands.spawn((
+            AudioPlayer::<AudioSource>(assets.load(special_sfx)),
+            PlaybackSettings::DESPAWN,
+        ));
     }
 }
 
