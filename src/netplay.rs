@@ -411,7 +411,16 @@ impl Plugin for NetplayPlugin {
             .init_resource::<IceOverride>()
             .add_systems(Startup, capture_signal_override)
             .add_systems(OnEnter(AppState::LobbyOnline), (reset_lobby, spawn_lobby_ui))
-            .add_systems(OnExit(AppState::LobbyOnline), (despawn_lobby_ui, drop_socket))
+            .add_systems(OnExit(AppState::LobbyOnline), despawn_lobby_ui)
+            // The matchbox socket has to outlive `LobbyOnline` —
+            // `take_channel(0)` hands us a `WebRtcChannel` whose
+            // underlying WebRTC peer connection is owned by the
+            // `MatchboxSocket` runtime. Dropping the socket tears
+            // down that runtime and the channel goes Disconnected,
+            // which panics the next `channel.send()` call. So we
+            // hold onto the socket through `InMatch` and only drop
+            // it on the way back to `MainMenu`.
+            .add_systems(OnEnter(AppState::MainMenu), drop_socket)
             .add_systems(
                 Update,
                 (
@@ -725,10 +734,19 @@ fn update_setup_visibility(
     }
 }
 
-/// Drop the matchbox socket when we leave the lobby — either
-/// because we transitioned into InMatch (success) or backed out
-/// to the main menu. Removes the WebRTC channels cleanly.
+/// Drop the matchbox socket + all derived netcode resources when
+/// we land back on the main menu. We deliberately do NOT do this on
+/// `OnExit(LobbyOnline)` — the `NetSocket.channel` we extract from
+/// the socket via `take_channel(0)` keeps its WebRTC peer connection
+/// alive via the `MatchboxSocket` runtime, so dropping the socket
+/// while a match is running disconnects the channel and panics the
+/// next `channel.send()`. By the time we're back at `MainMenu` we're
+/// genuinely done with that peer connection, so the cleanup is safe.
 fn drop_socket(mut commands: Commands, mut state: ResMut<LobbyState>) {
+    commands.remove_resource::<crate::netcode::NetSocket>();
+    commands.remove_resource::<crate::netcode::LocalHandle>();
+    commands.remove_resource::<crate::netcode::NetRole>();
+    commands.remove_resource::<crate::netcode::NetIdAllocator>();
     commands.remove_resource::<MatchboxSocket>();
     state.status = LobbyStatus::Setup;
     state.connected = 0;
