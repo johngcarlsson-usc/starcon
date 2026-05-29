@@ -421,6 +421,10 @@ fn dispatch_special(
         Option<&crate::ultimate::PkunkClone>,
         Option<&Invisible>,
     )>,
+    // Used to enforce per-ship sub-entity caps (canonical Chenjesu
+    // MAX_DOGIS=4 from `shpchebr.cpp:67`). Read-only; we just count
+    // entries whose `owner == this_ship`.
+    subs: Query<&crate::ship::SubEntity>,
 ) {
     for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active, pkunk_clone, invisible) in &mut q {
         // Mmrnmhrm ultimate replaces the special with the split
@@ -472,6 +476,18 @@ fn dispatch_special(
         };
         if !triggered {
             continue;
+        }
+        // Canon Chenjesu DOGI cap. `shpchebr.cpp:67`:
+        //     if (specialNumDOGIs >= MAX_DOGIS) return FALSE;
+        // where MAX_DOGIS = 4. Without this you can fill the arena
+        // with DOGIs as soon as your battery refills, since
+        // SpecialRate=0 lets the special fire every frame.
+        if ship.stats.code == "chebr" {
+            const MAX_DOGIS: usize = 4;
+            let active = subs.iter().filter(|s| s.owner == entity).count();
+            if active >= MAX_DOGIS {
+                continue;
+            }
         }
         // Recharge specials (AddBattery, e.g. the Pkunk taunt) are never
         // battery-gated and never drain — otherwise they'd be unusable at
