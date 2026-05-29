@@ -36,18 +36,22 @@ impl Plugin for LobbyPlugin {
                 (
                     tick_local_class_cycle,
                     tick_local_ready_toggle,
-                    project_local_vote_into_inputs,
                     detect_all_ready,
                 )
                     .chain()
                     .run_if(in_state(AppState::InMatch))
-                    // Only meaningful during the PostMatch summary;
-                    // outside of that we project the local peer's
-                    // current class so the wire-format value is
-                    // never garbage, but the Ready toggle and the
-                    // all-ready check are no-ops.
                     .run_if(resource_exists::<crate::netcode::NetSocket>),
             );
+        // `project_local_vote_into_inputs` is gone. `push_local_input_to_netinputs`
+        // (netcode plugin, FixedUpdate) packs MatchConfig.class + the
+        // Ready flag into `NetInputs.current[local_slot]` every tick,
+        // which `gather_slot_inputs` then copies into `SlotInputs.held`.
+        // Running both wrote the same value through two different
+        // schedules; the in-Update projection raced the FixedUpdate
+        // gather and flickered the HUD's class label between Earthling
+        // Cruiser (the zero-byte default that gather copied from the
+        // pre-fix wire format) and the actually-picked class. With the
+        // class now riding on the wire, the projection is redundant.
     }
 }
 
@@ -118,33 +122,6 @@ fn tick_local_ready_toggle(
     if keys.just_pressed(KeyCode::KeyR) {
         lobby.ready = !lobby.ready;
         info!("lobby: local peer ready = {}", lobby.ready);
-    }
-}
-
-/// Copy the local peer's class choice + Ready vote into the
-/// `held[local_slot]` `PlayerInput` so the GGRS input channel ships
-/// them to the remote peer on the next packet. Runs every tick
-/// (not just PostMatch) so the class byte always reflects the current
-/// selection — that way a peer that joins mid-match still gets the
-/// correct ship.
-fn project_local_vote_into_inputs(
-    local_players: Option<Res<crate::netcode::LocalHandle>>,
-    config: Res<MatchConfig>,
-    lobby: Res<LobbyVote>,
-    phase: Res<MatchPhase>,
-    mut slot_inputs: ResMut<SlotInputs>,
-) {
-    let Some(local_slot) = local_players.as_ref().map(|lh| lh.0) else {
-        return;
-    };
-    if let Some(slot_cfg) = config.slots.get(local_slot) {
-        slot_inputs.held[local_slot].class = class_to_index(slot_cfg.class);
-    }
-    // FLAG_READY only rides on the wire during PostMatch — outside of
-    // it the bit always reads as zero so the all-ready detector can't
-    // trip from a stray vote that survived state reset.
-    if *phase == MatchPhase::PostMatch && lobby.ready {
-        slot_inputs.held[local_slot].flags |= FLAG_READY;
     }
 }
 

@@ -290,11 +290,32 @@ fn push_local_input_to_netinputs(
     virt: Res<crate::input::VirtualInput>,
     local: Res<LocalHandle>,
     role: Res<NetRole>,
+    config: Res<crate::ship::MatchConfig>,
+    lobby: Res<crate::lobby::LobbyVote>,
+    phase: Res<crate::hud::MatchPhase>,
     mut net: ResMut<crate::input::NetInputs>,
     mut sock: ResMut<NetSocket>,
 ) {
     let slot = local.0.min(3);
-    let local_input = crate::input::read_local_input_with_virtual(&keys, Some(&virt), 0);
+    let mut local_input = crate::input::read_local_input_with_virtual(&keys, Some(&virt), 0);
+
+    // Pack the local peer's lobby-vote bits into the input so the
+    // remote peer sees them without a separate side channel. Both are
+    // level-triggered (not edge-triggered), so it's safe to re-send
+    // them every tick — receivers just read the latest value.
+    //
+    //   - `class`: the slot's currently-picked ship class. Sent every
+    //     tick (not only during PostMatch) so a peer that joins
+    //     mid-match still sees the correct ship.
+    //   - `FLAG_READY`: only set during PostMatch. Outside of
+    //     PostMatch the bit must read zero or `detect_all_ready` could
+    //     trip from a stray value that survived state reset.
+    if let Some(slot_cfg) = config.slots.get(slot) {
+        local_input.class = crate::ship::class_to_index(slot_cfg.class);
+    }
+    if *phase == crate::hud::MatchPhase::PostMatch && lobby.ready {
+        local_input.flags |= crate::input::FLAG_READY;
+    }
 
     net.previous = net.current;
     net.current[slot] = local_input;
