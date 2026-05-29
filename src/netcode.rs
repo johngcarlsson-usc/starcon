@@ -475,6 +475,10 @@ fn send_ship_snapshot(
         }
     }));
 
+    let n_ships = entities.iter().filter(|e| matches!(e.kind, EntityKind::Ship { .. })).count();
+    let n_ast = entities.iter().filter(|e| matches!(e.kind, EntityKind::Asteroid)).count();
+    info!("netcode: host tx snapshot — {n_ships} ships, {n_ast} asteroids");
+
     let tick = *snapshot_tick;
     let msg = NetMessage::Snapshot {
         tick,
@@ -568,6 +572,13 @@ fn drain_messages(
                     continue;
                 }
                 *last_snapshot_tick = tick;
+                let n_ast = entities.iter().filter(|e| matches!(e.kind, EntityKind::Asteroid)).count();
+                let n_local_ast = asteroids.iter().count();
+                info!(
+                    "netcode: guest rx snapshot — {} entities ({} asteroids, local has {})",
+                    entities.len(), n_ast, n_local_ast,
+                );
+                let mut applied_ast = 0;
                 for state in entities {
                     match state.kind {
                         EntityKind::Ship { slot, .. } => {
@@ -590,6 +601,7 @@ fn drain_messages(
                             }
                         }
                         EntityKind::Asteroid => {
+                            let mut hit = false;
                             for (net_id, mut pos, mut rot, mut lin, mut ang) in &mut asteroids {
                                 if *net_id != state.net_id {
                                     continue;
@@ -601,7 +613,16 @@ fn drain_messages(
                                 lin.0.x = state.vel_x;
                                 lin.0.y = state.vel_y;
                                 ang.0 = state.ang_vel;
+                                hit = true;
                                 break;
+                            }
+                            if hit {
+                                applied_ast += 1;
+                            } else {
+                                warn!(
+                                    "netcode: guest snapshot has asteroid {:?} but no local match",
+                                    state.net_id,
+                                );
                             }
                         }
                         EntityKind::Projectile
@@ -611,6 +632,7 @@ fn drain_messages(
                         }
                     }
                 }
+                info!("netcode: guest applied {applied_ast} asteroid updates");
             }
             NetMessage::Lobby { slots } => {
                 debug!("netcode: rx Lobby slots={} from {peer:?}", slots.len());
