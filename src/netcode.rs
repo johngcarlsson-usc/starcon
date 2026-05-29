@@ -286,7 +286,15 @@ fn send_heartbeat(
         return;
     };
     for peer in peers {
-        channel.send(bytes.clone().into(), peer);
+        // try_send instead of send: `WebRtcChannel::send` panics if
+        // the channel's outbound queue is closed (which happens when
+        // the WebRTC data channel hasn't fully come up yet, or when
+        // the peer drops). A disconnect mid-match is a real
+        // network-layer event we want to surface as a log, not a
+        // crash that kills the whole window.
+        if let Err(e) = channel.try_send(bytes.clone().into(), peer) {
+            warn!("netcode: heartbeat send to {peer:?} failed: {e:?}");
+        }
     }
     let _ = role; // role isn't acted on yet; the dispatcher uses it next session
 }
@@ -365,7 +373,9 @@ fn send_ship_snapshot(
         return;
     };
     for peer in peers {
-        channel.send(bytes.clone().into(), peer);
+        if let Err(e) = channel.try_send(bytes.clone().into(), peer) {
+            warn!("netcode: snapshot send to {peer:?} failed: {e:?}");
+        }
     }
 }
 

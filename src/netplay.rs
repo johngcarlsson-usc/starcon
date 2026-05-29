@@ -868,10 +868,14 @@ fn update_lobby(
         heartbeat_s: 0.0,
         peers: remote_peers,
     });
-    // Channel 1 (the reliable one) goes unused for the moment — the
+    // Channel 1 (the reliable one) stays in the socket for now. The
     // lobby-vote re-routing in step 5 of NETCODE_REFACTOR.md will
-    // claim it once we move votes off the unreliable snapshot path.
-    let _ = socket.take_channel(1);
+    // take it via `socket.take_channel(1)` when it's wired up.
+    // Important: do NOT take-and-drop it here just to claim ownership —
+    // the dropped WebRtcChannel takes its tx + rx with it, and the
+    // matchbox message loop closes the per-channel sender side when
+    // it sees the receiver gone, which can cascade into the channel 0
+    // outbound queue going Disconnected mid-match.
     commands.insert_resource(crate::netcode::LocalHandle(local_handle));
 
     // Apply the chosen humans/AI mix to MatchConfig so
