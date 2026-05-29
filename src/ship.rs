@@ -1265,7 +1265,6 @@ impl Plugin for ShipPlugin {
         app.add_systems(
             bevy_ggrs::GgrsSchedule,
             (
-                tick_invisible,
                 tick_damage_to_battery,
                 tick_sub_entities,
                 handle_projectile_hits,
@@ -2482,7 +2481,11 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 1.0 / 20.0,
             },
             special: AbilitySpec {
-                kind: AbilityKind::GrantInvisibility { duration_s: 2.5 },
+                // Canon toggle. SpecialRate=7 → 0.35s cooldown between
+                // toggles (ini, not a duration). SpecialDrain=3 paid
+                // once on cloak-on; uncloak is free. Firing the
+                // primary also drops the cloak — see `dispatch_primary`.
+                kind: AbilityKind::ToggleInvisibility,
                 cooldown_s: 7.0 / 20.0,
             },
         }),
@@ -3623,15 +3626,18 @@ pub(crate) fn spawn_tractor(
     ));
 }
 
-/// Per-tick state for "this ship cannot be targeted" (Ilwrath cloak).
-/// Homing missiles and auto-aim beams skip entities carrying this
-/// component during target acquisition. Projectile collisions and
-/// ship-ship rams still hurt — cloak hides from auto-targeting, not
-/// from physics.
+/// "This ship cannot be targeted" marker (Ilwrath cloak). Homing
+/// missiles and auto-aim beams skip entities carrying this component
+/// during target acquisition. Projectile collisions and ship-ship
+/// rams still hurt — cloak hides from auto-targeting, not from
+/// physics.
+///
+/// Canon (`shpilwav.cpp`) is a toggle, not a timer: the cloak persists
+/// until the player either re-presses Special (toggle off) OR fires
+/// the primary weapon (which uncloaks as a side effect of the shot).
+/// So this is just a marker — no `remaining` field, no `tick_invisible`.
 #[derive(Component, Debug)]
-pub struct Invisible {
-    pub remaining: f32,
-}
+pub struct Invisible;
 
 /// Per-tick state for "incoming damage tops up battery instead of
 /// hurting crew" (Utwig fortitude). While present, the projectile-hit
@@ -6174,24 +6180,6 @@ fn tick_tractors(
         tractor.remaining -= dt;
         if tractor.remaining <= 0.0 {
             commands.entity(tractor_entity).try_despawn();
-        }
-    }
-}
-
-/// Tick down the `Invisible` timer and remove the component on expiry.
-/// Visual cloak rendering is a polish pass — for now, "invisible" is
-/// purely a targeting filter that homing missiles and auto-aim beams
-/// honour. The cloaked ship is still drawn at full brightness.
-fn tick_invisible(
-    mut commands: Commands,
-    time: Res<Time<Physics>>,
-    mut q: Query<(Entity, &mut Invisible)>,
-) {
-    let dt = time.delta_secs();
-    for (e, mut inv) in &mut q {
-        inv.remaining -= dt;
-        if inv.remaining <= 0.0 {
-            commands.entity(e).try_remove::<Invisible>();
         }
     }
 }

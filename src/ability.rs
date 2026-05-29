@@ -128,9 +128,11 @@ pub enum AbilityKind {
         duration_s: f32,
     },
 
-    /// Mark the firer `Invisible` for a duration — drops homing locks
-    /// and auto-aim beams. Canonical Ilwrath cloak (shpilwav.cpp).
-    GrantInvisibility { duration_s: f32 },
+    /// Toggle the Ilwrath cloak (`shpilwav.cpp:calculate_fire_special`).
+    /// First press inserts `Invisible` and pays `special_drain` once;
+    /// next press removes `Invisible` for free. Firing the primary
+    /// also drops the cloak — `auto_decloak_on_fire` handles that.
+    ToggleInvisibility,
 
     /// Mark the firer as converting incoming projectile damage to
     /// battery for a duration. Canonical Utwig fortitude
@@ -319,9 +321,10 @@ fn dispatch_primary(
         Option<&crate::ultimate::MmrxfActive>,
         Option<&crate::ultimate::PkunkClone>,
         Option<&crate::ai::AiControlled>,
+        Option<&Invisible>,
     )>,
 ) {
-    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active, pkunk_clone, ai) in &mut q {
+    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active, pkunk_clone, ai, invisible) in &mut q {
         // While Mmrnmhrm's ultimate is active the tangled laser
         // owns the primary. Skip the normal Mmrxf beams so the
         // two don't stack.
@@ -362,10 +365,19 @@ fn dispatch_primary(
             batt: &mut batt,
             crew: &mut crew,
             damage,
+            invisible: invisible.map(|_| ()),
             rng: &mut rng,
         };
         apply_kind(&mut ctx, &abilities.primary.kind);
         cd.0 = abilities.primary.cooldown_s;
+        // Canon Ilwrath: firing the primary uncloaks the ship as a
+        // side effect (`shpilwav.cpp:activate_weapon` sets
+        // `cloak = FALSE` after spawning the shot). Apply to any
+        // cloaked ship that just fired — keeps the logic generic in
+        // case another class ever reuses the toggle.
+        if invisible.is_some() {
+            commands.entity(entity).try_remove::<Invisible>();
+        }
         // Canon weapon SFX. `mshpdata.cpp` loads `sampleWeapon[]`
         // from the ship's `.dat`; `wave_a01.wav` is sampleWeapon[0]
         // (the primary fire sound). Mmrnmhrm's X-form uses
@@ -400,9 +412,10 @@ fn dispatch_special(
         &mut Crew,
         Option<&crate::ultimate::MmrxfActive>,
         Option<&crate::ultimate::PkunkClone>,
+        Option<&Invisible>,
     )>,
 ) {
-    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active, pkunk_clone) in &mut q {
+    for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active, pkunk_clone, invisible) in &mut q {
         // Mmrnmhrm ultimate replaces the special with the split
         // missile launcher — skip the form-toggle here.
         if mmrxf_active.is_some() {
@@ -422,7 +435,14 @@ fn dispatch_special(
         // player holds the key longer than the cooldown. Otherwise
         // a 100ms hold flips Mmrnmhrm form 2–3 times in the cooldown
         // window and lands back where it started.
-        let edge_only = matches!(abilities.special.kind, AbilityKind::ToggleMode);
+        // Edge-only specials fire once per press, ignoring holds.
+        // `ToggleInvisibility` joins `ToggleMode` here — without it,
+        // a single Ilwrath cloak press at the cooldown boundary would
+        // toggle on, drain, toggle back off, etc.
+        let edge_only = matches!(
+            abilities.special.kind,
+            AbilityKind::ToggleMode | AbilityKind::ToggleInvisibility
+        );
         // Pkunk clones force-press their special while in their
         // retreating sub-state (charging batteries away from the
         // enemy). Edge-only abilities still respect the edge —
@@ -450,7 +470,13 @@ fn dispatch_special(
         // battery-gated and never drain — otherwise they'd be unusable at
         // 0 battery, which is exactly when you need to recharge.
         let is_recharge = matches!(abilities.special.kind, AbilityKind::AddBattery { .. });
-        if !is_recharge {
+        // Ilwrath toggle-off is free in canon: if already cloaked,
+        // skip both the battery gate and the deduction. The toggle's
+        // apply_kind branch will not refund anything in this case
+        // (it only refunds when the dispatcher charged it upfront).
+        let is_free_uncloak = matches!(abilities.special.kind, AbilityKind::ToggleInvisibility)
+            && invisible.is_some();
+        if !is_recharge && !is_free_uncloak {
             if ship.stats.special_drain > 0 && batt.current < ship.stats.special_drain {
                 continue;
             }
@@ -473,6 +499,7 @@ fn dispatch_special(
             batt: &mut batt,
             crew: &mut crew,
             damage,
+            invisible: invisible.map(|_| ()),
             rng: &mut rng,
         };
         apply_kind(&mut ctx, &abilities.special.kind);
@@ -510,6 +537,10 @@ struct AbilityCtx<'a, 'w, 's> {
     batt: &'a mut Battery,
     crew: &'a mut Crew,
     damage: i32,
+    /// Present iff the firer is currently cloaked. The Ilwrath
+    /// `ToggleInvisibility` reads this to decide whether to cloak or
+    /// uncloak; everything else ignores it.
+    invisible: Option<()>,
     /// Seeded per-match RNG. Use for any draw whose outcome
     /// affects game state (shot spread, teleport offset).
     /// Visual-only jitter can keep using the global fastrand.
@@ -565,11 +596,21 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
                 *duration_s,
             );
         }
-        AbilityKind::GrantInvisibility { duration_s } => {
-            ctx.commands.entity(ctx.entity).try_insert(Invisible {
-                remaining: *duration_s,
-            });
-            info!("P{} cloaked", slot);
+        AbilityKind::ToggleInvisibility => {
+            // Canon toggle (`shpilwav.cpp:calculate_fire_special`):
+            // cloaking pays `special_drain` once; uncloaking is free.
+            // The dispatcher already skipped the drain when entering
+            // this branch with `Invisible` present, so no refund is
+            // needed here — we just flip the marker.
+            if ctx.invisible.is_some() {
+                ctx.commands
+                    .entity(ctx.entity)
+                    .try_remove::<Invisible>();
+                info!("P{} decloaked", slot);
+            } else {
+                ctx.commands.entity(ctx.entity).try_insert(Invisible);
+                info!("P{} cloaked", slot);
+            }
         }
         AbilityKind::GrantDamageToBattery {
             duration_s,
