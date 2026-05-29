@@ -1356,6 +1356,7 @@ pub fn spawn_match(
     config: Res<MatchConfig>,
     ship_colliders: Res<crate::collider::ShipColliders>,
     mut rng: ResMut<crate::rng::GameRng>,
+    role: Res<crate::netcode::NetRole>,
 ) {
     // Compass-point spawns. Up to 4 players — slots 2 and 3 are
     // populated for online / 4-player local; otherwise the loop
@@ -1407,7 +1408,7 @@ pub fn spawn_match(
     }
 
     spawn_planet(&mut commands, &assets, &mut rng);
-    spawn_asteroids(&mut commands, &assets, &mut rng);
+    spawn_asteroids(&mut commands, &assets, &mut rng, role.is_guest());
 
     // Canon VUX `relocate()` (`shpvuxin.cpp:176-189`): on combat
     // start, if the VUX is farther than ~500 canon px from its
@@ -7457,10 +7458,17 @@ pub struct Asteroid;
 /// Sprinkle a handful of asteroids at random positions across the
 /// arena, avoiding the player-ship spawn corridors. Called once
 /// per match from `spawn_match`.
+///
+/// `as_kinematic` forces the spawned bodies to be `RigidBody::Kinematic`
+/// instead of `Dynamic`. The guest in a netplay match passes `true`
+/// so the host's snapshot stream is the only thing that moves these
+/// rocks — locally-predicted ship-asteroid collisions can't push them
+/// off the host's authoritative trajectory.
 pub fn spawn_asteroids(
     commands: &mut Commands,
     assets: &AssetServer,
     rng: &mut crate::rng::GameRng,
+    as_kinematic: bool,
 ) {
     use std::f32::consts::TAU;
     const N: usize = 8;
@@ -7513,7 +7521,11 @@ pub fn spawn_asteroids(
                 ..default()
             },
             Transform::from_translation(pos.extend(0.1)),
-            RigidBody::Dynamic,
+            if as_kinematic {
+                RigidBody::Kinematic
+            } else {
+                RigidBody::Dynamic
+            },
             Collider::circle(radius),
             Mass(mass),
             Position(pos),
