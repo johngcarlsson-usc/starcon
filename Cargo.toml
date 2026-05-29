@@ -26,7 +26,6 @@ bevy = { version = "0.18", default-features = false, features = [
     "bevy_audio",
     "wav",
     "mp3",
-    "vorbis",
     "png",
     "x11",
     "webgl2",
