@@ -12,6 +12,17 @@
   <link rel="manifest" href="./manifest.json?v=__BUILD_SHA__">
   <link rel="apple-touch-icon" href="./assets/ui/icon-180.png">
   <link rel="icon" type="image/png" href="./assets/ui/icon-192.png">
+  <!--
+    Prefetch the title-music file in parallel with the WASM bundle.
+    Without this hint Bevy's asset server doesn't start fetching
+    `music/title.mp3` until `start_title_music` runs (right after the
+    Loading→MainMenu transition), so there's a noticeable silent gap
+    on first load. `as="fetch"` (not `as="audio"`) makes the browser
+    treat the response as a generic byte fetch — that matches what
+    Bevy's asset server actually does (`fetch()` → `arrayBuffer()`),
+    so the cached entry can be reused without a second download.
+  -->
+  <link rel="preload" href="./assets/music/title.mp3" as="fetch" type="audio/mpeg" crossorigin="anonymous">
   <title>Starcon</title>
   <style>
     html, body {

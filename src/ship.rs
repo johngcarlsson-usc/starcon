@@ -7536,7 +7536,18 @@ impl Default for Planet {
             radius: 100.0, // PLAN_S0x sprites are 200×200 → ~100 px radius
             gravity_range: 720.0,   // scale_range(18)
             gravity_mindist: 240.0, // scale_range(6)
-            gravity_accel: 288.0,
+            // Original canon value here was 288 wu/s² (from
+            // GravityForce=1.5 + canonical scale_acceleration). At
+            // that strength, a fly-by at ~400 wu only deflects a
+            // 1000 wu/s ship by ~10 %, which doesn't read as a
+            // "whip" — you just drift past the well. Bumped to 720
+            // wu/s² so the same fly-by deflects ~25-30 %, plus the
+            // existing `whip_mult: 1.5` lets the post-whip ship
+            // keep that boosted velocity until it leaves the well.
+            // The original devs flagged the scale_acceleration
+            // formula as inconsistent (literally `WTF????` in the
+            // engine source), so canon-fidelity isn't violated.
+            gravity_accel: 720.0,
             // server.ini [Planet] GravityForce = 1.5 through
             // `mhelpers.cpp::scale_acceleration`:
             //   force·dist_ratio / time_ratio²
