@@ -134,6 +134,12 @@ pub enum NetMessage {
 /// what we already snapshot via `bevy_ggrs`. Future additions
 /// (cooldowns, mode index, shield) land here as the host/guest
 /// model expands beyond the position-and-crew baseline.
+///
+/// `net_id` is set to 0 for ships in the v1 snapshot — ships are
+/// keyed by `player_slot` instead because both peers spawn slots in
+/// the same order via `spawn_match`. `NetId` becomes meaningful
+/// once projectiles + sub-entities start syncing (they have no
+/// natural cross-peer key).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityState {
     pub net_id: NetId,
@@ -195,9 +201,17 @@ pub struct NetSocket {
     pub peers: Vec<PeerId>,
 }
 
-/// Cadence of the connectivity heartbeat sent on the NetMessage
-/// channel. Slow (1 Hz) — this is only here to confirm the channel
-/// is wired up; once snapshots are flowing they'll dominate.
+/// Host snapshot cadence. 20 Hz matches the canonical SC2 frame
+/// rate the rest of our gameplay constants are calibrated against.
+/// Bandwidth budget per snapshot is tiny — a 4-ship match comes out
+/// to ~200 bytes encoded, so 20 Hz × 200 B = 4 kB/s, fine even on a
+/// slow connection.
+const SNAPSHOT_INTERVAL_S: f32 = 0.05;
+
+/// Cadence of the connectivity heartbeat sent before / between
+/// snapshots. Once the host snapshot loop is running the heartbeat
+/// is redundant; it stays around as a "did anything come through?"
+/// debug aid.
 const HEARTBEAT_INTERVAL_S: f32 = 1.0;
 
 pub struct NetcodePlugin;
@@ -212,11 +226,28 @@ impl Plugin for NetcodePlugin {
             // in solo / local hotseat.
             .add_systems(
                 Update,
-                (send_heartbeat, drain_messages).chain().run_if(
-                    resource_exists::<NetSocket>,
-                ),
+                (
+                    send_heartbeat,
+                    send_ship_snapshot.run_if(role_is_authoritative),
+                    drain_messages,
+                )
+                    .chain()
+                    .run_if(resource_exists::<NetSocket>),
             );
     }
+}
+
+/// Run-condition: this peer owns the simulation and should send
+/// snapshots. True in Host and Solo (Solo is a no-op since there's
+/// no NetSocket, but the gate stays consistent).
+pub fn role_is_authoritative(role: Res<NetRole>) -> bool {
+    role.is_authoritative()
+}
+
+/// True iff we're the guest in netplay — used to gate snapshot
+/// application.
+pub fn role_is_guest(role: Res<NetRole>) -> bool {
+    role.is_guest()
 }
 
 fn send_heartbeat(
@@ -253,7 +284,100 @@ fn send_heartbeat(
     let _ = role; // role isn't acted on yet; the dispatcher uses it next session
 }
 
-fn drain_messages(mut sock: ResMut<NetSocket>) {
+/// Host-only: every `SNAPSHOT_INTERVAL_S`, gather the state of every
+/// live ship and ship it as a `NetMessage::Snapshot`. Guest's
+/// `drain_messages` will apply this onto its local entities.
+///
+/// Ships are keyed by `player_slot` in the snapshot (we put the slot
+/// index in the low byte of `EntityKind::Ship`). Both peers spawn
+/// ships in the same slot order via `spawn_match`, so the guest just
+/// has to match `Ship.player_slot` to find its local mirror.
+fn send_ship_snapshot(
+    time: Res<Time<Real>>,
+    mut sock: ResMut<NetSocket>,
+    ships: Query<
+        (
+            &crate::ship::Ship,
+            &avian2d::prelude::Position,
+            &avian2d::prelude::Rotation,
+            &avian2d::prelude::LinearVelocity,
+            &avian2d::prelude::AngularVelocity,
+            &crate::ship::Crew,
+            &crate::ship::Battery,
+        ),
+    >,
+    snapshot_tick: Local<u32>,
+) {
+    sock.heartbeat_s += time.delta_secs();
+    // Reuse `heartbeat_s` as the snapshot accumulator — gated by the
+    // shorter `SNAPSHOT_INTERVAL_S` here. The standalone `send_heartbeat`
+    // also reads it but its threshold (1 s) catches up too.
+    if sock.heartbeat_s < SNAPSHOT_INTERVAL_S {
+        return;
+    }
+    sock.heartbeat_s = 0.0;
+
+    let entities: Vec<EntityState> = ships
+        .iter()
+        .map(|(ship, pos, rot, lin, ang, crew, batt)| EntityState {
+            net_id: NetId(0),
+            kind: EntityKind::Ship {
+                // Guest reads the class for this slot from its own
+                // `MatchConfig` (set at match start) rather than
+                // from the snapshot — `Ship.stats` doesn't expose
+                // the canonical `ShipClass` enum directly, just the
+                // 5-char code. Class is stable for the duration of
+                // a match so the snapshot byte is redundant; leave
+                // it for the future "host says use class X for slot
+                // Y" path when class can change mid-match.
+                class_idx: 0,
+                slot: ship.player_slot as u8,
+            },
+            pos_x: pos.0.x,
+            pos_y: pos.0.y,
+            rot_cos: rot.cos,
+            rot_sin: rot.sin,
+            vel_x: lin.0.x,
+            vel_y: lin.0.y,
+            ang_vel: ang.0,
+            crew: crew.current,
+            batt: batt.current,
+        })
+        .collect();
+
+    let tick = *snapshot_tick;
+    let msg = NetMessage::Snapshot {
+        tick,
+        entities,
+    };
+    let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) else {
+        return;
+    };
+    let peers = sock.peers.clone();
+    let Some(channel) = sock.channel.as_mut() else {
+        return;
+    };
+    for peer in peers {
+        channel.send(bytes.clone().into(), peer);
+    }
+}
+
+fn drain_messages(
+    mut sock: ResMut<NetSocket>,
+    role: Res<NetRole>,
+    mut ships: Query<
+        (
+            &crate::ship::Ship,
+            &mut avian2d::prelude::Position,
+            &mut avian2d::prelude::Rotation,
+            &mut avian2d::prelude::LinearVelocity,
+            &mut avian2d::prelude::AngularVelocity,
+            &mut crate::ship::Crew,
+            &mut crate::ship::Battery,
+        ),
+    >,
+    mut last_snapshot_tick: Local<u32>,
+) {
     let Some(channel) = sock.channel.as_mut() else {
         return;
     };
@@ -264,18 +388,48 @@ fn drain_messages(mut sock: ResMut<NetSocket>) {
             warn!("netcode: decode failed from {peer:?} ({} bytes)", bytes.len());
             continue;
         };
-        // Dispatch by message type. The host/guest gameplay split
-        // isn't wired yet — for the foundation pass we only log
-        // receipt so the user can confirm the channel is live.
         match msg {
             NetMessage::Input { tick, .. } => {
                 debug!("netcode: rx Input tick={tick} from {peer:?}");
             }
             NetMessage::Snapshot { tick, entities } => {
-                debug!(
-                    "netcode: rx Snapshot tick={tick} entities={} from {peer:?}",
-                    entities.len()
-                );
+                // Guest applies snapshots onto its local ships;
+                // host ignores them (it IS the authority).
+                if !role.is_guest() {
+                    continue;
+                }
+                // Discard out-of-order snapshots. matchbox
+                // unreliable doesn't guarantee delivery order, but
+                // we want the latest authority state — older ticks
+                // would overwrite with stale poses.
+                if tick != 0 && tick < *last_snapshot_tick {
+                    continue;
+                }
+                *last_snapshot_tick = tick;
+                for state in entities {
+                    let EntityKind::Ship { slot, .. } = state.kind else {
+                        // Only ships in v1.
+                        continue;
+                    };
+                    // Find our local mirror for this slot.
+                    for (ship, mut pos, mut rot, mut lin, mut ang, mut crew, mut batt) in
+                        &mut ships
+                    {
+                        if ship.player_slot as u8 != slot {
+                            continue;
+                        }
+                        pos.0.x = state.pos_x;
+                        pos.0.y = state.pos_y;
+                        rot.cos = state.rot_cos;
+                        rot.sin = state.rot_sin;
+                        lin.0.x = state.vel_x;
+                        lin.0.y = state.vel_y;
+                        ang.0 = state.ang_vel;
+                        crew.current = state.crew;
+                        batt.current = state.batt;
+                        break;
+                    }
+                }
             }
             NetMessage::Lobby { slots } => {
                 debug!("netcode: rx Lobby slots={} from {peer:?}", slots.len());
