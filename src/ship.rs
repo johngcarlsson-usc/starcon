@@ -7507,6 +7507,14 @@ pub fn spawn_asteroids(
         let sprite_path = format!("asteroids/astero{:02}.png", frame_idx);
         let mass = 4.0 + rng.f32() * 3.0;
         let ang_vel = rng.signed_unit() * 0.3;
+        info!(
+            "DBG[spawn] kinematic={} NetId={} pos=({:.3},{:.3}) vel=({:.3},{:.3}) radius={:.3} mass={:.3} ang_vel={:.4} frame={}",
+            as_kinematic,
+            spawn_idx + 1,
+            pos.x, pos.y,
+            vel.x, vel.y,
+            radius, mass, ang_vel, frame_idx,
+        );
         commands.spawn((
             Asteroid,
             // NetId is stable across peers: both ends spawn in the
