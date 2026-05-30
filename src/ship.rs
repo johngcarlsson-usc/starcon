@@ -7727,6 +7727,7 @@ fn apply_planet_gravity(
         (
             &Position,
             &mut LinearVelocity,
+            &RigidBody,
             Option<&InertialessDrive>,
             Option<&crate::ultimate::HyperActive>,
         ),
@@ -7739,7 +7740,14 @@ fn apply_planet_gravity(
     }
     for (planet_pos, planet) in &planets {
         let range_sq = planet.gravity_range * planet.gravity_range;
-        for (pos, mut vel, inertialess, hyper) in &mut bodies {
+        for (pos, mut vel, rb, inertialess, hyper) in &mut bodies {
+            // Kinematic bodies are guest-side mirrors driven by host
+            // snapshots — applying gravity locally would steer them
+            // off the host's authoritative trajectory between
+            // snapshots. Skip.
+            if rb.is_kinematic() {
+                continue;
+            }
             // Inertialess drive (Arilou) rejects all external acceleration;
             // a ship mid-ultimate owns its own motion.
             if inertialess.is_some() || hyper.is_some() {

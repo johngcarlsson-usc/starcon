@@ -499,6 +499,7 @@ fn send_ship_snapshot(
 }
 
 fn drain_messages(
+    mut commands: Commands,
     mut sock: ResMut<NetSocket>,
     role: Res<NetRole>,
     mut net_inputs: ResMut<crate::input::NetInputs>,
@@ -516,6 +517,7 @@ fn drain_messages(
     >,
     mut asteroids: Query<
         (
+            Entity,
             &NetId,
             &mut avian2d::prelude::Position,
             &mut avian2d::prelude::Rotation,
@@ -579,6 +581,7 @@ fn drain_messages(
                     entities.len(), n_ast, n_local_ast,
                 );
                 let mut applied_ast = 0;
+                let mut snapshot_asteroid_ids: Vec<NetId> = Vec::with_capacity(n_ast);
                 for state in entities {
                     match state.kind {
                         EntityKind::Ship { slot, .. } => {
@@ -602,7 +605,8 @@ fn drain_messages(
                         }
                         EntityKind::Asteroid => {
                             let mut hit = false;
-                            for (net_id, mut pos, mut rot, mut lin, mut ang) in &mut asteroids {
+                            for (_e, net_id, mut pos, mut rot, mut lin, mut ang) in &mut asteroids
+                            {
                                 if *net_id != state.net_id {
                                     continue;
                                 }
@@ -618,6 +622,7 @@ fn drain_messages(
                             }
                             if hit {
                                 applied_ast += 1;
+                                snapshot_asteroid_ids.push(state.net_id);
                             } else {
                                 warn!(
                                     "netcode: guest snapshot has asteroid {:?} but no local match",
@@ -631,6 +636,22 @@ fn drain_messages(
                             // Not synced yet — see NETCODE_REFACTOR.md.
                         }
                     }
+                }
+                // Despawn any local asteroid the host didn't include —
+                // the host destroyed it (planet contact, projectile,
+                // etc.) and the guest needs to follow suit so we don't
+                // accumulate ghost rocks the host doesn't know about.
+                let mut despawned_ast = 0;
+                for (e, net_id, _, _, _, _) in &asteroids {
+                    if !snapshot_asteroid_ids.contains(net_id) {
+                        if let Ok(mut ec) = commands.get_entity(e) {
+                            ec.try_despawn();
+                            despawned_ast += 1;
+                        }
+                    }
+                }
+                if despawned_ast > 0 {
+                    info!("netcode: guest despawned {despawned_ast} ghost asteroids");
                 }
                 info!("netcode: guest applied {applied_ast} asteroid updates");
             }
