@@ -213,12 +213,18 @@ pub struct NetSocket {
     pub slot_to_peer: Vec<PeerId>,
 }
 
-/// Host snapshot cadence. 20 Hz matches the canonical SC2 frame
-/// rate the rest of our gameplay constants are calibrated against.
-/// Bandwidth budget per snapshot is tiny — a 4-ship match comes out
-/// to ~200 bytes encoded, so 20 Hz × 200 B = 4 kB/s, fine even on a
-/// slow connection.
-const SNAPSHOT_INTERVAL_S: f32 = 0.05;
+/// Host snapshot cadence. Driven against `Time<Real>` in the
+/// Update schedule, so the actual rate is at most one snapshot per
+/// frame. 16ms targets ~60Hz on the host's render loop; the guest
+/// will integrate forward with the snapshotted velocity between
+/// snapshots, so a faster cadence keeps velocity-derived drift
+/// (e.g. an asteroid being accelerated by planet gravity on the
+/// host with the guest's extrapolation using the stale, pre-tick
+/// velocity) bounded to one frame's worth.
+///
+/// Bandwidth budget: a 10-entity snapshot is ~500 bytes encoded, so
+/// 60 Hz × 500 B = ~30 kB/s — fine even on a slow connection.
+const SNAPSHOT_INTERVAL_S: f32 = 1.0 / 60.0;
 
 /// Cadence of the connectivity heartbeat sent before / between
 /// snapshots. Once the host snapshot loop is running the heartbeat
@@ -475,10 +481,6 @@ fn send_ship_snapshot(
         }
     }));
 
-    let n_ships = entities.iter().filter(|e| matches!(e.kind, EntityKind::Ship { .. })).count();
-    let n_ast = entities.iter().filter(|e| matches!(e.kind, EntityKind::Asteroid)).count();
-    info!("netcode: host tx snapshot — {n_ships} ships, {n_ast} asteroids");
-
     let tick = *snapshot_tick;
     let msg = NetMessage::Snapshot {
         tick,
@@ -574,14 +576,7 @@ fn drain_messages(
                     continue;
                 }
                 *last_snapshot_tick = tick;
-                let n_ast = entities.iter().filter(|e| matches!(e.kind, EntityKind::Asteroid)).count();
-                let n_local_ast = asteroids.iter().count();
-                info!(
-                    "netcode: guest rx snapshot — {} entities ({} asteroids, local has {})",
-                    entities.len(), n_ast, n_local_ast,
-                );
-                let mut applied_ast = 0;
-                let mut snapshot_asteroid_ids: Vec<NetId> = Vec::with_capacity(n_ast);
+                let mut snapshot_asteroid_ids: Vec<NetId> = Vec::with_capacity(entities.len());
                 for state in entities {
                     match state.kind {
                         EntityKind::Ship { slot, .. } => {
@@ -621,7 +616,6 @@ fn drain_messages(
                                 break;
                             }
                             if hit {
-                                applied_ast += 1;
                                 snapshot_asteroid_ids.push(state.net_id);
                             } else {
                                 warn!(
@@ -653,7 +647,6 @@ fn drain_messages(
                 if despawned_ast > 0 {
                     info!("netcode: guest despawned {despawned_ast} ghost asteroids");
                 }
-                info!("netcode: guest applied {applied_ast} asteroid updates");
             }
             NetMessage::Lobby { slots } => {
                 debug!("netcode: rx Lobby slots={} from {peer:?}", slots.len());
