@@ -1299,7 +1299,7 @@ impl Plugin for ShipPlugin {
                 tick_chmmr_satellites,
                 tick_zap_flashes,
                 tick_asteroid_explosions,
-                replenish_asteroids,
+                replenish_asteroids.run_if(in_state(crate::AppState::InMatch)),
                 tick_alary_mirv,
                 tick_alary_turrets,
                 tick_shofixti_glory,
