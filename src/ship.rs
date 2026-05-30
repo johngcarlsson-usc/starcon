@@ -7735,7 +7735,6 @@ fn apply_planet_gravity(
         (
             &Position,
             &mut LinearVelocity,
-            &RigidBody,
             Option<&InertialessDrive>,
             Option<&crate::ultimate::HyperActive>,
         ),
@@ -7748,14 +7747,19 @@ fn apply_planet_gravity(
     }
     for (planet_pos, planet) in &planets {
         let range_sq = planet.gravity_range * planet.gravity_range;
-        for (pos, mut vel, rb, inertialess, hyper) in &mut bodies {
-            // Kinematic bodies are guest-side mirrors driven by host
-            // snapshots — applying gravity locally would steer them
-            // off the host's authoritative trajectory between
-            // snapshots. Skip.
-            if rb.is_kinematic() {
-                continue;
-            }
+        for (pos, mut vel, inertialess, hyper) in &mut bodies {
+            // NOTE: this loop INTENTIONALLY runs on kinematic bodies
+            // too. The guest's asteroids are kinematic (so locally-
+            // predicted ship-asteroid collisions can't push them off
+            // the host's authoritative trajectory), but we still want
+            // their velocity to evolve under gravity the same way the
+            // host's dynamic asteroids do — otherwise the guest
+            // integrates a stale snapshot velocity and visibly trails
+            // the host during a planetary slingshot. Gravity is
+            // deterministic given the same planet position, so both
+            // peers compute the same accel and tracks match between
+            // snapshots.
+            //
             // Inertialess drive (Arilou) rejects all external acceleration;
             // a ship mid-ultimate owns its own motion.
             if inertialess.is_some() || hyper.is_some() {
