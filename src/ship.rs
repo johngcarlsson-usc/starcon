@@ -1357,6 +1357,7 @@ pub fn spawn_match(
     ship_colliders: Res<crate::collider::ShipColliders>,
     mut rng: ResMut<crate::rng::GameRng>,
     role: Res<crate::netcode::NetRole>,
+    mut net_id_alloc: ResMut<crate::netcode::NetIdAllocator>,
 ) {
     // Compass-point spawns. Up to 4 players — slots 2 and 3 are
     // populated for online / 4-player local; otherwise the loop
@@ -1408,7 +1409,13 @@ pub fn spawn_match(
     }
 
     spawn_planet(&mut commands, &assets, &mut rng);
-    spawn_asteroids(&mut commands, &assets, &mut rng, role.is_guest());
+    spawn_asteroids(
+        &mut commands,
+        &assets,
+        &mut rng,
+        &mut net_id_alloc,
+        role.is_guest(),
+    );
 
     // Canon VUX `relocate()` (`shpvuxin.cpp:176-189`): on combat
     // start, if the VUX is farther than ~500 canon px from its
@@ -7451,12 +7458,83 @@ fn tick_kohma_passive_blades(
 /// arena isn't empty space. They don't damage on contact (canon
 /// VSmallAsteroid is similar) — they're physical inertia for
 /// projectiles and ships to interact with.
+/// A drifting rock. The `radius` and `frame_idx` are carried on the
+/// component (not just baked into the collider + sprite) so the host
+/// can put them in the netplay snapshot — the guest needs them to
+/// spawn a visually + physically matching mirror when a replenished
+/// asteroid first appears in a snapshot with a NetId it hasn't seen.
 #[derive(Component, Debug, Clone)]
 #[component(on_add = auto_add_rollback)]
-pub struct Asteroid;
+pub struct Asteroid {
+    pub radius: f32,
+    /// 1-based index into the `ASTERO01..64` sprite frames.
+    pub frame_idx: u8,
+}
 
-/// Sprinkle a handful of asteroids at random positions across the
-/// arena, avoiding the player-ship spawn corridors. Called once
+/// melee.dat ships 64 rotation frames per asteroid sprite
+/// (`ASTERO01..64`, indices 1-based). Pick one at random per
+/// asteroid so the field doesn't read as identical rocks.
+pub const ASTEROID_FRAMES: usize = 64;
+
+/// Everything needed to spawn one asteroid. Built by the seeded-RNG
+/// spawners (`spawn_asteroids`, `replenish_asteroids`) on the
+/// authoritative peer, and by the guest's snapshot reconciler from a
+/// received `EntityState`.
+pub struct AsteroidSpawn {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub radius: f32,
+    pub frame_idx: u8,
+    pub mass: f32,
+    pub ang_vel: f32,
+    /// Cross-peer stable id. `0` for solo / hotseat (never synced).
+    pub net_id: u32,
+    /// `true` → `RigidBody::Static` (guest mirror, snapshot-driven).
+    /// `false` → `RigidBody::Dynamic` (host / solo, locally simulated).
+    pub as_static: bool,
+}
+
+/// Single asteroid spawn site shared by the initial field, the
+/// host-side replenisher, and the guest-side snapshot reconciler, so
+/// the component layout can't drift between them.
+pub fn spawn_one_asteroid(commands: &mut Commands, assets: &AssetServer, spec: AsteroidSpawn) {
+    let visual = spec.radius * 2.2;
+    let sprite_path = format!("asteroids/astero{:02}.png", spec.frame_idx);
+    commands.spawn((
+        Asteroid {
+            radius: spec.radius,
+            frame_idx: spec.frame_idx,
+        },
+        crate::netcode::NetId(spec.net_id),
+        Sprite {
+            image: assets.load(sprite_path),
+            color: Color::WHITE,
+            custom_size: Some(Vec2::splat(visual)),
+            ..default()
+        },
+        Transform::from_translation(spec.pos.extend(0.1)),
+        if spec.as_static {
+            RigidBody::Static
+        } else {
+            RigidBody::Dynamic
+        },
+        Collider::circle(spec.radius),
+        Mass(spec.mass),
+        Position(spec.pos),
+        // Restitution gives the collisions some bounce — without
+        // it asteroids would just stick on contact.
+        Restitution::new(0.7),
+        Friction::new(0.0),
+        LinearVelocity(spec.vel),
+        AngularVelocity(spec.ang_vel),
+        LinearDamping(0.0),
+        AngularDamping(0.0),
+        CollisionEventsEnabled,
+    ));
+}
+
+/// Sprinkle the opening field of asteroids at random positions across
+/// the arena, avoiding the player-ship spawn corridors. Called once
 /// per match from `spawn_match`.
 ///
 /// `as_static` forces the spawned bodies to be `RigidBody::Static`
@@ -7467,10 +7545,16 @@ pub struct Asteroid;
 /// integration) drifts visibly when the two peers' frame rates
 /// differ, because guest-side integration races ahead or behind
 /// host-side integration between snapshots.
+///
+/// `alloc` is reset here and then advanced once per asteroid, so the
+/// opening field deterministically gets NetId 1..N on both peers
+/// (same seeded RNG, same allocation order). The host's replenisher
+/// then hands out N+1, N+2, … for rocks added mid-match.
 pub fn spawn_asteroids(
     commands: &mut Commands,
     assets: &AssetServer,
     rng: &mut crate::rng::GameRng,
+    alloc: &mut crate::netcode::NetIdAllocator,
     as_static: bool,
 ) {
     use std::f32::consts::TAU;
@@ -7482,15 +7566,17 @@ pub fn spawn_asteroids(
     /// Don't spawn asteroids too close to the ship spawn corridor.
     const KEEP_OUT_X: f32 = 600.0;
     const KEEP_OUT_Y: f32 = 350.0;
-    /// melee.dat ships 64 rotation frames per asteroid sprite
-    /// (`ASTERO01..64`, indices 1-based). Pick one at random per
-    /// asteroid so the field doesn't read as 8 identical rocks.
-    const ASTEROID_FRAMES: usize = 64;
+
+    // Fresh match → fresh id sequence. Both peers reset + allocate in
+    // lockstep so the opening field is NetId 1..N on each side, and a
+    // rematch starts the sequence over instead of inheriting the
+    // previous match's replenishment counter.
+    alloc.reset();
 
     // All draws here affect game state (asteroid position +
     // velocity + collider mass + radius → physics integration
     // diverges if peers disagree). Use the seeded RNG.
-    for spawn_idx in 0..N {
+    for _ in 0..N {
         let pos = loop {
             let x = rng.signed_unit() * HALF;
             let y = rng.signed_unit() * HALF;
@@ -7505,43 +7591,23 @@ pub fn spawn_asteroids(
         let speed = 18.0 + rng.f32() * 28.0;
         let vel = Vec2::new(theta.cos(), theta.sin()) * speed;
         let radius = 22.0 + rng.f32() * 16.0;
-        let visual = radius * 2.2;
-        let frame_idx = 1 + rng.usize_range(0..ASTEROID_FRAMES);
-        let sprite_path = format!("asteroids/astero{:02}.png", frame_idx);
+        let frame_idx = (1 + rng.usize_range(0..ASTEROID_FRAMES)) as u8;
         let mass = 4.0 + rng.f32() * 3.0;
         let ang_vel = rng.signed_unit() * 0.3;
-        commands.spawn((
-            Asteroid,
-            // NetId is stable across peers: both ends spawn in the
-            // same seeded order, so `spawn_idx + 1` (0 is the
-            // "unassigned" sentinel) names the same rock everywhere.
-            // The host's snapshot stream uses it as the join key.
-            crate::netcode::NetId((spawn_idx as u32) + 1),
-            Sprite {
-                image: assets.load(sprite_path),
-                color: Color::WHITE,
-                custom_size: Some(Vec2::splat(visual)),
-                ..default()
+        spawn_one_asteroid(
+            commands,
+            assets,
+            AsteroidSpawn {
+                pos,
+                vel,
+                radius,
+                frame_idx,
+                mass,
+                ang_vel,
+                net_id: alloc.allocate().0,
+                as_static,
             },
-            Transform::from_translation(pos.extend(0.1)),
-            if as_static {
-                RigidBody::Static
-            } else {
-                RigidBody::Dynamic
-            },
-            Collider::circle(radius),
-            Mass(mass),
-            Position(pos),
-            // Restitution gives the collisions some bounce — without
-            // it asteroids would just stick on contact.
-            Restitution::new(0.7),
-            Friction::new(0.0),
-            LinearVelocity(vel),
-            AngularVelocity(ang_vel),
-            LinearDamping(0.0),
-            AngularDamping(0.0),
-            CollisionEventsEnabled,
-        ));
+        );
     }
     info!("spawned {N} asteroids");
 }
@@ -8022,15 +8088,14 @@ pub fn spawn_asteroid_explosion(
 /// camera's visible region. Keeps the arena populated through
 /// long matches where lasers + ship rams keep destroying rocks.
 ///
-/// **Disabled in netplay.** The fresh spawn site uses the local
-/// camera position as a "spawn off-screen" preference, but each
-/// peer's camera is on a different ship — so the two peers would
-/// pick different positions for the replenished rock, and since
-/// it's spawned without a NetId it never crosses the host/guest
-/// snapshot stream. End state: a growing set of phantom asteroids
-/// at different positions on each screen. We just let the field
-/// thin out over a netplay match instead. The host snapshot stream
-/// keeps the surviving rocks in sync.
+/// **Host / solo only.** The guest bails — it never spawns its own
+/// asteroids; it mirrors whatever the host spawns through the
+/// snapshot stream (`netcode::drain_messages` spawns a Static mirror
+/// the first time a replenished NetId appears). Running the spawner
+/// on the guest would create a peer-local rock at a different,
+/// camera-derived position that the host never knows about. On the
+/// host each new rock gets a fresh NetId from the allocator so the
+/// guest can join it to a mirror.
 fn replenish_asteroids(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -8038,9 +8103,10 @@ fn replenish_asteroids(
     windows: Query<&Window>,
     asteroids: Query<(), With<Asteroid>>,
     mut rng: ResMut<crate::rng::GameRng>,
-    session: Option<Res<crate::netcode::NetSocket>>,
+    role: Res<crate::netcode::NetRole>,
+    mut alloc: ResMut<crate::netcode::NetIdAllocator>,
 ) {
-    if session.is_some() {
+    if role.is_guest() {
         return;
     }
     use std::f32::consts::TAU;
@@ -8048,7 +8114,6 @@ fn replenish_asteroids(
     const HALF: f32 = 3000.0;
     const KEEP_OUT_X: f32 = 600.0;
     const KEEP_OUT_Y: f32 = 350.0;
-    const ASTEROID_FRAMES: usize = 64;
 
     let count = asteroids.iter().count();
     if count >= TARGET_ASTEROID_COUNT {
@@ -8073,16 +8138,11 @@ fn replenish_asteroids(
         (Vec2::ZERO, 1280.0 * 0.5, 720.0 * 0.5)
     };
 
-    // Determinism note: this is gameplay-affecting (the spawned
-    // asteroid's pose feeds the physics step), so the seeded
-    // RNG must drive every draw. We also can't bail mid-loop
-    // based on camera position alone, because in online play
-    // each peer has a different camera — using the camera as a
-    // filter would let peers consume different numbers of RNG
-    // draws. Resolution: do the camera-aware scoring locally
-    // (visual hint) but always consume exactly 16 candidate
-    // pairs of draws + 5 fallback draws, so the RNG state
-    // advances identically on every peer.
+    // Only the host (or a solo player) runs this, so the camera-aware
+    // "spawn off-screen" scoring is unambiguous — there's exactly one
+    // authoritative camera. The guest receives the resulting rock via
+    // snapshot, so it doesn't matter that the host placed it relative
+    // to the host's own view.
     let mut candidates: Vec<Vec2> = Vec::with_capacity(16);
     for _ in 0..16 {
         let x = rng.signed_unit() * HALF;
@@ -8109,30 +8169,22 @@ fn replenish_asteroids(
     let speed = 18.0 + rng.f32() * 28.0;
     let vel = Vec2::new(theta.cos(), theta.sin()) * speed;
     let radius = 22.0 + rng.f32() * 16.0;
-    let visual = radius * 2.2;
-    let frame_idx = 1 + rng.usize_range(0..ASTEROID_FRAMES);
-    let sprite_path = format!("asteroids/astero{:02}.png", frame_idx);
+    let frame_idx = (1 + rng.usize_range(0..ASTEROID_FRAMES)) as u8;
     let mass = 4.0 + rng.f32() * 3.0;
     let ang_vel = rng.signed_unit() * 0.3;
-    commands.spawn((
-        Asteroid,
-        Sprite {
-            image: assets.load(sprite_path),
-            color: Color::WHITE,
-            custom_size: Some(Vec2::splat(visual)),
-            ..default()
+    spawn_one_asteroid(
+        &mut commands,
+        &assets,
+        AsteroidSpawn {
+            pos,
+            vel,
+            radius,
+            frame_idx,
+            mass,
+            ang_vel,
+            net_id: alloc.allocate().0,
+            // Host runs real physics on its asteroids; solo too.
+            as_static: false,
         },
-        Transform::from_translation(pos.extend(0.1)),
-        RigidBody::Dynamic,
-        Collider::circle(radius),
-        Mass(mass),
-        Position(pos),
-        Restitution::new(0.7),
-        Friction::new(0.0),
-        LinearVelocity(vel),
-        AngularVelocity(ang_vel),
-        LinearDamping(0.0),
-        AngularDamping(0.0),
-        CollisionEventsEnabled,
-    ));
+    );
 }

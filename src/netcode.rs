@@ -158,7 +158,7 @@ pub struct EntityState {
 /// Which family of game object an `EntityState` is describing.
 /// Drives guest-side spawn shape (sprite / collider / components)
 /// when a new `NetId` appears in a snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum EntityKind {
     Ship {
         /// Index into `ship::ALL_CLASSES`.
@@ -166,7 +166,13 @@ pub enum EntityKind {
         slot: u8,
     },
     Projectile,
-    Asteroid,
+    Asteroid {
+        /// Collider + visual radius. The guest needs it to build a
+        /// matching mirror the first time this NetId appears.
+        radius: f32,
+        /// 1-based `ASTERO01..64` sprite frame.
+        frame_idx: u8,
+    },
     Planet,
     SubEntity,
 }
@@ -238,11 +244,6 @@ impl Plugin for NetcodePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetRole>()
             .init_resource::<NetIdAllocator>()
-            .init_resource::<DebugCounter>()
-            .add_systems(
-                OnEnter(crate::AppState::InMatch),
-                |mut c: ResMut<DebugCounter>| c.frame = 0,
-            )
             .add_systems(
                 FixedUpdate,
                 push_local_input_to_netinputs
@@ -255,77 +256,11 @@ impl Plugin for NetcodePlugin {
                     send_heartbeat,
                     send_ship_snapshot.run_if(role_is_authoritative),
                     drain_messages,
-                    dump_asteroid_truth.after(drain_messages),
                 )
                     .chain()
                     .run_if(resource_exists::<NetSocket>),
             );
     }
-}
-
-/// Frame counter, reset each `OnEnter(InMatch)`. The diagnostic dumps
-/// stop after `MAX_DEBUG_FRAMES` so a long match doesn't drown the
-/// console.
-#[derive(Resource, Default)]
-pub struct DebugCounter {
-    pub frame: u32,
-}
-
-const MAX_DEBUG_FRAMES: u32 = 60;
-
-/// Per-Update diagnostic dump. Lists every local asteroid by NetId
-/// and entity ID along with its current Position, RigidBody type,
-/// and `Sprite` presence — enough to spot:
-///
-///   - Phantom asteroids (no NetId, or NetId not in latest snapshot)
-///   - Local asteroids with positions different from host's snapshot
-///   - Asteroids that were despawned but somehow still have a Sprite
-///
-/// Also runs on the host so the two consoles can be diffed.
-fn dump_asteroid_truth(
-    mut counter: ResMut<DebugCounter>,
-    role: Res<NetRole>,
-    asteroids: Query<(
-        Entity,
-        Option<&NetId>,
-        &avian2d::prelude::Position,
-        &avian2d::prelude::RigidBody,
-    ), With<crate::ship::Asteroid>>,
-) {
-    if counter.frame >= MAX_DEBUG_FRAMES {
-        return;
-    }
-    let frame = counter.frame;
-    counter.frame += 1;
-    let role_tag = match *role {
-        NetRole::Host => "H",
-        NetRole::Guest => "G",
-        NetRole::Solo => "S",
-    };
-    let mut rows: Vec<(u32, u64, f32, f32, &'static str)> = asteroids
-        .iter()
-        .map(|(e, net_id, pos, rb)| {
-            let kind = match rb {
-                avian2d::prelude::RigidBody::Dynamic => "Dyn",
-                avian2d::prelude::RigidBody::Static => "Sta",
-                avian2d::prelude::RigidBody::Kinematic => "Kin",
-            };
-            (
-                net_id.map(|n| n.0).unwrap_or(0),
-                e.to_bits(),
-                pos.0.x,
-                pos.0.y,
-                kind,
-            )
-        })
-        .collect();
-    rows.sort_by_key(|r| (r.0, r.1));
-    let summary: String = rows
-        .iter()
-        .map(|(n, e, x, y, k)| format!("n{n}/e{e}/{k}({x:+.1},{y:+.1})"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    info!("DBG f{frame:02} {role_tag} n={} | {summary}", rows.len());
 }
 
 /// Run-condition: this peer owns the simulation and should send
@@ -459,10 +394,12 @@ fn send_heartbeat(
 /// Guest's `drain_messages` applies it onto its local entities.
 ///
 /// Ships are keyed by `player_slot` (both peers spawn ships in the
-/// same slot order via `spawn_match`). Asteroids are keyed by the
-/// `NetId` that `spawn_asteroids` assigned from the spawn index — the
-/// `MatchSeed`-driven RNG produces identical spawn orders on both
-/// peers, so `NetId(i)` names the same rock everywhere.
+/// same slot order via `spawn_match`). Asteroids are keyed by `NetId`:
+/// the opening field gets 1..N deterministically on both peers (same
+/// seeded RNG + allocation order), and the host hands out fresh ids
+/// for rocks added by `replenish_asteroids`. Each asteroid row also
+/// carries its radius + sprite frame so the guest can spawn a
+/// matching mirror the first time a new id appears.
 fn send_ship_snapshot(
     time: Res<Time<Real>>,
     mut sock: ResMut<NetSocket>,
@@ -477,16 +414,14 @@ fn send_ship_snapshot(
             &crate::ship::Battery,
         ),
     >,
-    asteroids: Query<
-        (
-            &NetId,
-            &avian2d::prelude::Position,
-            &avian2d::prelude::Rotation,
-            &avian2d::prelude::LinearVelocity,
-            &avian2d::prelude::AngularVelocity,
-        ),
-        With<crate::ship::Asteroid>,
-    >,
+    asteroids: Query<(
+        &NetId,
+        &crate::ship::Asteroid,
+        &avian2d::prelude::Position,
+        &avian2d::prelude::Rotation,
+        &avian2d::prelude::LinearVelocity,
+        &avian2d::prelude::AngularVelocity,
+    )>,
     mut snapshot_tick: Local<u32>,
 ) {
     sock.heartbeat_s += time.delta_secs();
@@ -526,10 +461,13 @@ fn send_ship_snapshot(
         })
         .collect();
 
-    entities.extend(asteroids.iter().map(|(net_id, pos, rot, lin, ang)| {
+    entities.extend(asteroids.iter().map(|(net_id, ast, pos, rot, lin, ang)| {
         EntityState {
             net_id: *net_id,
-            kind: EntityKind::Asteroid,
+            kind: EntityKind::Asteroid {
+                radius: ast.radius,
+                frame_idx: ast.frame_idx,
+            },
             pos_x: pos.0.x,
             pos_y: pos.0.y,
             rot_cos: rot.cos,
@@ -543,18 +481,6 @@ fn send_ship_snapshot(
     }));
 
     let tick = *snapshot_tick;
-    if (tick as u32) < MAX_DEBUG_FRAMES {
-        let ids: String = entities
-            .iter()
-            .filter_map(|e| match e.kind {
-                EntityKind::Asteroid => Some(format!("n{}({:+.1},{:+.1})", e.net_id.0, e.pos_x, e.pos_y)),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        let n = entities.iter().filter(|e| matches!(e.kind, EntityKind::Asteroid)).count();
-        info!("DBG tx#{tick} H ast={n} | {ids}");
-    }
     *snapshot_tick = snapshot_tick.wrapping_add(1);
     let msg = NetMessage::Snapshot {
         tick,
@@ -576,6 +502,7 @@ fn send_ship_snapshot(
 
 fn drain_messages(
     mut commands: Commands,
+    assets: Res<AssetServer>,
     mut sock: ResMut<NetSocket>,
     role: Res<NetRole>,
     mut net_inputs: ResMut<crate::input::NetInputs>,
@@ -607,6 +534,12 @@ fn drain_messages(
     // Snapshot the slot lookup before taking the channel mut-borrow so
     // we don't fight the borrow checker mid-loop.
     let slot_to_peer = sock.slot_to_peer.clone();
+    // NetIds the guest has spawned a mirror for during THIS drain pass.
+    // `commands.spawn` is deferred, so a freshly-spawned asteroid won't
+    // show up in the `asteroids` query until next frame — without this,
+    // two snapshots in one frame both listing a new NetId would spawn
+    // it twice.
+    let mut spawned_this_drain: Vec<NetId> = Vec::new();
     let Some(channel) = sock.channel.as_mut() else {
         return;
     };
@@ -650,37 +583,17 @@ fn drain_messages(
                     continue;
                 }
                 *last_snapshot_tick = tick;
-                let log_this = (tick as u32) < MAX_DEBUG_FRAMES;
-                if log_this {
-                    let ids: String = entities
-                        .iter()
-                        .filter_map(|e| match e.kind {
-                            EntityKind::Asteroid => Some(format!(
-                                "n{}({:+.1},{:+.1})",
-                                e.net_id.0, e.pos_x, e.pos_y
-                            )),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    let n_ast_in_snap = entities
-                        .iter()
-                        .filter(|e| matches!(e.kind, EntityKind::Asteroid))
-                        .count();
-                    let local_ids: String = asteroids
-                        .iter()
-                        .map(|(_e, nid, p, _, _, _)| {
-                            format!("n{}({:+.1},{:+.1})", nid.0, p.0.x, p.0.y)
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    let n_local = asteroids.iter().count();
-                    info!(
-                        "DBG rx#{tick} G snap_ast={n_ast_in_snap} local_ast={n_local} | snap: {ids} | local: {local_ids}"
-                    );
-                }
-                let mut snapshot_asteroid_ids: Vec<NetId> = Vec::with_capacity(entities.len());
-                for state in entities {
+
+                // A real world snapshot always carries the ships. An
+                // empty / shipless one is a connectivity heartbeat —
+                // it must NOT drive asteroid reconciliation, or a
+                // stray ping would despawn the entire field.
+                let has_ships = entities
+                    .iter()
+                    .any(|e| matches!(e.kind, EntityKind::Ship { .. }));
+
+                let mut seen_asteroids: Vec<NetId> = Vec::with_capacity(entities.len());
+                for state in &entities {
                     match state.kind {
                         EntityKind::Ship { slot, .. } => {
                             for (ship, mut pos, mut rot, mut lin, mut ang, mut crew, mut batt) in
@@ -701,7 +614,8 @@ fn drain_messages(
                                 break;
                             }
                         }
-                        EntityKind::Asteroid => {
+                        EntityKind::Asteroid { radius, frame_idx } => {
+                            seen_asteroids.push(state.net_id);
                             let mut hit = false;
                             for (_e, net_id, mut pos, mut rot, mut lin, mut ang) in &mut asteroids
                             {
@@ -718,26 +632,34 @@ fn drain_messages(
                                 hit = true;
                                 break;
                             }
-                            // Always note we saw this NetId in the
-                            // snapshot, even if `hit` is false. `hit`
-                            // can be false in two cases:
-                            //   1. The host destroyed this asteroid in
-                            //      an earlier snapshot, the guest
-                            //      despawned it locally, and now an
-                            //      out-of-order older snapshot arrived
-                            //      still listing it. The asteroid is
-                            //      gone; we don't want to despawn
-                            //      "again" or warn.
-                            //   2. A genuine NetId mismatch — shouldn't
-                            //      happen with the seed-deterministic
-                            //      spawn we have, but if it does, the
-                            //      despawn loop below would clobber
-                            //      every local asteroid because the
-                            //      snapshot's NetId isn't in our list.
-                            // Pushing in both cases keeps despawn safe
-                            // against out-of-order matchbox delivery.
-                            snapshot_asteroid_ids.push(state.net_id);
-                            let _ = hit;
+                            // A NetId in the freshest snapshot with no
+                            // local match is a rock the host added mid-
+                            // match (`replenish_asteroids`). Spawn a
+                            // Static mirror at the snapshot pose; future
+                            // snapshots keep it in sync like the opening
+                            // field. `spawned_this_drain` guards against
+                            // a second snapshot in the same frame double-
+                            // spawning before the deferred spawn applies.
+                            if !hit && !spawned_this_drain.contains(&state.net_id) {
+                                spawned_this_drain.push(state.net_id);
+                                crate::ship::spawn_one_asteroid(
+                                    &mut commands,
+                                    &assets,
+                                    crate::ship::AsteroidSpawn {
+                                        pos: Vec2::new(state.pos_x, state.pos_y),
+                                        vel: Vec2::new(state.vel_x, state.vel_y),
+                                        radius,
+                                        frame_idx,
+                                        // Mass is irrelevant for a Static
+                                        // body (the guest never integrates
+                                        // it), but keep it sane.
+                                        mass: 5.0,
+                                        ang_vel: state.ang_vel,
+                                        net_id: state.net_id.0,
+                                        as_static: true,
+                                    },
+                                );
+                            }
                         }
                         EntityKind::Projectile
                         | EntityKind::Planet
@@ -746,26 +668,19 @@ fn drain_messages(
                         }
                     }
                 }
-                // Despawn any local asteroid the host didn't include —
-                // the host destroyed it (planet contact, projectile,
-                // etc.) and the guest needs to follow suit so we don't
-                // accumulate ghost rocks the host doesn't know about.
-                let mut despawned: Vec<u32> = Vec::new();
-                for (e, net_id, _, _, _, _) in &asteroids {
-                    if !snapshot_asteroid_ids.contains(net_id) {
-                        if let Ok(mut ec) = commands.get_entity(e) {
-                            ec.try_despawn();
-                            despawned.push(net_id.0);
+
+                // Reconcile deletions: any local asteroid the host
+                // dropped from a real snapshot was destroyed (planet
+                // contact, laser, ram) — follow suit so the guest
+                // doesn't accumulate ghosts. Skipped for heartbeats.
+                if has_ships {
+                    for (e, net_id, _, _, _, _) in &asteroids {
+                        if !seen_asteroids.contains(net_id) {
+                            if let Ok(mut ec) = commands.get_entity(e) {
+                                ec.try_despawn();
+                            }
                         }
                     }
-                }
-                if !despawned.is_empty() {
-                    info!(
-                        "DBG rx#{tick} G despawned {} local: {:?} (snap had: {:?})",
-                        despawned.len(),
-                        despawned,
-                        snapshot_asteroid_ids.iter().map(|n| n.0).collect::<Vec<_>>(),
-                    );
                 }
             }
             NetMessage::Lobby { slots } => {

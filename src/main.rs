@@ -67,19 +67,12 @@ fn main() {
                 })
                 .set(ImagePlugin::default_nearest())
                 .set(bevy::log::LogPlugin {
-                    // Console diet: only show the netcode/netplay
-                    // diagnostic stream and anything fatal. All the
-                    // Bevy/Avian/matchbox/wgpu chatter, the ship
-                    // catalog and collider info, the controls banner —
-                    // all silenced so the asteroid-sync trace stands
-                    // out by itself.
+                    // Show all of starcon's own info logs (gameplay,
+                    // netcode, lobby) but keep the noisy third-party
+                    // chatter (wgpu / bevy_render / matchbox / naga) at
+                    // WARN so the console stays readable.
                     level: bevy::log::Level::WARN,
-                    filter: concat!(
-                        "starcon::netcode=info,",
-                        "starcon::netplay=info,",
-                        "starcon=warn",
-                    )
-                    .into(),
+                    filter: "warn,starcon=info".into(),
                     ..default()
                 }),
         )
