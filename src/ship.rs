@@ -8021,6 +8021,16 @@ pub fn spawn_asteroid_explosion(
 /// spawn a fresh rock at a random arena position that's off the
 /// camera's visible region. Keeps the arena populated through
 /// long matches where lasers + ship rams keep destroying rocks.
+///
+/// **Disabled in netplay.** The fresh spawn site uses the local
+/// camera position as a "spawn off-screen" preference, but each
+/// peer's camera is on a different ship — so the two peers would
+/// pick different positions for the replenished rock, and since
+/// it's spawned without a NetId it never crosses the host/guest
+/// snapshot stream. End state: a growing set of phantom asteroids
+/// at different positions on each screen. We just let the field
+/// thin out over a netplay match instead. The host snapshot stream
+/// keeps the surviving rocks in sync.
 fn replenish_asteroids(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -8028,7 +8038,11 @@ fn replenish_asteroids(
     windows: Query<&Window>,
     asteroids: Query<(), With<Asteroid>>,
     mut rng: ResMut<crate::rng::GameRng>,
+    session: Option<Res<crate::netcode::NetSocket>>,
 ) {
+    if session.is_some() {
+        return;
+    }
     use std::f32::consts::TAU;
     const TARGET_ASTEROID_COUNT: usize = 8;
     const HALF: f32 = 3000.0;
