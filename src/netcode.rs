@@ -238,14 +238,6 @@ impl Plugin for NetcodePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetRole>()
             .init_resource::<NetIdAllocator>()
-            .init_resource::<DebugFrameCounter>()
-            .add_systems(
-                OnEnter(crate::AppState::InMatch),
-                |mut c: ResMut<DebugFrameCounter>| {
-                    c.frame = 0;
-                    c.active = true;
-                },
-            )
             .add_systems(
                 FixedUpdate,
                 push_local_input_to_netinputs
@@ -258,78 +250,11 @@ impl Plugin for NetcodePlugin {
                     send_heartbeat,
                     send_ship_snapshot.run_if(role_is_authoritative),
                     drain_messages,
-                    dump_debug_frame.after(drain_messages),
                 )
                     .chain()
                     .run_if(resource_exists::<NetSocket>),
             );
     }
-}
-
-/// Frame counter for the per-frame state dump. Counts the first
-/// `MAX_DEBUG_FRAMES` Updates after entering InMatch, then goes
-/// dark so the console doesn't drown.
-#[derive(Resource, Default)]
-pub struct DebugFrameCounter {
-    pub frame: u32,
-    pub active: bool,
-}
-
-const MAX_DEBUG_FRAMES: u32 = 30;
-
-/// Per-Update state dump for the first `MAX_DEBUG_FRAMES`. Logs
-/// every asteroid's current Position + LinearVelocity along with
-/// the local role + frame index so the two peers' logs can be
-/// diffed side-by-side.
-fn dump_debug_frame(
-    mut counter: ResMut<DebugFrameCounter>,
-    role: Res<NetRole>,
-    asteroids: Query<
-        (
-            &NetId,
-            &avian2d::prelude::Position,
-            &avian2d::prelude::LinearVelocity,
-            &avian2d::prelude::AngularVelocity,
-            &avian2d::prelude::Rotation,
-        ),
-        With<crate::ship::Asteroid>,
-    >,
-) {
-    if !counter.active || counter.frame >= MAX_DEBUG_FRAMES {
-        counter.active = false;
-        return;
-    }
-    let frame = counter.frame;
-    let role_tag = match *role {
-        NetRole::Host => "HOST",
-        NetRole::Guest => "GUEST",
-        NetRole::Solo => "SOLO",
-    };
-    let mut rows: Vec<(u32, f32, f32, f32, f32, f32, f32)> = asteroids
-        .iter()
-        .map(|(net_id, pos, lin, ang, rot)| {
-            (
-                net_id.0,
-                pos.0.x,
-                pos.0.y,
-                lin.0.x,
-                lin.0.y,
-                rot.cos.atan2(rot.sin),
-                ang.0,
-            )
-        })
-        .collect();
-    rows.sort_by_key(|r| r.0);
-    info!(
-        "DBG[f{frame:02} {role_tag}] n_ast={}",
-        rows.len(),
-    );
-    for (id, px, py, vx, vy, rt, av) in rows {
-        info!(
-            "DBG[f{frame:02} {role_tag}] ast{id} pos=({px:+.3},{py:+.3}) vel=({vx:+.3},{vy:+.3}) rot={rt:+.4} ang_vel={av:+.4}"
-        );
-    }
-    counter.frame += 1;
 }
 
 /// Run-condition: this peer owns the simulation and should send
@@ -469,7 +394,6 @@ fn send_heartbeat(
 /// peers, so `NetId(i)` names the same rock everywhere.
 fn send_ship_snapshot(
     time: Res<Time<Real>>,
-    debug: Res<DebugFrameCounter>,
     mut sock: ResMut<NetSocket>,
     ships: Query<
         (
@@ -548,22 +472,6 @@ fn send_ship_snapshot(
     }));
 
     let tick = *snapshot_tick;
-    if debug.active && debug.frame < MAX_DEBUG_FRAMES {
-        let frame = debug.frame;
-        for e in &entities {
-            match e.kind {
-                EntityKind::Asteroid => info!(
-                    "DBG[f{frame:02} TX] ast{} pos=({:+.3},{:+.3}) vel=({:+.3},{:+.3})",
-                    e.net_id.0, e.pos_x, e.pos_y, e.vel_x, e.vel_y,
-                ),
-                EntityKind::Ship { slot, .. } => info!(
-                    "DBG[f{frame:02} TX] ship_slot{} pos=({:+.3},{:+.3}) vel=({:+.3},{:+.3})",
-                    slot, e.pos_x, e.pos_y, e.vel_x, e.vel_y,
-                ),
-                _ => {}
-            }
-        }
-    }
     let msg = NetMessage::Snapshot {
         tick,
         entities,
@@ -584,7 +492,6 @@ fn send_ship_snapshot(
 
 fn drain_messages(
     mut commands: Commands,
-    debug: Res<DebugFrameCounter>,
     mut sock: ResMut<NetSocket>,
     role: Res<NetRole>,
     mut net_inputs: ResMut<crate::input::NetInputs>,
@@ -659,29 +566,8 @@ fn drain_messages(
                     continue;
                 }
                 *last_snapshot_tick = tick;
-                let log_this_frame = debug.active && debug.frame < MAX_DEBUG_FRAMES;
-                let log_frame = debug.frame;
-                if log_this_frame {
-                    info!(
-                        "DBG[f{log_frame:02} RX] received snapshot — {} entities",
-                        entities.len()
-                    );
-                }
                 let mut snapshot_asteroid_ids: Vec<NetId> = Vec::with_capacity(entities.len());
                 for state in entities {
-                    if log_this_frame {
-                        match state.kind {
-                            EntityKind::Asteroid => info!(
-                                "DBG[f{log_frame:02} RX] ast{} pos=({:+.3},{:+.3}) vel=({:+.3},{:+.3})",
-                                state.net_id.0, state.pos_x, state.pos_y, state.vel_x, state.vel_y,
-                            ),
-                            EntityKind::Ship { slot, .. } => info!(
-                                "DBG[f{log_frame:02} RX] ship_slot{} pos=({:+.3},{:+.3}) vel=({:+.3},{:+.3})",
-                                slot, state.pos_x, state.pos_y, state.vel_x, state.vel_y,
-                            ),
-                            _ => {}
-                        }
-                    }
                     match state.kind {
                         EntityKind::Ship { slot, .. } => {
                             for (ship, mut pos, mut rot, mut lin, mut ang, mut crew, mut batt) in
@@ -719,14 +605,26 @@ fn drain_messages(
                                 hit = true;
                                 break;
                             }
-                            if hit {
-                                snapshot_asteroid_ids.push(state.net_id);
-                            } else {
-                                warn!(
-                                    "netcode: guest snapshot has asteroid {:?} but no local match",
-                                    state.net_id,
-                                );
-                            }
+                            // Always note we saw this NetId in the
+                            // snapshot, even if `hit` is false. `hit`
+                            // can be false in two cases:
+                            //   1. The host destroyed this asteroid in
+                            //      an earlier snapshot, the guest
+                            //      despawned it locally, and now an
+                            //      out-of-order older snapshot arrived
+                            //      still listing it. The asteroid is
+                            //      gone; we don't want to despawn
+                            //      "again" or warn.
+                            //   2. A genuine NetId mismatch — shouldn't
+                            //      happen with the seed-deterministic
+                            //      spawn we have, but if it does, the
+                            //      despawn loop below would clobber
+                            //      every local asteroid because the
+                            //      snapshot's NetId isn't in our list.
+                            // Pushing in both cases keeps despawn safe
+                            // against out-of-order matchbox delivery.
+                            snapshot_asteroid_ids.push(state.net_id);
+                            let _ = hit;
                         }
                         EntityKind::Projectile
                         | EntityKind::Planet

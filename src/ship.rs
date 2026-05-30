@@ -7459,16 +7459,19 @@ pub struct Asteroid;
 /// arena, avoiding the player-ship spawn corridors. Called once
 /// per match from `spawn_match`.
 ///
-/// `as_kinematic` forces the spawned bodies to be `RigidBody::Kinematic`
+/// `as_static` forces the spawned bodies to be `RigidBody::Static`
 /// instead of `Dynamic`. The guest in a netplay match passes `true`
-/// so the host's snapshot stream is the only thing that moves these
-/// rocks — locally-predicted ship-asteroid collisions can't push them
-/// off the host's authoritative trajectory.
+/// so its asteroids don't run physics at all locally — the host's
+/// snapshot stream is the only thing that moves them. Anything less
+/// (Kinematic + local gravity, Kinematic + stale-velocity
+/// integration) drifts visibly when the two peers' frame rates
+/// differ, because guest-side integration races ahead or behind
+/// host-side integration between snapshots.
 pub fn spawn_asteroids(
     commands: &mut Commands,
     assets: &AssetServer,
     rng: &mut crate::rng::GameRng,
-    as_kinematic: bool,
+    as_static: bool,
 ) {
     use std::f32::consts::TAU;
     const N: usize = 8;
@@ -7507,14 +7510,6 @@ pub fn spawn_asteroids(
         let sprite_path = format!("asteroids/astero{:02}.png", frame_idx);
         let mass = 4.0 + rng.f32() * 3.0;
         let ang_vel = rng.signed_unit() * 0.3;
-        info!(
-            "DBG[spawn] kinematic={} NetId={} pos=({:.3},{:.3}) vel=({:.3},{:.3}) radius={:.3} mass={:.3} ang_vel={:.4} frame={}",
-            as_kinematic,
-            spawn_idx + 1,
-            pos.x, pos.y,
-            vel.x, vel.y,
-            radius, mass, ang_vel, frame_idx,
-        );
         commands.spawn((
             Asteroid,
             // NetId is stable across peers: both ends spawn in the
@@ -7529,8 +7524,8 @@ pub fn spawn_asteroids(
                 ..default()
             },
             Transform::from_translation(pos.extend(0.1)),
-            if as_kinematic {
-                RigidBody::Kinematic
+            if as_static {
+                RigidBody::Static
             } else {
                 RigidBody::Dynamic
             },
@@ -7735,6 +7730,7 @@ fn apply_planet_gravity(
         (
             &Position,
             &mut LinearVelocity,
+            &RigidBody,
             Option<&InertialessDrive>,
             Option<&crate::ultimate::HyperActive>,
         ),
@@ -7747,19 +7743,16 @@ fn apply_planet_gravity(
     }
     for (planet_pos, planet) in &planets {
         let range_sq = planet.gravity_range * planet.gravity_range;
-        for (pos, mut vel, inertialess, hyper) in &mut bodies {
-            // NOTE: this loop INTENTIONALLY runs on kinematic bodies
-            // too. The guest's asteroids are kinematic (so locally-
-            // predicted ship-asteroid collisions can't push them off
-            // the host's authoritative trajectory), but we still want
-            // their velocity to evolve under gravity the same way the
-            // host's dynamic asteroids do — otherwise the guest
-            // integrates a stale snapshot velocity and visibly trails
-            // the host during a planetary slingshot. Gravity is
-            // deterministic given the same planet position, so both
-            // peers compute the same accel and tracks match between
-            // snapshots.
-            //
+        for (pos, mut vel, rb, inertialess, hyper) in &mut bodies {
+            // Static bodies have no velocity by definition. The guest's
+            // asteroids are static — their motion is driven entirely by
+            // the host's authoritative snapshot stream, never by local
+            // gravity. Running gravity on them would just spin a
+            // useless number into a LinearVelocity that physics
+            // doesn't read.
+            if rb.is_static() {
+                continue;
+            }
             // Inertialess drive (Arilou) rejects all external acceleration;
             // a ship mid-ultimate owns its own motion.
             if inertialess.is_some() || hyper.is_some() {
