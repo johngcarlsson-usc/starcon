@@ -65,7 +65,23 @@ fn main() {
                     meta_check: bevy::asset::AssetMetaCheck::Never,
                     ..default()
                 })
-                .set(ImagePlugin::default_nearest()),
+                .set(ImagePlugin::default_nearest())
+                .set(bevy::log::LogPlugin {
+                    // Console diet: only show the netcode/netplay
+                    // diagnostic stream and anything fatal. All the
+                    // Bevy/Avian/matchbox/wgpu chatter, the ship
+                    // catalog and collider info, the controls banner —
+                    // all silenced so the asteroid-sync trace stands
+                    // out by itself.
+                    level: bevy::log::Level::WARN,
+                    filter: concat!(
+                        "starcon::netcode=info,",
+                        "starcon::netplay=info,",
+                        "starcon=warn",
+                    )
+                    .into(),
+                    ..default()
+                }),
         )
         .init_state::<AppState>()
         .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.05)))
