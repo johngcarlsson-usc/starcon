@@ -78,6 +78,19 @@ fn main() {
         )
         .init_state::<AppState>()
         .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.05)))
+        // Downgrade unhandled ECS command errors from a hard panic to a
+        // logged warning. The default handler is `panic`, which is
+        // dev-oriented; in a real-time game with heavy entity churn
+        // (projectiles spawning + despawning every frame, ships dying
+        // mid-collision-pass) a deferred command can legitimately
+        // target an entity that another system despawned earlier the
+        // same frame. Those commands are no-ops semantically — the
+        // entity is already gone — so warn-and-continue is correct, and
+        // it stops a stray double-despawn during combat from taking
+        // down the whole window.
+        .insert_resource(bevy::ecs::error::DefaultErrorHandler(
+            bevy::ecs::error::warn,
+        ))
         .add_plugins((
             ship::ShipPlugin,
             ability::AbilityPlugin,
