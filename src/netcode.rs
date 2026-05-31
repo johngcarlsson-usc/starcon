@@ -761,11 +761,16 @@ fn push_local_input_to_netinputs(
     net.previous = net.current;
     net.current[slot] = local_input;
 
-    // Guest forwards its own input to the host on every tick.
-    // Cheap (a handful of bytes) and gives the host a fresh value
-    // even when the guest is idle — host's `gather_slot_inputs`
-    // reads `NetInputs.current[guest_slot]` directly.
-    if !role.is_guest() {
+    // Forward this peer's input to the other side EVERY tick — both
+    // directions. The host needs the guest's keypresses to drive the
+    // authoritative sim (read by `gather_slot_inputs` from
+    // `NetInputs.current[guest_slot]`); the guest needs the host's
+    // lobby-vote bytes (class + FLAG_READY ride on `PlayerInput`) so
+    // its own `detect_all_ready` can fire and trigger the rematch
+    // transition. Without the host->guest direction, the guest's view
+    // of `NetInputs.current[host_slot]` stays at zeros forever and
+    // PostMatch is a one-way door.
+    if matches!(*role, NetRole::Solo) || sock.peers.is_empty() {
         return;
     }
     let msg = NetMessage::Input {
@@ -1468,20 +1473,26 @@ fn drain_messages(
         };
         match msg {
             NetMessage::Input { tick: _, input } => {
-                // Only the host applies inbound inputs. Guests get
-                // their own slot's input from `push_local_input_to_netinputs`
-                // and discover everyone else's via snapshots.
-                if !role.is_authoritative() {
-                    continue;
-                }
+                // BOTH peers process inbound inputs now, not just the
+                // host. The host needs the guest's input to drive the
+                // authoritative sim; the guest needs the HOST's input
+                // bytes so its local `NetInputs.current[host_slot]`
+                // carries the host's class pick + `FLAG_READY` bit,
+                // which `detect_all_ready` reads off `SlotInputs.held`
+                // to fire the PostMatch -> Resetting transition on the
+                // guest's side too. Without this, the guest can never
+                // see the host be ready and stays stuck in PostMatch
+                // forever while the host rematches alone.
+                //
+                // On the guest, the host's `input.buttons` / `turn` /
+                // etc. land in `NetInputs.current[host_slot]` but are
+                // overwritten by every snapshot's per-ship pose/velocity
+                // — they only meaningfully drive the host's
+                // class+ready bits the guest's lobby reconciler reads.
                 let Some(slot) = slot_to_peer.iter().position(|&p| p == peer) else {
                     continue;
                 };
                 if slot < net_inputs.current.len() {
-                    // `previous` rotation for this slot is handled
-                    // each tick by `push_local_input_to_netinputs`.
-                    // Overwriting `current` here lands the freshest
-                    // guest input ahead of the next `gather_slot_inputs`.
                     net_inputs.current[slot] = input;
                 }
             }
