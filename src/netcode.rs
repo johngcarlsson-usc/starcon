@@ -122,10 +122,35 @@ pub enum NetMessage {
     /// fields. Under host authority the guest runs no combat sim, so
     /// these are the ONLY projectiles it sees — render-only mirrors of
     /// the host's authoritative shots.
+    ///
+    /// The visual lists (`beams`, `damage_zones`, `attached_zones`,
+    /// `tractors`, `sub_entities`, `satellites`) ride along for the
+    /// same reason: each combat ability has its own host-side
+    /// component flavour the guest can't see, so we project them all
+    /// down to "pose + sprite" rows and let the guest spawn one
+    /// mirror entity per NetId. Heartbeats omit them (empty vecs);
+    /// real snapshots drive both pose-update and lifecycle (a NetId
+    /// missing from a real snapshot is a despawn signal).
+    ///
+    /// `explosions` and `zaps` are fire-and-forget spawn events
+    /// instead of per-snapshot rows because they're millisecond-
+    /// lifetime sprite-only animations — re-streaming every active
+    /// one each tick would burn bandwidth on visuals that already
+    /// have a perfectly fine local tick system on the guest. Host
+    /// pushes one event into the queue at spawn time, the guest
+    /// spawns a local copy that ticks down on its own clock.
     Snapshot {
         tick: u32,
         entities: Vec<EntityState>,
         projectiles: Vec<ProjState>,
+        beams: Vec<BeamState>,
+        damage_zones: Vec<DamageZoneState>,
+        attached_zones: Vec<AttachedZoneState>,
+        tractors: Vec<TractorState>,
+        sub_entities: Vec<SubEntityState>,
+        satellites: Vec<SatelliteState>,
+        explosions: Vec<ExplosionSpawn>,
+        zaps: Vec<ZapSpawn>,
     },
     /// Host → Guest. Lobby state echo so the guest can render the
     /// per-slot READY / class status during PostMatch.
@@ -162,6 +187,14 @@ pub struct EntityState {
     pub ang_vel: f32,
     pub crew: i32,
     pub batt: i32,
+    /// Active shield damage-factor on this ship, or `None` if the
+    /// host's `ShieldActive` component isn't present this tick.
+    /// `draw_shield_rings` runs on both peers and keys off the
+    /// component's presence, so reconciling this on the guest is
+    /// what makes the canonical SC2 shield bubble actually render
+    /// during the opponent's ability — without it, the guest sees
+    /// damage being absorbed with no visible cause.
+    pub shield_factor: Option<f32>,
 }
 
 /// Which family of game object an `EntityState` is describing.
@@ -214,6 +247,188 @@ pub struct ProjState {
 /// sole driver of its pose and lifetime (no local physics/collision).
 #[derive(Component)]
 pub struct ProjectileMirror;
+
+// ----------------------------------------------------------------
+// Visual-mirror wire formats.
+//
+// Each persistent visual entity the host can spawn during combat
+// gets one of these state rows + a guest-side `*Mirror` marker
+// component. The mirror entities carry ONLY `Transform` + `Sprite`
+// (no physics, no collider, no gameplay markers): the snapshot
+// stream is the sole driver of their pose, size, colour, and
+// lifetime. A NetId that drops out of a real (non-heartbeat)
+// snapshot is the despawn signal.
+//
+// Wire rep choice: every visual ships its sprite descriptor
+// (asset path / size / colour / endpoint geometry) verbatim each
+// snapshot — same approach as `ProjState`. That's a few bytes per
+// row vs. a shared "weapon flavour enum" but lets the guest spawn
+// faithful mirrors without any cross-peer registry of sprite ids.
+// Costs O(active visuals × snapshot rate) bandwidth; for a 1v1
+// match with ~5 combat visuals this is sub-kB/s and easily fits
+// in the existing ~50 kB/s budget.
+// ----------------------------------------------------------------
+
+/// One beam (Chmmr / Arilou / VUX laser) in a snapshot. The host
+/// recomputes the beam's full owner→hit pose every `tick_beams`
+/// pass, so we just snapshot the final `Transform`-equivalent
+/// (midpoint + rotation) plus the sprite's width / length — the
+/// guest doesn't need the firer's pose, just the rendered quad.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeamState {
+    pub net_id: NetId,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub rot_cos: f32,
+    pub rot_sin: f32,
+    /// `Sprite.custom_size.x` — beam visible width.
+    pub width: f32,
+    /// `Sprite.custom_size.y` — beam length (owner → hit point).
+    pub length: f32,
+    pub color: [f32; 4],
+}
+
+/// A render-only mirror of a host-side `Beam` entity.
+#[derive(Component)]
+pub struct BeamMirror;
+
+/// A free-standing damage zone (Glory Device burst, Kohr-Ah blade
+/// ring, mine field, Thraddash afterburn fireball). Round sprite,
+/// pose-driven by the snapshot. The guest doesn't need radius /
+/// damage / lifetime — those are host-side gameplay fields. We
+/// ship sprite path because the Thraddash fireball uses a textured
+/// disc instead of a flat colour.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DamageZoneState {
+    pub net_id: NetId,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    /// Square side length of the sprite (`radius * 2`).
+    pub size: f32,
+    pub color: [f32; 4],
+    /// Optional sprite asset path; empty string means flat-colour.
+    pub sprite_path: String,
+}
+
+#[derive(Component)]
+pub struct DamageZoneMirror;
+
+/// An attached damage zone (Umgah cone, Zoq-Fot-Pik tongue) — like
+/// a free-standing zone but the host recomputes its world pose
+/// each tick from the owner's pose. We snapshot the final world
+/// pose; the guest doesn't need the owner / offset relationship.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachedZoneState {
+    pub net_id: NetId,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub size: f32,
+    pub color: [f32; 4],
+}
+
+#[derive(Component)]
+pub struct AttachedZoneMirror;
+
+/// A tractor / repulsor beam visual. `tick_tractors` paints the
+/// effect as a pulsing disc around the gripped target (or hides
+/// the sprite if there's no target), so we just snapshot whatever
+/// the host's render quad turned out to be.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TractorState {
+    pub net_id: NetId,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub size: f32,
+    pub color: [f32; 4],
+    /// Optional sprite asset path (the disc uses `ui/joystick_base.png`).
+    pub sprite_path: String,
+}
+
+#[derive(Component)]
+pub struct TractorMirror;
+
+/// A `SubEntity` — DOGI, Orz marine, Syreen crew pod, Kzer-Za
+/// fighter. These are MOVING sprites with their own pose, so the
+/// snapshot row matches `ProjState`'s shape (pose + velocity +
+/// sprite descriptor). Velocity rides along so the guest can
+/// dead-reckon between snapshots, same as projectiles.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubEntityState {
+    pub net_id: NetId,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub rot_cos: f32,
+    pub rot_sin: f32,
+    pub vel_x: f32,
+    pub vel_y: f32,
+    pub sprite_path: String,
+    pub size: f32,
+    pub color: [f32; 4],
+}
+
+#[derive(Component)]
+pub struct SubEntityMirror;
+
+/// One of the three satellites orbiting a Chmmr Avatar. Pose-only;
+/// the sprite asset is fixed (`shot_b01.png`) and the size is a
+/// constant, so the guest can hardcode them — we still ship the
+/// size to keep the mirror code symmetric with the others (and to
+/// future-proof against a multi-class "owns satellites" mechanic).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SatelliteState {
+    pub net_id: NetId,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub size: f32,
+    pub color: [f32; 4],
+}
+
+#[derive(Component)]
+pub struct SatelliteMirror;
+
+/// Fire-and-forget asteroid explosion (KABOOM animation) spawn
+/// event. The guest spawns a regular `AsteroidExplosion` entity
+/// from this — the local `tick_asteroid_explosions` system then
+/// drives the frame animation and despawn on its own clock.
+/// Re-streaming the explosion's state every snapshot would burn
+/// bandwidth for no benefit: the animation is fully deterministic
+/// from the spawn pose + radius.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplosionSpawn {
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub radius: f32,
+}
+
+/// Fire-and-forget zap-flash spawn event. Same logic as
+/// `ExplosionSpawn`: short-lived sprite line, local tick on the
+/// guest fades it out and despawns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZapSpawn {
+    /// Midpoint of the flash line in world space.
+    pub pos_x: f32,
+    pub pos_y: f32,
+    /// Rotation Z in radians (line orientation).
+    pub angle: f32,
+    /// Length of the flash.
+    pub length: f32,
+    /// Width of the flash sprite.
+    pub width: f32,
+    /// Total lifetime in seconds (mirror uses this to drive its fade).
+    pub total_s: f32,
+    pub color: [f32; 4],
+}
+
+/// Host-side queue of fire-and-forget visual events accumulated
+/// since the last snapshot send. Combat helpers (asteroid
+/// explosion, satellite zap, fighter laser) push into this; the
+/// snapshot sender drains it into the outgoing `Snapshot` message
+/// and clears. Empty on the guest / in solo.
+#[derive(Resource, Default, Debug)]
+pub struct VisualEventQueue {
+    pub explosions: Vec<ExplosionSpawn>,
+    pub zaps: Vec<ZapSpawn>,
+}
 
 /// Per-slot lobby state echoed by the host so the guest's
 /// `update_status_banner` sees the same READY / class for every
@@ -282,6 +497,7 @@ impl Plugin for NetcodePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetRole>()
             .init_resource::<NetIdAllocator>()
+            .init_resource::<VisualEventQueue>()
             .add_systems(
                 FixedUpdate,
                 push_local_input_to_netinputs
@@ -406,6 +622,14 @@ fn send_heartbeat(
         tick: 0,
         entities: Vec::new(),
         projectiles: Vec::new(),
+        beams: Vec::new(),
+        damage_zones: Vec::new(),
+        attached_zones: Vec::new(),
+        tractors: Vec::new(),
+        sub_entities: Vec::new(),
+        satellites: Vec::new(),
+        explosions: Vec::new(),
+        zaps: Vec::new(),
     };
     let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) else {
         return;
@@ -442,6 +666,7 @@ fn send_heartbeat(
 fn send_ship_snapshot(
     time: Res<Time<Real>>,
     mut sock: ResMut<NetSocket>,
+    mut events: ResMut<VisualEventQueue>,
     ships: Query<
         (
             &crate::ship::Ship,
@@ -451,6 +676,7 @@ fn send_ship_snapshot(
             &avian2d::prelude::AngularVelocity,
             &crate::ship::Crew,
             &crate::ship::Battery,
+            Option<&crate::ship::ShieldActive>,
         ),
     >,
     asteroids: Query<(
@@ -471,6 +697,34 @@ fn send_ship_snapshot(
         ),
         With<crate::ship::Projectile>,
     >,
+    // Visual classes — pose-and-sprite snapshots so the guest can
+    // mirror them. The Avian `Position` is the authoritative pose for
+    // anything with a collider; the `Transform` is the render pose
+    // for sprite-only beams / tractors that have neither.
+    beams: Query<(&NetId, &Transform, &Sprite), With<crate::ship::Beam>>,
+    damage_zones: Query<
+        (&NetId, &avian2d::prelude::Position, &Sprite),
+        With<crate::ship::DamageZone>,
+    >,
+    attached_zones: Query<
+        (&NetId, &avian2d::prelude::Position, &Sprite),
+        With<crate::ship::AttachedDamageZone>,
+    >,
+    tractors: Query<(&NetId, &Transform, &Sprite), With<crate::ship::TractorBeam>>,
+    sub_entities: Query<
+        (
+            &NetId,
+            &avian2d::prelude::Position,
+            &avian2d::prelude::Rotation,
+            &avian2d::prelude::LinearVelocity,
+            &Sprite,
+        ),
+        With<crate::ship::SubEntity>,
+    >,
+    satellites: Query<
+        (&NetId, &avian2d::prelude::Position, &Sprite),
+        With<crate::ship::ChmmrSatellite>,
+    >,
     mut snapshot_tick: Local<u32>,
 ) {
     sock.heartbeat_s += time.delta_secs();
@@ -484,7 +738,7 @@ fn send_ship_snapshot(
 
     let mut entities: Vec<EntityState> = ships
         .iter()
-        .map(|(ship, pos, rot, lin, ang, crew, batt)| EntityState {
+        .map(|(ship, pos, rot, lin, ang, crew, batt, shield)| EntityState {
             net_id: NetId(0),
             kind: EntityKind::Ship {
                 // Guest reads the class for this slot from its own
@@ -507,6 +761,7 @@ fn send_ship_snapshot(
             ang_vel: ang.0,
             crew: crew.current,
             batt: batt.current,
+            shield_factor: shield.map(|s| s.damage_factor),
         })
         .collect();
 
@@ -526,6 +781,7 @@ fn send_ship_snapshot(
             ang_vel: ang.0,
             crew: 0,
             batt: 0,
+            shield_factor: None,
         }
     }));
 
@@ -553,12 +809,140 @@ fn send_ship_snapshot(
         })
         .collect();
 
+    // Visual classes — each query maps directly to its wire state.
+    // Beams + tractors use `Transform` as their pose source because
+    // they have no Avian `Position` (they're sprite-only entities);
+    // damage zones / attached zones / satellites do have Position
+    // because their sensor collider is the gameplay hit-volume.
+    let beams: Vec<BeamState> = beams
+        .iter()
+        .map(|(net_id, xf, sprite)| {
+            let (w, l) = sprite
+                .custom_size
+                .map(|s| (s.x, s.y))
+                .unwrap_or((0.0, 0.0));
+            let (_, _, ang) = xf.rotation.to_euler(bevy::math::EulerRot::XYZ);
+            BeamState {
+                net_id: *net_id,
+                pos_x: xf.translation.x,
+                pos_y: xf.translation.y,
+                rot_cos: ang.cos(),
+                rot_sin: ang.sin(),
+                width: w,
+                length: l,
+                color: sprite.color.to_linear().to_f32_array(),
+            }
+        })
+        .collect();
+    let damage_zones: Vec<DamageZoneState> = damage_zones
+        .iter()
+        .map(|(net_id, pos, sprite)| {
+            let size = sprite.custom_size.map(|s| s.x).unwrap_or(0.0);
+            let sprite_path = sprite
+                .image
+                .path()
+                .map(|p| p.to_string())
+                .unwrap_or_default();
+            DamageZoneState {
+                net_id: *net_id,
+                pos_x: pos.0.x,
+                pos_y: pos.0.y,
+                size,
+                color: sprite.color.to_linear().to_f32_array(),
+                sprite_path,
+            }
+        })
+        .collect();
+    let attached_zones: Vec<AttachedZoneState> = attached_zones
+        .iter()
+        .map(|(net_id, pos, sprite)| {
+            let size = sprite.custom_size.map(|s| s.x).unwrap_or(0.0);
+            AttachedZoneState {
+                net_id: *net_id,
+                pos_x: pos.0.x,
+                pos_y: pos.0.y,
+                size,
+                color: sprite.color.to_linear().to_f32_array(),
+            }
+        })
+        .collect();
+    let tractors: Vec<TractorState> = tractors
+        .iter()
+        .map(|(net_id, xf, sprite)| {
+            let size = sprite.custom_size.map(|s| s.x).unwrap_or(0.0);
+            let sprite_path = sprite
+                .image
+                .path()
+                .map(|p| p.to_string())
+                .unwrap_or_default();
+            TractorState {
+                net_id: *net_id,
+                pos_x: xf.translation.x,
+                pos_y: xf.translation.y,
+                size,
+                color: sprite.color.to_linear().to_f32_array(),
+                sprite_path,
+            }
+        })
+        .collect();
+    let sub_entities: Vec<SubEntityState> = sub_entities
+        .iter()
+        .map(|(net_id, pos, rot, lin, sprite)| {
+            let size = sprite.custom_size.map(|s| s.x).unwrap_or(0.0);
+            let sprite_path = sprite
+                .image
+                .path()
+                .map(|p| p.to_string())
+                .unwrap_or_default();
+            SubEntityState {
+                net_id: *net_id,
+                pos_x: pos.0.x,
+                pos_y: pos.0.y,
+                rot_cos: rot.cos,
+                rot_sin: rot.sin,
+                vel_x: lin.0.x,
+                vel_y: lin.0.y,
+                sprite_path,
+                size,
+                color: sprite.color.to_linear().to_f32_array(),
+            }
+        })
+        .collect();
+    let satellites: Vec<SatelliteState> = satellites
+        .iter()
+        .map(|(net_id, pos, sprite)| {
+            let size = sprite.custom_size.map(|s| s.x).unwrap_or(0.0);
+            SatelliteState {
+                net_id: *net_id,
+                pos_x: pos.0.x,
+                pos_y: pos.0.y,
+                size,
+                color: sprite.color.to_linear().to_f32_array(),
+            }
+        })
+        .collect();
+
+    // Drain the host's fire-and-forget visual event queues. The
+    // guest spawns local copies of these and ticks them with its
+    // own clock — they're not in any per-snapshot reconcile loop,
+    // so missing a snapshot just costs a single visual frame.
+    let explosions = std::mem::take(&mut events.explosions);
+    let zaps = std::mem::take(&mut events.zaps);
+
     let tick = *snapshot_tick;
     *snapshot_tick = snapshot_tick.wrapping_add(1);
     let msg = NetMessage::Snapshot {
         tick,
         entities,
         projectiles,
+        beams,
+        damage_zones,
+        attached_zones,
+        tractors,
+        sub_entities,
+        satellites,
+        explosions,
+        zaps,
     };
     let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) else {
         return;
@@ -582,6 +966,7 @@ fn drain_messages(
     mut net_inputs: ResMut<crate::input::NetInputs>,
     mut ships: Query<
         (
+            Entity,
             &crate::ship::Ship,
             &mut avian2d::prelude::Position,
             &mut avian2d::prelude::Rotation,
@@ -589,6 +974,7 @@ fn drain_messages(
             &mut avian2d::prelude::AngularVelocity,
             &mut crate::ship::Crew,
             &mut crate::ship::Battery,
+            Option<&mut crate::ship::ShieldActive>,
         ),
         Without<crate::ship::Asteroid>,
     >,
@@ -603,11 +989,88 @@ fn drain_messages(
         ),
         With<crate::ship::Asteroid>,
     >,
-    // Guest-side render-only projectile mirrors. Pure `Transform`
+    // Guest-side render-only mirrors. Pure `Transform` + `Sprite`
     // (no Position/RigidBody/Collider) — the reconciler drives them
     // straight from the snapshot, so they don't conflict with the
-    // Position-based ship/asteroid queries above.
-    mut proj_mirrors: Query<(Entity, &NetId, &mut Transform), With<ProjectileMirror>>,
+    // Position-based ship/asteroid queries above. Each visual class
+    // gets its own mirror query so the despawn sweep at the bottom
+    // of the snapshot arm can drop NetIds the host dropped.
+    mut proj_mirrors: Query<
+        (Entity, &NetId, &mut Transform),
+        (With<ProjectileMirror>, Without<BeamMirror>),
+    >,
+    mut beam_mirrors: Query<
+        (Entity, &NetId, &mut Transform, &mut Sprite),
+        (
+            With<BeamMirror>,
+            Without<ProjectileMirror>,
+            Without<DamageZoneMirror>,
+            Without<AttachedZoneMirror>,
+            Without<TractorMirror>,
+            Without<SubEntityMirror>,
+            Without<SatelliteMirror>,
+        ),
+    >,
+    mut zone_mirrors: Query<
+        (Entity, &NetId, &mut Transform, &mut Sprite),
+        (
+            With<DamageZoneMirror>,
+            Without<ProjectileMirror>,
+            Without<BeamMirror>,
+            Without<AttachedZoneMirror>,
+            Without<TractorMirror>,
+            Without<SubEntityMirror>,
+            Without<SatelliteMirror>,
+        ),
+    >,
+    mut attached_mirrors: Query<
+        (Entity, &NetId, &mut Transform, &mut Sprite),
+        (
+            With<AttachedZoneMirror>,
+            Without<ProjectileMirror>,
+            Without<BeamMirror>,
+            Without<DamageZoneMirror>,
+            Without<TractorMirror>,
+            Without<SubEntityMirror>,
+            Without<SatelliteMirror>,
+        ),
+    >,
+    mut tractor_mirrors: Query<
+        (Entity, &NetId, &mut Transform, &mut Sprite),
+        (
+            With<TractorMirror>,
+            Without<ProjectileMirror>,
+            Without<BeamMirror>,
+            Without<DamageZoneMirror>,
+            Without<AttachedZoneMirror>,
+            Without<SubEntityMirror>,
+            Without<SatelliteMirror>,
+        ),
+    >,
+    mut sub_mirrors: Query<
+        (Entity, &NetId, &mut Transform, &mut Sprite),
+        (
+            With<SubEntityMirror>,
+            Without<ProjectileMirror>,
+            Without<BeamMirror>,
+            Without<DamageZoneMirror>,
+            Without<AttachedZoneMirror>,
+            Without<TractorMirror>,
+            Without<SatelliteMirror>,
+        ),
+    >,
+    mut sat_mirrors: Query<
+        (Entity, &NetId, &mut Transform, &mut Sprite),
+        (
+            With<SatelliteMirror>,
+            Without<ProjectileMirror>,
+            Without<BeamMirror>,
+            Without<DamageZoneMirror>,
+            Without<AttachedZoneMirror>,
+            Without<TractorMirror>,
+            Without<SubEntityMirror>,
+        ),
+    >,
     mut last_snapshot_tick: Local<u32>,
 ) {
     // Snapshot the slot lookup before taking the channel mut-borrow so
@@ -648,7 +1111,19 @@ fn drain_messages(
                     net_inputs.current[slot] = input;
                 }
             }
-            NetMessage::Snapshot { tick, entities, projectiles } => {
+            NetMessage::Snapshot {
+                tick,
+                entities,
+                projectiles,
+                beams,
+                damage_zones,
+                attached_zones,
+                tractors,
+                sub_entities,
+                satellites,
+                explosions,
+                zaps,
+            } => {
                 // Guest applies snapshots onto its local ships;
                 // host ignores them (it IS the authority).
                 if !role.is_guest() {
@@ -675,8 +1150,17 @@ fn drain_messages(
                 for state in &entities {
                     match state.kind {
                         EntityKind::Ship { slot, .. } => {
-                            for (ship, mut pos, mut rot, mut lin, mut ang, mut crew, mut batt) in
-                                &mut ships
+                            for (
+                                ship_entity,
+                                ship,
+                                mut pos,
+                                mut rot,
+                                mut lin,
+                                mut ang,
+                                mut crew,
+                                mut batt,
+                                shield,
+                            ) in &mut ships
                             {
                                 if ship.player_slot as u8 != slot {
                                     continue;
@@ -690,6 +1174,41 @@ fn drain_messages(
                                 ang.0 = state.ang_vel;
                                 crew.current = state.crew;
                                 batt.current = state.batt;
+                                // Mirror the host's shield presence
+                                // onto the guest's ship. `draw_shield_rings`
+                                // (in Update on both peers) renders an
+                                // outline iff `ShieldActive` is present,
+                                // so the toggle here is what makes
+                                // opponent shields actually appear /
+                                // disappear during their abilities. We
+                                // copy `damage_factor` even when a local
+                                // `ShieldActive` already exists (e.g.
+                                // permanent Alabc shield) — same value,
+                                // so the insert is idempotent.
+                                match (state.shield_factor, shield) {
+                                    (Some(factor), Some(mut s)) => {
+                                        s.damage_factor = factor;
+                                        s.remaining = f32::INFINITY;
+                                    }
+                                    (Some(factor), None) => {
+                                        if let Ok(mut ec) =
+                                            commands.get_entity(ship_entity)
+                                        {
+                                            ec.try_insert(crate::ship::ShieldActive {
+                                                remaining: f32::INFINITY,
+                                                damage_factor: factor,
+                                            });
+                                        }
+                                    }
+                                    (None, Some(_)) => {
+                                        if let Ok(mut ec) =
+                                            commands.get_entity(ship_entity)
+                                        {
+                                            ec.try_remove::<crate::ship::ShieldActive>();
+                                        }
+                                    }
+                                    (None, None) => {}
+                                }
                                 break;
                             }
                         }
@@ -808,6 +1327,357 @@ fn drain_messages(
                             }
                         }
                     }
+                }
+
+                // --- Beam mirrors ---
+                // The host has already collapsed the beam to its final
+                // owner→hit render quad; we just lift pose + size +
+                // colour onto a sprite. No owner relationship is
+                // mirrored — the guest doesn't need one, the beam pose
+                // is fully captured by the snapshot.
+                for b in &beams {
+                    let angle = b.rot_sin.atan2(b.rot_cos);
+                    let mut hit = false;
+                    for (_e, net_id, mut xf, mut sprite) in &mut beam_mirrors {
+                        if *net_id != b.net_id {
+                            continue;
+                        }
+                        xf.translation.x = b.pos_x;
+                        xf.translation.y = b.pos_y;
+                        xf.translation.z = 0.3;
+                        xf.rotation = Quat::from_rotation_z(angle);
+                        sprite.custom_size = Some(Vec2::new(b.width, b.length));
+                        sprite.color = Color::linear_rgba(
+                            b.color[0], b.color[1], b.color[2], b.color[3],
+                        );
+                        hit = true;
+                        break;
+                    }
+                    if !hit && !spawned_this_drain.contains(&b.net_id) {
+                        spawned_this_drain.push(b.net_id);
+                        commands.spawn((
+                            BeamMirror,
+                            b.net_id,
+                            Sprite::from_color(
+                                Color::linear_rgba(
+                                    b.color[0], b.color[1], b.color[2], b.color[3],
+                                ),
+                                Vec2::new(b.width, b.length),
+                            ),
+                            Transform::from_translation(Vec3::new(b.pos_x, b.pos_y, 0.3))
+                                .with_rotation(Quat::from_rotation_z(angle)),
+                        ));
+                    }
+                }
+                if has_ships {
+                    for (e, net_id, _, _) in &beam_mirrors {
+                        if !beams.iter().any(|b| b.net_id == *net_id) {
+                            if let Ok(mut ec) = commands.get_entity(e) {
+                                ec.try_despawn();
+                            }
+                        }
+                    }
+                }
+
+                // --- DamageZone mirrors ---
+                // Damage zones are static colourful discs (Glory blast,
+                // Thraddash fireball, mine field). Sprite path may be
+                // empty (flat-colour `Sprite::from_color`); load the
+                // image only when one's provided.
+                for z in &damage_zones {
+                    let mut hit = false;
+                    for (_e, net_id, mut xf, mut sprite) in &mut zone_mirrors {
+                        if *net_id != z.net_id {
+                            continue;
+                        }
+                        xf.translation.x = z.pos_x;
+                        xf.translation.y = z.pos_y;
+                        xf.translation.z = 0.2;
+                        sprite.custom_size = Some(Vec2::splat(z.size));
+                        sprite.color = Color::linear_rgba(
+                            z.color[0], z.color[1], z.color[2], z.color[3],
+                        );
+                        hit = true;
+                        break;
+                    }
+                    if !hit && !spawned_this_drain.contains(&z.net_id) {
+                        spawned_this_drain.push(z.net_id);
+                        let color = Color::linear_rgba(
+                            z.color[0], z.color[1], z.color[2], z.color[3],
+                        );
+                        let sprite = if z.sprite_path.is_empty() {
+                            Sprite::from_color(color, Vec2::splat(z.size))
+                        } else {
+                            Sprite {
+                                image: assets.load(z.sprite_path.clone()),
+                                color,
+                                custom_size: Some(Vec2::splat(z.size)),
+                                ..default()
+                            }
+                        };
+                        commands.spawn((
+                            DamageZoneMirror,
+                            z.net_id,
+                            sprite,
+                            Transform::from_translation(Vec3::new(z.pos_x, z.pos_y, 0.2)),
+                        ));
+                    }
+                }
+                if has_ships {
+                    for (e, net_id, _, _) in &zone_mirrors {
+                        if !damage_zones.iter().any(|z| z.net_id == *net_id) {
+                            if let Ok(mut ec) = commands.get_entity(e) {
+                                ec.try_despawn();
+                            }
+                        }
+                    }
+                }
+
+                // --- AttachedDamageZone mirrors ---
+                // Same shape as DamageZone, separate mirror type so the
+                // despawn sweep can treat them independently (an Umgah
+                // cone has different lifecycle from a Shofixti blast).
+                for z in &attached_zones {
+                    let mut hit = false;
+                    for (_e, net_id, mut xf, mut sprite) in &mut attached_mirrors {
+                        if *net_id != z.net_id {
+                            continue;
+                        }
+                        xf.translation.x = z.pos_x;
+                        xf.translation.y = z.pos_y;
+                        xf.translation.z = 0.2;
+                        sprite.custom_size = Some(Vec2::splat(z.size));
+                        sprite.color = Color::linear_rgba(
+                            z.color[0], z.color[1], z.color[2], z.color[3],
+                        );
+                        hit = true;
+                        break;
+                    }
+                    if !hit && !spawned_this_drain.contains(&z.net_id) {
+                        spawned_this_drain.push(z.net_id);
+                        let color = Color::linear_rgba(
+                            z.color[0], z.color[1], z.color[2], z.color[3],
+                        );
+                        commands.spawn((
+                            AttachedZoneMirror,
+                            z.net_id,
+                            Sprite::from_color(color, Vec2::splat(z.size)),
+                            Transform::from_translation(Vec3::new(z.pos_x, z.pos_y, 0.2)),
+                        ));
+                    }
+                }
+                if has_ships {
+                    for (e, net_id, _, _) in &attached_mirrors {
+                        if !attached_zones.iter().any(|z| z.net_id == *net_id) {
+                            if let Ok(mut ec) = commands.get_entity(e) {
+                                ec.try_despawn();
+                            }
+                        }
+                    }
+                }
+
+                // --- Tractor mirrors ---
+                // `tick_tractors` may hide the sprite (custom_size =
+                // ZERO) when no target is in range; we mirror that
+                // verbatim by carrying the host's `custom_size` through.
+                for t in &tractors {
+                    let mut hit = false;
+                    for (_e, net_id, mut xf, mut sprite) in &mut tractor_mirrors {
+                        if *net_id != t.net_id {
+                            continue;
+                        }
+                        xf.translation.x = t.pos_x;
+                        xf.translation.y = t.pos_y;
+                        xf.translation.z = 0.3;
+                        sprite.custom_size = Some(Vec2::splat(t.size));
+                        sprite.color = Color::linear_rgba(
+                            t.color[0], t.color[1], t.color[2], t.color[3],
+                        );
+                        if !t.sprite_path.is_empty() {
+                            sprite.image = assets.load(t.sprite_path.clone());
+                        }
+                        hit = true;
+                        break;
+                    }
+                    if !hit && !spawned_this_drain.contains(&t.net_id) {
+                        spawned_this_drain.push(t.net_id);
+                        let color = Color::linear_rgba(
+                            t.color[0], t.color[1], t.color[2], t.color[3],
+                        );
+                        let sprite = if t.sprite_path.is_empty() {
+                            Sprite {
+                                color,
+                                custom_size: Some(Vec2::splat(t.size)),
+                                ..default()
+                            }
+                        } else {
+                            Sprite {
+                                image: assets.load(t.sprite_path.clone()),
+                                color,
+                                custom_size: Some(Vec2::splat(t.size)),
+                                ..default()
+                            }
+                        };
+                        commands.spawn((
+                            TractorMirror,
+                            t.net_id,
+                            sprite,
+                            Transform::from_translation(Vec3::new(t.pos_x, t.pos_y, 0.3)),
+                        ));
+                    }
+                }
+                if has_ships {
+                    for (e, net_id, _, _) in &tractor_mirrors {
+                        if !tractors.iter().any(|t| t.net_id == *net_id) {
+                            if let Ok(mut ec) = commands.get_entity(e) {
+                                ec.try_despawn();
+                            }
+                        }
+                    }
+                }
+
+                // --- SubEntity mirrors ---
+                // Moving sprites (DOGI, marines, crew pods, fighters).
+                // Same shape as projectiles: pose + sprite descriptor,
+                // velocity is in the wire format for future dead-
+                // reckoning between snapshots (we don't extrapolate
+                // yet, but the data's there so the bandwidth cost is
+                // sunk).
+                for s in &sub_entities {
+                    let angle = s.rot_sin.atan2(s.rot_cos);
+                    let mut hit = false;
+                    for (_e, net_id, mut xf, mut sprite) in &mut sub_mirrors {
+                        if *net_id != s.net_id {
+                            continue;
+                        }
+                        xf.translation.x = s.pos_x;
+                        xf.translation.y = s.pos_y;
+                        xf.translation.z = 0.4;
+                        xf.rotation = Quat::from_rotation_z(angle);
+                        sprite.custom_size = Some(Vec2::splat(s.size));
+                        sprite.color = Color::linear_rgba(
+                            s.color[0], s.color[1], s.color[2], s.color[3],
+                        );
+                        if !s.sprite_path.is_empty() {
+                            sprite.image = assets.load(s.sprite_path.clone());
+                        }
+                        hit = true;
+                        break;
+                    }
+                    if !hit && !spawned_this_drain.contains(&s.net_id) {
+                        spawned_this_drain.push(s.net_id);
+                        let color = Color::linear_rgba(
+                            s.color[0], s.color[1], s.color[2], s.color[3],
+                        );
+                        let sprite = if s.sprite_path.is_empty() {
+                            Sprite::from_color(color, Vec2::splat(s.size))
+                        } else {
+                            Sprite {
+                                image: assets.load(s.sprite_path.clone()),
+                                color,
+                                custom_size: Some(Vec2::splat(s.size)),
+                                ..default()
+                            }
+                        };
+                        commands.spawn((
+                            SubEntityMirror,
+                            s.net_id,
+                            sprite,
+                            Transform::from_translation(Vec3::new(s.pos_x, s.pos_y, 0.4))
+                                .with_rotation(Quat::from_rotation_z(angle)),
+                        ));
+                    }
+                }
+                if has_ships {
+                    for (e, net_id, _, _) in &sub_mirrors {
+                        if !sub_entities.iter().any(|s| s.net_id == *net_id) {
+                            if let Ok(mut ec) = commands.get_entity(e) {
+                                ec.try_despawn();
+                            }
+                        }
+                    }
+                }
+
+                // --- ChmmrSatellite mirrors ---
+                // The satellite art is a fixed `shot_b01.png` frame;
+                // we still ship size + colour in case future ships
+                // get satellites with different visuals.
+                for s in &satellites {
+                    let mut hit = false;
+                    for (_e, net_id, mut xf, mut sprite) in &mut sat_mirrors {
+                        if *net_id != s.net_id {
+                            continue;
+                        }
+                        xf.translation.x = s.pos_x;
+                        xf.translation.y = s.pos_y;
+                        xf.translation.z = 0.25;
+                        sprite.custom_size = Some(Vec2::splat(s.size));
+                        sprite.color = Color::linear_rgba(
+                            s.color[0], s.color[1], s.color[2], s.color[3],
+                        );
+                        hit = true;
+                        break;
+                    }
+                    if !hit && !spawned_this_drain.contains(&s.net_id) {
+                        spawned_this_drain.push(s.net_id);
+                        let color = Color::linear_rgba(
+                            s.color[0], s.color[1], s.color[2], s.color[3],
+                        );
+                        commands.spawn((
+                            SatelliteMirror,
+                            s.net_id,
+                            Sprite {
+                                image: assets.load("ships/chmav/sprites/shot_b01.png"),
+                                color,
+                                custom_size: Some(Vec2::splat(s.size)),
+                                ..default()
+                            },
+                            Transform::from_translation(Vec3::new(s.pos_x, s.pos_y, 0.25)),
+                        ));
+                    }
+                }
+                if has_ships {
+                    for (e, net_id, _, _) in &sat_mirrors {
+                        if !satellites.iter().any(|s| s.net_id == *net_id) {
+                            if let Ok(mut ec) = commands.get_entity(e) {
+                                ec.try_despawn();
+                            }
+                        }
+                    }
+                }
+
+                // --- Fire-and-forget visual events ---
+                // Spawn one local copy per event; the corresponding
+                // local tick system (`tick_asteroid_explosions`,
+                // `tick_zap_flashes`) drives the animation and
+                // despawn. These bypass the per-snapshot reconcile
+                // because they're sub-half-second visuals where a
+                // dropped packet is invisible (the host already
+                // moved on by the time the next snapshot lands).
+                for ev in &explosions {
+                    crate::ship::spawn_asteroid_explosion(
+                        &mut commands,
+                        &assets,
+                        Vec2::new(ev.pos_x, ev.pos_y),
+                        ev.radius,
+                    );
+                }
+                for ev in &zaps {
+                    let color = Color::linear_rgba(
+                        ev.color[0], ev.color[1], ev.color[2], ev.color[3],
+                    );
+                    commands.spawn((
+                        crate::ship::ZapFlash {
+                            remaining_s: ev.total_s,
+                            total_s: ev.total_s,
+                        },
+                        Sprite::from_color(color, Vec2::new(ev.width, ev.length)),
+                        Transform {
+                            translation: Vec3::new(ev.pos_x, ev.pos_y, 0.30),
+                            rotation: Quat::from_rotation_z(ev.angle),
+                            scale: Vec3::ONE,
+                        },
+                    ));
                 }
             }
             NetMessage::Lobby { slots } => {

@@ -139,6 +139,68 @@ Render                            Render
 - **AI in netplay**: AI ticks on the host alongside human inputs.
   Guest never simulates AI.
 
+## Status (host authority)
+
+Last updated as visual-mirror work landed. Tracks what the guest
+actually SEES of a host-authoritative match.
+
+**Synced and rendering on the guest:**
+- Ships — pose, velocity, crew, battery (`EntityState`).
+- Ship shields — `ShieldActive` presence + `damage_factor`
+  (rolled into `EntityState`). `draw_shield_rings` keys off the
+  component on both peers, so this is what makes the canonical SC2
+  shield bubble appear during an opponent's ability.
+- Asteroids — pose, velocity, spawn descriptor (radius + sprite
+  frame). Static `RigidBody` on the guest.
+- Projectiles — `ProjectileMirror`, pose + sprite descriptor.
+- Beams — `BeamMirror`, render quad pose + size + colour
+  (Chmmr / Arilou / VUX laser).
+- Damage zones — `DamageZoneMirror`, pose + size + sprite path
+  (Glory blast, Thraddash fireball, Kohr-Ah ring, mines).
+- Attached damage zones — `AttachedZoneMirror` (Umgah cone,
+  Zoq-Fot-Pik tongue).
+- Tractor beams — `TractorMirror` (Mycon gravity grip etc.).
+- Sub-entities — `SubEntityMirror` (DOGI, Orz marines, Syreen
+  crew pods, Kzer-Za fighters, MIRV missiles).
+- Chmmr satellites — `SatelliteMirror`, orbit pose mirrored each
+  tick.
+- Asteroid explosions — fire-and-forget `ExplosionSpawn` events;
+  guest spawns a local `AsteroidExplosion` that ticks on its own
+  clock via the (now ungated) `tick_asteroid_explosions` system.
+- Zap flashes — `ZapSpawn` events, same fire-and-forget shape
+  as explosions.
+
+**Already worked before this pass (no mirror needed):**
+- Overlay sprites (Orz turret) — `spawn_ship` runs on both peers,
+  `update_overlay_sprites` reads `Ship` pose locally.
+- Gravity-field rings, starfield, HUD — all gizmo / sprite drivers
+  that read local state.
+
+**Intentionally NOT synced in this pass:**
+- Ultimate cinematic visuals (BeamTrail, BlastTrail, PkunkAura,
+  LightspeedGlow, AsteroidGhost, ArilouStinger, MmrxfLaserSegment).
+  These are spawned by host-only `Update` systems and would need
+  their own per-class mirror types — deferred because the
+  cinematic camera control + portrait UI are themselves host-only
+  (the guest doesn't enter the cinematic flow), so they'd need a
+  parallel "guest sees a faithful cinematic from snapshot data"
+  refactor that's well beyond this pass's scope. Net effect for
+  the guest: a player using their ultimate looks weird (e.g. no
+  saber-trail wisps), but combat result still lands via the
+  ship + projectile + damage-zone mirrors that ARE synced.
+- Smoothing / dead-reckoning on the guest's own ship between
+  snapshots. Tracked as a separate planned task.
+- Rollback / prediction. Same.
+
+**Bandwidth note.** Snapshot bytes scale roughly as O(active
+visuals × sprite-path-string length). For a typical 1v1 match
+with ~5 projectiles, 1-2 beams, 3 satellites: ~1.2 kB per
+snapshot × 60 Hz ≈ 70 kB/s. Slightly above the 50 kB/s guideline;
+the obvious cost is the sprite-path string in every
+projectile / sub-entity / zone row. A v2 polish pass could intern
+those into a `u16` registry id at handshake time; deferring that
+until we have a real bandwidth complaint.
+
 ## Future: revisit bevy_ggrs
 
 The host/guest refactor was prompted by repeated GGRS desync. After

@@ -805,6 +805,45 @@ fn auto_add_rollback(
     // cleaned up.
 }
 
+/// Bevy component on-add hook: stamp the entity with a fresh
+/// `NetId` from the per-match allocator, IFF it doesn't already
+/// have one. Attached via `#[component(on_add = ...)]` to every
+/// host-spawnable visual class that the snapshot stream mirrors
+/// (Beam, DamageZone, AttachedDamageZone, TractorBeam, SubEntity,
+/// ChmmrSatellite, ...). The host's snapshot sender keys these by
+/// NetId; without an id the guest can't reliably re-find the
+/// mirror across snapshots and would re-spawn it every tick.
+///
+/// Idempotency: the hook bails if the entity already has a NetId.
+/// Two callers exercise that path:
+///   - Asteroid spawns (host AND guest) pre-stamp the id from the
+///     deterministic spawn descriptor, so the hook here would
+///     conflict if it always allocated.
+///   - Guest-side mirror spawns explicitly insert the snapshot's
+///     NetId; mirrors never carry the gameplay component, but if a
+///     future class shares a component between mirror + authority
+///     entities this keeps the contract safe.
+///
+/// On the guest the gameplay components are never inserted (the
+/// authority systems are gated off), so this hook only ever
+/// allocates on the host / solo peer — allocation never diverges.
+fn auto_assign_net_id(
+    mut world: bevy::ecs::world::DeferredWorld,
+    ctx: bevy::ecs::lifecycle::HookContext,
+) {
+    if world.get::<crate::netcode::NetId>(ctx.entity).is_some() {
+        return;
+    }
+    let Some(mut alloc) = world.get_resource_mut::<crate::netcode::NetIdAllocator>() else {
+        return;
+    };
+    let new_id = alloc.allocate();
+    let mut commands = world.commands();
+    if let Ok(mut ec) = commands.get_entity(ctx.entity) {
+        ec.try_insert(new_id);
+    }
+}
+
 /// In-flight projectile. Owner is tracked so we can ignore self-hits.
 /// On-add hook auto-tags the entity with `bevy_ggrs::Rollback` so
 /// the projectile's state participates in rollback snapshots
@@ -907,7 +946,7 @@ pub struct Homing {
 /// "no friendly fire exemption" (Glory Device kills the firer too).
 /// `lifetime` decrements every tick; on expiry the zone despawns.
 #[derive(Component, Debug, Clone)]
-#[component(on_add = auto_add_rollback)]
+#[component(on_add = auto_assign_net_id)]
 pub struct DamageZone {
     pub radius: f32,
     pub damage_per_sec: f32,
@@ -976,6 +1015,7 @@ pub(crate) fn spawn_damage_zone(
 /// Friendly-fire immunity is automatic (owner is never damaged by its
 /// own attached zone, same as `DamageZone::source = Some(owner)`).
 #[derive(Component, Debug, Clone)]
+#[component(on_add = auto_assign_net_id)]
 pub struct AttachedDamageZone {
     pub owner: Entity,
     pub local_offset: Vec2,
@@ -1332,13 +1372,36 @@ impl Plugin for ShipPlugin {
                 tick_mycon_plasma,
                 spawn_chmmr_satellites,
                 tick_chmmr_satellites,
-                tick_zap_flashes,
-                tick_asteroid_explosions,
                 replenish_asteroids.run_if(in_state(crate::AppState::InMatch)),
                 tick_alary_mirv,
                 tick_alary_turrets,
                 tick_shofixti_glory,
             )
+                .run_if(crate::netcode::role_is_authoritative),
+        )
+        // Visual-only tick systems. These animate sprite frames / fade
+        // alpha / despawn on lifetime expiry — no gameplay state
+        // mutation, no projectile spawn, no damage application. They
+        // must run on BOTH peers so the guest's mirror entities
+        // (spawned via `VisualEventQueue` / `ExplosionSpawn` from a
+        // snapshot) actually tick through their animation instead of
+        // freezing at frame 0. Host runs them on its own spawns
+        // identically — solo play is unchanged.
+        .add_systems(
+            FixedUpdate,
+            (tick_zap_flashes, tick_asteroid_explosions),
+        )
+        // Host-only: enqueue visual events for any explosion / zap
+        // the authority systems just spawned, so the next snapshot
+        // ships them to the guest. Gated on `role_is_authoritative`
+        // (solo skips because the queue's contents are never read)
+        // and uses `Added<>` filters so each spawn enqueues exactly
+        // once. Runs after the authority systems that spawn these
+        // visuals — `Update` is fine here because we just need the
+        // events flushed before the snapshot send next frame.
+        .add_systems(
+            FixedUpdate,
+            (enqueue_explosion_events, enqueue_zap_events)
                 .run_if(crate::netcode::role_is_authoritative),
         )
         .add_systems(
@@ -1658,59 +1721,57 @@ fn cycle_class(current: ShipClass, dir: i32) -> ShipClass {
 /// Despawn every gameplay entity from the previous round so the next
 /// OnEnter(InMatch) can spawn a clean scene. Camera, HUD nodes, and
 /// the catalog resource survive.
+/// Sweep every match-scoped entity from the world on rematch /
+/// teardown. We use one big `Or<>` filter because Bevy 0.18 caps
+/// a system at 21 parameters and we have more sweep classes than
+/// that. Adding a new entity class to a match? Add its component
+/// to the `Or<>` here so it gets cleaned up between matches.
+/// Sweep every match-scoped entity from the world on rematch /
+/// teardown. Bevy 0.18 caps `Or<>` filter tuples at 15 entries
+/// (and systems at 21 params), so we nest two `Or<>`s — gameplay
+/// entities and guest-side mirror entities — into a single
+/// outer `Or<(Or<...>, Or<...>)>`.
+///
+/// Adding a new entity class to a match? Add its component
+/// marker to one of the nested `Or<>`s so it gets cleaned up
+/// between matches; the cost of forgetting is a stale entity
+/// that survives a rematch and re-appears in the next round.
 pub fn teardown_match(
     mut commands: Commands,
-    ships: Query<Entity, With<Ship>>,
-    projectiles: Query<Entity, With<Projectile>>,
-    damage_zones: Query<Entity, With<DamageZone>>,
-    attached_zones: Query<Entity, With<AttachedDamageZone>>,
-    beams: Query<Entity, With<Beam>>,
-    tractors: Query<Entity, With<TractorBeam>>,
-    sub_entities: Query<Entity, With<SubEntity>>,
-    overlays: Query<Entity, With<OverlaySprite>>,
-    satellites: Query<Entity, With<ChmmrSatellite>>,
-    asteroids: Query<Entity, With<Asteroid>>,
-    planets: Query<Entity, With<Planet>>,
-    // Guest-side render-only projectile mirrors carry neither
-    // `Projectile` nor any other gameplay marker, so they'd leak
-    // across a rematch without their own sweep.
-    proj_mirrors: Query<Entity, With<crate::netcode::ProjectileMirror>>,
+    everything: Query<
+        Entity,
+        Or<(
+            Or<(
+                With<Ship>,
+                With<Projectile>,
+                With<DamageZone>,
+                With<AttachedDamageZone>,
+                With<Beam>,
+                With<TractorBeam>,
+                With<SubEntity>,
+                With<OverlaySprite>,
+                With<ChmmrSatellite>,
+                With<Asteroid>,
+                With<Planet>,
+                With<AsteroidExplosion>,
+                With<ZapFlash>,
+            )>,
+            Or<(
+                With<crate::netcode::ProjectileMirror>,
+                With<crate::netcode::BeamMirror>,
+                With<crate::netcode::DamageZoneMirror>,
+                With<crate::netcode::AttachedZoneMirror>,
+                With<crate::netcode::TractorMirror>,
+                With<crate::netcode::SubEntityMirror>,
+                With<crate::netcode::SatelliteMirror>,
+            )>,
+        )>,
+    >,
 ) {
-    for e in &ships {
-        commands.entity(e).try_despawn();
-    }
-    for e in &planets {
-        commands.entity(e).try_despawn();
-    }
-    for e in &projectiles {
-        commands.entity(e).try_despawn();
-    }
-    for e in &damage_zones {
-        commands.entity(e).try_despawn();
-    }
-    for e in &attached_zones {
-        commands.entity(e).try_despawn();
-    }
-    for e in &beams {
-        commands.entity(e).try_despawn();
-    }
-    for e in &tractors {
-        commands.entity(e).try_despawn();
-    }
-    for e in &sub_entities {
-        commands.entity(e).try_despawn();
-    }
-    for e in &overlays {
-        commands.entity(e).try_despawn();
-    }
-    for e in &satellites {
-        commands.entity(e).try_despawn();
-    }
-    for e in &asteroids {
-        commands.entity(e).try_despawn();
-    }
-    for e in &proj_mirrors {
-        commands.entity(e).try_despawn();
+    for e in &everything {
+        if let Ok(mut ec) = commands.get_entity(e) {
+            ec.try_despawn();
+        }
     }
 }
 
@@ -3741,6 +3802,7 @@ pub struct Barrel {
 /// Generic enough for future uses: any "drag X toward me" or "push X
 /// away" mechanic is `force_per_tick` with sign and direction.
 #[derive(Component, Debug, Clone)]
+#[component(on_add = auto_assign_net_id)]
 pub struct TractorBeam {
     pub owner: Entity,
     pub local_origin: Vec2,
@@ -3832,6 +3894,7 @@ pub struct DamageToBattery {
 /// `auto_aim` switches the world direction each tick to point at the
 /// nearest enemy in range (Arilou's canonical auto-targeting halo).
 #[derive(Component, Debug, Clone)]
+#[component(on_add = auto_assign_net_id)]
 pub struct Beam {
     pub owner: Entity,
     pub local_origin: Vec2,
@@ -4130,7 +4193,7 @@ fn update_overlay_sprites(
 /// component alone. Living off the existing Avian collision events;
 /// `handle_sub_entity_collisions` dispatches the right effect per AI.
 #[derive(Component, Debug, Clone)]
-#[component(on_add = auto_add_rollback)]
+#[component(on_add = auto_assign_net_id)]
 pub struct SubEntity {
     /// Which ship spawned this — used for friendly-fire filtering and
     /// for `DriftAndCollect` to know who's allowed to pick it up.
@@ -7057,7 +7120,7 @@ pub struct NeedsChmmrSatellites;
 /// driven each tick relative to the owner; on hit it loses armour;
 /// on owner death the satellite despawns.
 #[derive(Component, Debug, Clone)]
-#[component(on_add = auto_add_rollback)]
+#[component(on_add = auto_assign_net_id)]
 pub struct ChmmrSatellite {
     pub owner: Entity,
     pub angle_offset: f32,
@@ -8084,6 +8147,60 @@ fn tick_asteroid_explosions(
         // into the background rather than cutting hard.
         let alpha = ((1.0 - frac_elapsed) * 2.0).clamp(0.0, 1.0);
         sprite.color = Color::srgba(1.0, 1.0, 1.0, alpha);
+    }
+}
+
+/// Host-only enqueue: any AsteroidExplosion freshly spawned since
+/// the last frame gets pushed into `VisualEventQueue.explosions`,
+/// which `send_ship_snapshot` drains into the outgoing snapshot.
+/// Using `Added<>` is the contract: each host-side spawn fires
+/// here exactly once, no per-spawn-site plumbing needed. The
+/// `radius` field of the wire event is recovered from
+/// `Sprite.custom_size` (the spawn helper sets it to `radius * 3`).
+///
+/// Gated on host/solo via `role_is_authoritative` at registration;
+/// guest mirror spawns are local (driven by `drain_messages`) and
+/// must not bounce back into the queue, but since this system
+/// doesn't run on the guest at all the gate is trivially safe.
+pub fn enqueue_explosion_events(
+    explosions: Query<(&Transform, &Sprite), Added<AsteroidExplosion>>,
+    mut queue: ResMut<crate::netcode::VisualEventQueue>,
+) {
+    for (xf, sprite) in &explosions {
+        let radius = sprite
+            .custom_size
+            .map(|s| s.x / 3.0)
+            .unwrap_or(24.0);
+        queue.explosions.push(crate::netcode::ExplosionSpawn {
+            pos_x: xf.translation.x,
+            pos_y: xf.translation.y,
+            radius,
+        });
+    }
+}
+
+/// Host-only enqueue for ZapFlash — same contract as
+/// `enqueue_explosion_events`. We snapshot the full pose +
+/// sprite-extents + colour so the guest mirror reads identical.
+pub fn enqueue_zap_events(
+    zaps: Query<(Entity, &Transform, &Sprite, &ZapFlash), Added<ZapFlash>>,
+    mut queue: ResMut<crate::netcode::VisualEventQueue>,
+) {
+    for (_e, xf, sprite, flash) in &zaps {
+        let (width, length) = sprite
+            .custom_size
+            .map(|s| (s.x, s.y))
+            .unwrap_or((0.0, 0.0));
+        let (_, _, angle) = xf.rotation.to_euler(bevy::math::EulerRot::XYZ);
+        queue.zaps.push(crate::netcode::ZapSpawn {
+            pos_x: xf.translation.x,
+            pos_y: xf.translation.y,
+            angle,
+            length,
+            width,
+            total_s: flash.total_s,
+            color: sprite.color.to_linear().to_f32_array(),
+        });
     }
 }
 
