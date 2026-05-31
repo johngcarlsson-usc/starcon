@@ -139,6 +139,42 @@ Render                            Render
 - **AI in netplay**: AI ticks on the host alongside human inputs.
   Guest never simulates AI.
 
+## Future: revisit bevy_ggrs
+
+The host/guest refactor was prompted by repeated GGRS desync. After
+landing host authority, the root causes of those desyncs turned out
+to be peer-local determinism violations in the simulation itself,
+not GGRS-specific issues:
+
+- `replenish_asteroids` ran during pre-match states (Loading /
+  MainMenu / LobbyOnline) and spawned NetId-less asteroids at
+  positions derived from the local camera, so each peer entered the
+  match with a different starting set of rocks.
+- Even in-match, `replenish_asteroids` filtered candidate positions
+  by the LOCAL camera — same seeded RNG, but the camera is on each
+  peer's own ship, so identical RNG draws produced different
+  positions. GGRS rollback can't recover from that.
+- Various systems consumed RNG / read `Time<Real>` / read camera
+  state in ways that diverged between peers.
+
+GGRS would have stumbled on every one of these because they're not
+network errors — they're the two peers' code producing different
+outputs from the same inputs. With those bugs now fixed,
+"reinstate `bevy_ggrs` alongside host authority" is a much more
+tractable project than it was when we gave up on it.
+
+Concrete TODO if/when revisiting:
+- Add a determinism-audit test: replay one match from a fixed seed
+  twice and assert identical final entity poses.
+- Pick the input model carefully — current code routes guest input
+  via `NetMessage::Input`; GGRS would want that to ride its own
+  channel and apply at the predicted tick.
+- Verify Avian's solver iteration is bit-stable across runs (the
+  `parallel` feature is off, which helps).
+- The current host-authoritative path is fine for 1v1; a GGRS
+  reinstatement mainly buys lower input latency for the guest's
+  own ship without needing rollback prediction on top of snapshots.
+
 ## Until that's done
 
 Networked play is broken. Current `bevy_ggrs`-based path stays in the
