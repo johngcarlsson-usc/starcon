@@ -176,18 +176,81 @@ actually SEES of a host-authoritative match.
 - Gravity-field rings, starfield, HUD — all gizmo / sprite drivers
   that read local state.
 
+**Cinematic visuals now mirrored to the guest:**
+- Persistent (per-tick `CinematicVisualState` row keyed by NetId,
+  rendered as `CinematicVisualMirror` on the guest):
+  - `UltimateBeam` — the three layered Arilou lightsaber blade
+    triangles. Mirrored as flat sprite quads on the guest (the
+    host's `SoftBladeMaterial` shader is dropped — the guest's
+    rendered blade is solid-coloured, not soft-edged, which reads
+    fine for the ~1.6 s sweep).
+  - `LightspeedGlow` — the bluish Earthling jump halo. Mirrored
+    as a flat disc (loses the radial-fade shader; still clearly
+    "ship is glowing about to do something dramatic").
+  - `PkunkAura` — soft halo per Pkunk clone. Critical so the
+    opponent can see the clones light up; halos appear next to
+    the clones (which themselves are full `Ship`s, already
+    synced).
+  - `MmrxfOverlaySprite` — the Mmrnmhrm "unleashed" sprite
+    overlaid on the firing ship during transform / unleash.
+    Without this the ship just goes invisible to the guest.
+  - `YehatFighter` — each of the three orbiting Yehat fighter
+    sprites. Their muzzle projectiles ride the existing
+    `Projectile` snapshot path.
+  - `MyconOrbit` — each of the eight Mycon plasma orbs spiralling
+    in during MyconGathering. (The Hurricane phase converts them
+    to homing `Projectile`s which are already synced.)
+- Fire-and-forget (one-shot `CinematicSpawn` event, guest spawns
+  a `GuestCinematicFade`-tagged sprite that ticks down on its own
+  clock):
+  - `BeamTrail` — Arilou blade smoke wisps. ~1 s lifetime each.
+  - `BlastTrail` — Earthling blast streak fragments. ~0.5 s each.
+  - `AsteroidGhost` — Slylandro launched-asteroid trail ghosts.
+    Inherits the asteroid's sprite texture so the trail visually
+    matches.
+  - `MmrxfLaserSegment` — Mmrnmhrm tangled-laser bolt segments.
+    ~0.1 s each.
+
+Wire-format shape: one snapshot row per persistent visual
+(`CinematicVisualState`), one event per fire-and-forget visual
+(`CinematicSpawn`). Both ride alongside the existing combat
+snapshot stream. NetIds for persistent visuals come from a new
+`auto_assign_net_id_pub` on-add hook attached to the relevant
+marker components (`UltimateBeam`, `LightspeedGlow`, `PkunkAura`,
+`MmrxfOverlaySprite`, `YehatFighter`, `MyconOrbit`). A separate
+`scan_cinematic_visuals` host system gathers the rows into
+`CinematicVisualBuffer` so `send_ship_snapshot` stays under
+Bevy's ~16-system-param cap.
+
 **Intentionally NOT synced in this pass:**
-- Ultimate cinematic visuals (BeamTrail, BlastTrail, PkunkAura,
-  LightspeedGlow, AsteroidGhost, ArilouStinger, MmrxfLaserSegment).
-  These are spawned by host-only `Update` systems and would need
-  their own per-class mirror types — deferred because the
-  cinematic camera control + portrait UI are themselves host-only
-  (the guest doesn't enter the cinematic flow), so they'd need a
-  parallel "guest sees a faithful cinematic from snapshot data"
-  refactor that's well beyond this pass's scope. Net effect for
-  the guest: a player using their ultimate looks weird (e.g. no
-  saber-trail wisps), but combat result still lands via the
-  ship + projectile + damage-zone mirrors that ARE synced.
+- Ultimate cinematic camera close-up, black bars, captain
+  portrait — these are local to the firing player. The opponent
+  keeps control of their own view and sees the resulting world
+  state with the persistent visuals + spawn trails above. Same
+  model SC2 / TimeWarp used.
+- `ChmmrFlash` — full-screen white flash on each Chmmr volley
+  contact. UI Node overlay (covers the whole viewport regardless
+  of camera scale); only meaningful to the firing player. Skipped
+  for the same reason as the portrait.
+- Audio entities (`ArilouStinger`, `UltimateVoicePlayer`) — no
+  visible presence. The opponent hears their own combat SFX.
+- `AlaryGrowing` permanent scale change — the ship's scale lives
+  in `Transform.scale`, which the snapshot stream doesn't carry
+  (the guest reconstructs poses from `Position` + `Rotation`,
+  not `Transform`). Out of scope for this pass — would need a
+  separate per-ship "visual scale" snapshot field.
+- `SlylandroLaunched` per-asteroid tint pulse — the asteroid's
+  POSE is already mirrored (`Asteroid` snapshot path), so the
+  rocks fly correctly on the guest's screen, but they stay grey
+  instead of glowing cyan. Fixable with a one-bit "launched"
+  marker on the asteroid wire row; deferred.
+- `MmrxfSplitMissile` parent + children — both are spawned as
+  full `Projectile`s and so ride the existing projectile mirror
+  path. The children's split-out is host-only, but the
+  resulting child projectiles ARE snapshotted.
+- `KohrAhBlade` — spawned as a `Projectile`; already mirrored.
+- `Beam` (cinematic widened version): `tick_beams` runs on the
+  host and the resulting beam pose is already in `BeamMirror`.
 - Smoothing / dead-reckoning on the guest's own ship between
   snapshots. Tracked as a separate planned task.
 - Rollback / prediction. Same.

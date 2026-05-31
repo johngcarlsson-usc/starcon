@@ -844,6 +844,18 @@ fn auto_assign_net_id(
     }
 }
 
+/// Public re-export of the NetId on-add hook so cinematic visual
+/// components in `src/ultimate.rs` can stamp NetIds without a
+/// dep-cycle to the private helper above. Same body — Bevy's
+/// `#[component(on_add = ...)]` attribute takes a path, so the
+/// re-export must itself be a top-level `fn` (not just a `use`).
+pub fn auto_assign_net_id_pub(
+    world: bevy::ecs::world::DeferredWorld,
+    ctx: bevy::ecs::lifecycle::HookContext,
+) {
+    auto_assign_net_id(world, ctx)
+}
+
 /// In-flight projectile. Owner is tracked so we can ignore self-hits.
 /// On-add hook auto-tags the entity with `bevy_ggrs::Rollback` so
 /// the projectile's state participates in rollback snapshots
@@ -1764,6 +1776,15 @@ pub fn teardown_match(
                 With<crate::netcode::TractorMirror>,
                 With<crate::netcode::SubEntityMirror>,
                 With<crate::netcode::SatelliteMirror>,
+                // Cinematic mirrors + guest-side trail fades.
+                // Persistent visuals live as `CinematicVisualMirror`
+                // entities the host's snapshot drives; fire-and-
+                // forget ones spawn as `GuestCinematicFade`-tagged
+                // sprites that tick down on their own. Both need
+                // teardown so a rematch doesn't start with leftover
+                // wisps or a stuck halo.
+                With<crate::netcode::CinematicVisualMirror>,
+                With<crate::ultimate::GuestCinematicFade>,
             )>,
         )>,
     >,

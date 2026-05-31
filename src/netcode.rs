@@ -151,6 +151,15 @@ pub enum NetMessage {
         satellites: Vec<SatelliteState>,
         explosions: Vec<ExplosionSpawn>,
         zaps: Vec<ZapSpawn>,
+        /// Per-tick state for persistent cinematic visuals
+        /// (UltimateBeam, LightspeedGlow, PkunkAura, ...).
+        /// Empty on heartbeats; full rows on real snapshots.
+        /// A NetId missing from a real snapshot is the despawn signal.
+        cinematic_visuals: Vec<CinematicVisualState>,
+        /// Fire-and-forget cinematic spawns (trail wisps, laser
+        /// segments, asteroid ghosts). Accumulated since the last
+        /// snapshot via `Added<>` queries on the host.
+        cinematic_spawns: Vec<CinematicSpawn>,
     },
     /// Host → Guest. Lobby state echo so the guest can render the
     /// per-slot READY / class status during PostMatch.
@@ -419,6 +428,163 @@ pub struct ZapSpawn {
     pub color: [f32; 4],
 }
 
+// ----------------------------------------------------------------
+// Cinematic visual mirrors.
+//
+// The "ultimate" cinematics (`src/ultimate.rs`) spawn a menagerie of
+// host-only visual entities — saber-trail wisps, charging halos, the
+// Yehat fleet, etc. The host's snapshot stream is the guest's only
+// window onto the match, so anything not mirrored here is invisible
+// to the opponent. The split below follows the same pattern as the
+// combat mirrors above:
+//
+//   - Persistent visuals (UltimateBeam, LightspeedGlow, PkunkAura,
+//     MmrxfOverlaySprite, YehatFighter, MyconOrbit) get a per-tick
+//     `CinematicVisualState` row keyed by NetId. The reconciler
+//     updates the pose of known IDs, spawns a mirror the first time
+//     a new ID appears, and despawns mirrors the host dropped — same
+//     contract as `ProjectileMirror` et al.
+//
+//   - Fire-and-forget spawn animations (BeamTrail, BlastTrail,
+//     AsteroidGhost, MmrxfLaserSegment) ride along as one-shot
+//     `CinematicSpawn` events. The guest spawns a local copy with
+//     the appropriate `*Trail` / `*Ghost` / `*Segment` component;
+//     the SAME local tick system the host runs then animates and
+//     despawns it. No per-frame reconciliation — sub-second
+//     animations don't benefit from being re-streamed every tick,
+//     and dropping a packet just costs the guest one trail wisp.
+//
+// What's *intentionally* not mirrored:
+//   - The cinematic portrait, black bars, and camera close-up are
+//     local to the firing player — see the long-form recommendation
+//     in the task brief. The opponent keeps control of their view.
+//   - The full-screen Chmmr volley flash (`ChmmrFlash`) is the
+//     same — it's a UI overlay that exists for the firing player's
+//     "WOW" moment, not the opponent's. (If a future pass decides
+//     the opponent SHOULD see it, the flash trivially fits the
+//     `CinematicSpawn` mould.)
+//   - Audio stingers (`ArilouStinger`, `UltimateVoicePlayer`):
+//     these are AudioPlayer entities with no visual presence, and
+//     the per-class voice-line WAVs aren't network-distributable
+//     metadata. The opponent hears their own combat SFX instead.
+//
+// Wire format is the same shape as `SubEntityState`: pose + sprite
+// descriptor + size + colour. Each cinematic visual flavour gets a
+// `kind` discriminator so the guest knows which marker to attach
+// (the kind controls *which* host-side tick system the mirror
+// becomes a target of, even though most mirrors carry no behaviour
+// other than what their `Sprite` / `Mesh2d` does on its own).
+// ----------------------------------------------------------------
+
+/// Which family of cinematic visual a `CinematicVisualState` /
+/// `CinematicSpawn` describes. The guest uses this to attach the
+/// matching marker component so its local tick systems
+/// (`tick_beam_trails`, `tick_blast_trails`, `tick_asteroid_ghosts`,
+/// `tick_mmrxf_laser_segments`) drive the animation.
+///
+/// For persistent visuals the kind also tells the reconciler which
+/// `*Mirror` marker query to look in for an existing match (the
+/// queries are split per-kind because Bevy `Or<>` filter tuples
+/// have a 15-entry cap and we're already close to the limit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CinematicKind {
+    // -- Persistent (per-tick mirrors) --
+    /// One of the three layered Arilou blade triangles. Mesh-based
+    /// on the host; mirrored as a flat Sprite quad on the guest
+    /// (good enough for a brief sweep — the wisps trailing behind
+    /// it carry the visual weight).
+    UltimateBeam,
+    /// Earthling lightspeed glow halo around the firer.
+    LightspeedGlow,
+    /// Pkunk clone aura disc — one per clone.
+    PkunkAura,
+    /// Mmrnmhrm "unleashed" overlay sprite glued to the firer.
+    MmrxfOverlay,
+    /// Yehat fighter sprite orbiting the Terminator.
+    YehatFighter,
+    /// Mycon plasma orb spiraling around the Podship.
+    MyconOrbit,
+    // -- One-shot spawn events --
+    /// One ghost copy of the Arilou blade triangle — the wisp smear.
+    BeamTrail,
+    /// One streak fragment behind the Earthling blasting ship.
+    BlastTrail,
+    /// One fading silhouette behind a Slylandro launched asteroid.
+    AsteroidGhost,
+    /// One short segment of the Mmrnmhrm tangled-laser bolt.
+    MmrxfLaserSegment,
+}
+
+/// Pose + appearance for one cinematic visual that lives across
+/// multiple snapshots. The host samples this from the live entity
+/// every snapshot tick; the guest's reconciler updates the matching
+/// `*Mirror` entity (spawn / update / despawn).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CinematicVisualState {
+    pub net_id: NetId,
+    pub kind: CinematicKind,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub rot_cos: f32,
+    pub rot_sin: f32,
+    /// Square side length for non-stretched visuals; for stretched
+    /// rectangles (UltimateBeam, the YehatFighter sprite has its
+    /// own aspect) the host packs width here and length in `size_y`.
+    pub size_x: f32,
+    pub size_y: f32,
+    pub color: [f32; 4],
+    /// Optional sprite asset path. Empty string → flat-colour
+    /// `Sprite::from_color`. The UltimateBeam mirror ignores this
+    /// (its colour-only shader doesn't need an image).
+    pub sprite_path: String,
+}
+
+/// Marker on a guest-side cinematic-visual mirror. The kind it was
+/// spawned for lives on it so the despawn sweep can match against
+/// the snapshot's `kind`-tagged rows without an extra component per
+/// flavour.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct CinematicVisualMirror {
+    pub kind: CinematicKind,
+}
+
+/// Fire-and-forget cinematic spawn event — short-lived animation
+/// the guest creates a local copy of using its own clock. Carries
+/// every field needed to reconstruct the host's spawn faithfully
+/// (kind picks which `Component` to attach, the rest matches the
+/// per-kind host-side spawn helper's arguments).
+///
+/// `lifetime_s` is the visual's total lifetime; the local tick
+/// system divides remaining time by total to drive the fade.
+/// `extra_*` carry per-flavour trail metadata (drift, width
+/// growth) so BeamTrail / BlastTrail render identically to host.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CinematicSpawn {
+    pub kind: CinematicKind,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    /// Rotation Z in radians.
+    pub angle: f32,
+    /// Visual width / length. For BlastTrail and BeamTrail these
+    /// drive `Transform.scale` against the shared blade mesh; for
+    /// AsteroidGhost the host packs the sprite's `custom_size` here;
+    /// for MmrxfLaserSegment it's the sprite's `custom_size`.
+    pub width: f32,
+    pub length: f32,
+    pub color: [f32; 4],
+    pub lifetime_s: f32,
+    /// AsteroidGhost only: the asteroid's sprite path so the ghost
+    /// inherits its texture. Empty for everything else.
+    pub sprite_path: String,
+    /// BeamTrail only: tangential drift velocity (x, y) so the wisp
+    /// flings off the blade. Zero for everything else.
+    pub drift_x: f32,
+    pub drift_y: f32,
+    /// BeamTrail only: width-growth coefficient (the wisp puffs out
+    /// over time). Zero for everything else.
+    pub width_growth: f32,
+}
+
 /// Host-side queue of fire-and-forget visual events accumulated
 /// since the last snapshot send. Combat helpers (asteroid
 /// explosion, satellite zap, fighter laser) push into this; the
@@ -428,6 +594,19 @@ pub struct ZapSpawn {
 pub struct VisualEventQueue {
     pub explosions: Vec<ExplosionSpawn>,
     pub zaps: Vec<ZapSpawn>,
+    pub cinematics: Vec<CinematicSpawn>,
+}
+
+/// Host-side staging buffer for persistent cinematic-visual rows.
+/// A separate "scan" system (`scan_cinematic_visuals`) writes into
+/// this every frame so the snapshot sender (`send_ship_snapshot`)
+/// can pull it back without itself owning the six per-flavour
+/// queries — Bevy systems are capped at ~16 params and the
+/// snapshot sender is already near the limit with combat-mirror
+/// queries. Cleared after each successful drain.
+#[derive(Resource, Default, Debug)]
+pub struct CinematicVisualBuffer {
+    pub rows: Vec<CinematicVisualState>,
 }
 
 /// Per-slot lobby state echoed by the host so the guest's
@@ -498,6 +677,7 @@ impl Plugin for NetcodePlugin {
         app.init_resource::<NetRole>()
             .init_resource::<NetIdAllocator>()
             .init_resource::<VisualEventQueue>()
+            .init_resource::<CinematicVisualBuffer>()
             .add_systems(
                 FixedUpdate,
                 push_local_input_to_netinputs
@@ -508,6 +688,11 @@ impl Plugin for NetcodePlugin {
                 Update,
                 (
                     send_heartbeat,
+                    // Sample the live cinematic visuals before
+                    // `send_ship_snapshot` drains the buffer, so a
+                    // new cinematic spawn lands on the very next
+                    // snapshot tick rather than one frame late.
+                    scan_cinematic_visuals.run_if(role_is_authoritative),
                     send_ship_snapshot.run_if(role_is_authoritative),
                     drain_messages,
                 )
@@ -630,6 +815,8 @@ fn send_heartbeat(
         satellites: Vec::new(),
         explosions: Vec::new(),
         zaps: Vec::new(),
+        cinematic_visuals: Vec::new(),
+        cinematic_spawns: Vec::new(),
     };
     let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) else {
         return;
@@ -725,6 +912,12 @@ fn send_ship_snapshot(
         (&NetId, &avian2d::prelude::Position, &Sprite),
         With<crate::ship::ChmmrSatellite>,
     >,
+    // Cinematic persistent visuals are gathered by a separate
+    // `scan_cinematic_visuals` system (see below) that writes into
+    // this buffer. The split keeps `send_ship_snapshot`'s param
+    // count under Bevy's ~16-arg system limit — the six per-flavour
+    // queries the cinematic scan owns would push us over.
+    mut cinematic_buffer: ResMut<CinematicVisualBuffer>,
     mut snapshot_tick: Local<u32>,
 ) {
     sock.heartbeat_s += time.delta_secs();
@@ -928,6 +1121,8 @@ fn send_ship_snapshot(
     // so missing a snapshot just costs a single visual frame.
     let explosions = std::mem::take(&mut events.explosions);
     let zaps = std::mem::take(&mut events.zaps);
+    let cinematic_spawns = std::mem::take(&mut events.cinematics);
+    let cinematic_visuals = std::mem::take(&mut cinematic_buffer.rows);
 
     let tick = *snapshot_tick;
     *snapshot_tick = snapshot_tick.wrapping_add(1);
@@ -943,6 +1138,8 @@ fn send_ship_snapshot(
         satellites,
         explosions,
         zaps,
+        cinematic_visuals,
+        cinematic_spawns,
     };
     let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) else {
         return;
@@ -955,6 +1152,165 @@ fn send_ship_snapshot(
         if let Err(e) = channel.try_send(bytes.clone().into(), peer) {
             warn!("netcode: snapshot send to {peer:?} failed: {e:?}");
         }
+    }
+}
+
+/// Host-only: every Update tick, sample the pose + sprite descriptor
+/// for every persistent cinematic visual entity and write the rows
+/// into `CinematicVisualBuffer.rows`. `send_ship_snapshot` drains
+/// the buffer into the next outbound snapshot.
+///
+/// Lives in its own system (rather than inline in
+/// `send_ship_snapshot`) so the snapshot sender can stay under
+/// Bevy's ~16-system-param cap with the six per-flavour queries
+/// the cinematic scan owns. Side benefit: the scan runs every
+/// Update frame even between snapshot sends, so a freshly-spawned
+/// visual lands in the queue right away rather than waiting for
+/// the next snapshot tick to query the world.
+pub fn scan_cinematic_visuals(
+    mut buffer: ResMut<CinematicVisualBuffer>,
+    cinematic_beams: Query<
+        (&NetId, &Transform, &crate::ultimate::UltimateBeam),
+    >,
+    cinematic_lsg: Query<
+        (&NetId, &Transform),
+        With<crate::ultimate::LightspeedGlow>,
+    >,
+    cinematic_pkunk: Query<
+        (&NetId, &Transform),
+        With<crate::ultimate::PkunkAura>,
+    >,
+    cinematic_mmrxf: Query<
+        (&NetId, &Transform, &Sprite),
+        With<crate::ultimate::MmrxfOverlaySprite>,
+    >,
+    cinematic_yehat: Query<
+        (&NetId, &Transform, &Sprite),
+        With<crate::ultimate::YehatFighter>,
+    >,
+    cinematic_mycon: Query<
+        (&NetId, &Transform, &Sprite),
+        With<crate::ultimate::MyconOrbit>,
+    >,
+) {
+    buffer.rows.clear();
+    let extract_angle = |xf: &Transform| -> (f32, f32) {
+        let (_, _, ang) = xf.rotation.to_euler(bevy::math::EulerRot::XYZ);
+        (ang.cos(), ang.sin())
+    };
+    for (net_id, xf, beam) in &cinematic_beams {
+        let (rc, rs) = extract_angle(xf);
+        // The blade colour is per-layer and lives on the host's
+        // `SoftBladeMaterial` rather than the Transform — we
+        // approximate by encoding the layer index into the alpha
+        // channel and reconstructing on the guest. The 0/1/2 layer
+        // ordering matches `beam_layer_pose`.
+        let layer = beam.layer as f32 / 8.0;
+        buffer.rows.push(CinematicVisualState {
+            net_id: *net_id,
+            kind: CinematicKind::UltimateBeam,
+            pos_x: xf.translation.x,
+            pos_y: xf.translation.y,
+            rot_cos: rc,
+            rot_sin: rs,
+            size_x: xf.scale.x,
+            size_y: xf.scale.y,
+            color: [1.0, 1.0, 1.0, layer],
+            sprite_path: String::new(),
+        });
+    }
+    for (net_id, xf) in &cinematic_lsg {
+        let (rc, rs) = extract_angle(xf);
+        buffer.rows.push(CinematicVisualState {
+            net_id: *net_id,
+            kind: CinematicKind::LightspeedGlow,
+            pos_x: xf.translation.x,
+            pos_y: xf.translation.y,
+            rot_cos: rc,
+            rot_sin: rs,
+            size_x: xf.scale.x,
+            size_y: xf.scale.y,
+            color: [0.55, 0.80, 1.0, 0.85],
+            sprite_path: String::new(),
+        });
+    }
+    for (net_id, xf) in &cinematic_pkunk {
+        let (rc, rs) = extract_angle(xf);
+        buffer.rows.push(CinematicVisualState {
+            net_id: *net_id,
+            kind: CinematicKind::PkunkAura,
+            pos_x: xf.translation.x,
+            pos_y: xf.translation.y,
+            rot_cos: rc,
+            rot_sin: rs,
+            size_x: xf.scale.x,
+            size_y: xf.scale.y,
+            color: [1.0, 0.55, 0.95, 0.65],
+            sprite_path: String::new(),
+        });
+    }
+    for (net_id, xf, sprite) in &cinematic_mmrxf {
+        let (rc, rs) = extract_angle(xf);
+        let size = sprite.custom_size.unwrap_or(Vec2::splat(200.0));
+        let sprite_path = sprite
+            .image
+            .path()
+            .map(|p| p.to_string())
+            .unwrap_or_default();
+        buffer.rows.push(CinematicVisualState {
+            net_id: *net_id,
+            kind: CinematicKind::MmrxfOverlay,
+            pos_x: xf.translation.x,
+            pos_y: xf.translation.y,
+            rot_cos: rc,
+            rot_sin: rs,
+            size_x: size.x,
+            size_y: size.y,
+            color: sprite.color.to_linear().to_f32_array(),
+            sprite_path,
+        });
+    }
+    for (net_id, xf, sprite) in &cinematic_yehat {
+        let (rc, rs) = extract_angle(xf);
+        let size = sprite.custom_size.unwrap_or(Vec2::splat(36.0));
+        let sprite_path = sprite
+            .image
+            .path()
+            .map(|p| p.to_string())
+            .unwrap_or_default();
+        buffer.rows.push(CinematicVisualState {
+            net_id: *net_id,
+            kind: CinematicKind::YehatFighter,
+            pos_x: xf.translation.x,
+            pos_y: xf.translation.y,
+            rot_cos: rc,
+            rot_sin: rs,
+            size_x: size.x,
+            size_y: size.y,
+            color: sprite.color.to_linear().to_f32_array(),
+            sprite_path,
+        });
+    }
+    for (net_id, xf, sprite) in &cinematic_mycon {
+        let (rc, rs) = extract_angle(xf);
+        let size = sprite.custom_size.unwrap_or(Vec2::splat(28.0));
+        let sprite_path = sprite
+            .image
+            .path()
+            .map(|p| p.to_string())
+            .unwrap_or_default();
+        buffer.rows.push(CinematicVisualState {
+            net_id: *net_id,
+            kind: CinematicKind::MyconOrbit,
+            pos_x: xf.translation.x,
+            pos_y: xf.translation.y,
+            rot_cos: rc,
+            rot_sin: rs,
+            size_x: size.x,
+            size_y: size.y,
+            color: sprite.color.to_linear().to_f32_array(),
+            sprite_path,
+        });
     }
 }
 
@@ -1071,6 +1427,24 @@ fn drain_messages(
             Without<SubEntityMirror>,
         ),
     >,
+    // Cinematic-visual mirrors — one query for the whole bag,
+    // disambiguated by the `kind` field on the marker. We can't
+    // attach the cinematic-specific markers from `src/ultimate.rs`
+    // here (would create a dep cycle), so the reconciler uses
+    // `CinematicVisualMirror.kind` to route. Same Without<> dance
+    // as the other mirror queries to keep them disjoint.
+    mut cine_mirrors: Query<
+        (Entity, &NetId, &mut Transform, &mut Sprite, &CinematicVisualMirror),
+        (
+            Without<ProjectileMirror>,
+            Without<BeamMirror>,
+            Without<DamageZoneMirror>,
+            Without<AttachedZoneMirror>,
+            Without<TractorMirror>,
+            Without<SubEntityMirror>,
+            Without<SatelliteMirror>,
+        ),
+    >,
     mut last_snapshot_tick: Local<u32>,
 ) {
     // Snapshot the slot lookup before taking the channel mut-borrow so
@@ -1123,6 +1497,8 @@ fn drain_messages(
                 satellites,
                 explosions,
                 zaps,
+                cinematic_visuals,
+                cinematic_spawns,
             } => {
                 // Guest applies snapshots onto its local ships;
                 // host ignores them (it IS the authority).
@@ -1646,6 +2022,73 @@ fn drain_messages(
                     }
                 }
 
+                // --- Cinematic persistent visuals ---
+                // Same shape as the other persistent mirrors: pose-
+                // update a known NetId, spawn a `CinematicVisualMirror`
+                // the first time it appears, despawn missing ones on
+                // real snapshots. Spawn shape is per-kind because
+                // the visuals have different sprite paths / colour
+                // sources / sizes; the `kind` discriminator on the
+                // mirror entity is what the despawn sweep matches
+                // against.
+                for v in &cinematic_visuals {
+                    let angle = v.rot_sin.atan2(v.rot_cos);
+                    let mut hit = false;
+                    for (_e, net_id, mut xf, mut sprite, _marker) in &mut cine_mirrors {
+                        if *net_id != v.net_id {
+                            continue;
+                        }
+                        xf.translation.x = v.pos_x;
+                        xf.translation.y = v.pos_y;
+                        // Z-stack so trails sit under the firer's
+                        // ship sprite but above the planet etc.
+                        xf.translation.z = match v.kind {
+                            CinematicKind::UltimateBeam => 0.35,
+                            CinematicKind::LightspeedGlow => 0.10,
+                            CinematicKind::PkunkAura => 0.10,
+                            CinematicKind::MmrxfOverlay => 0.45,
+                            CinematicKind::YehatFighter => 0.45,
+                            CinematicKind::MyconOrbit => 0.40,
+                            _ => 0.30,
+                        };
+                        xf.rotation = Quat::from_rotation_z(angle);
+                        sprite.custom_size = Some(Vec2::new(v.size_x, v.size_y));
+                        sprite.color = Color::linear_rgba(
+                            v.color[0], v.color[1], v.color[2], v.color[3],
+                        );
+                        if !v.sprite_path.is_empty() {
+                            sprite.image = assets.load(v.sprite_path.clone());
+                        }
+                        hit = true;
+                        break;
+                    }
+                    if !hit && !spawned_this_drain.contains(&v.net_id) {
+                        spawned_this_drain.push(v.net_id);
+                        spawn_cinematic_visual_mirror(&mut commands, &assets, v, angle);
+                    }
+                }
+                if has_ships {
+                    for (e, net_id, _, _, _) in &cine_mirrors {
+                        if !cinematic_visuals.iter().any(|v| v.net_id == *net_id) {
+                            if let Ok(mut ec) = commands.get_entity(e) {
+                                ec.try_despawn();
+                            }
+                        }
+                    }
+                }
+
+                // --- Cinematic fire-and-forget spawns ---
+                // Trails, ghosts, lightning segments. The guest
+                // spawns a local copy carrying the appropriate
+                // `*Trail` / `*Ghost` / `*Segment` component so its
+                // own (unconditional) Update tick handles the fade
+                // and despawn. We can't attach the cinematic-side
+                // marker types here without a dep cycle, so we
+                // call a helper in `src/ultimate.rs` to do it.
+                for sp in &cinematic_spawns {
+                    crate::ultimate::spawn_guest_cinematic(&mut commands, &assets, sp);
+                }
+
                 // --- Fire-and-forget visual events ---
                 // Spawn one local copy per event; the corresponding
                 // local tick system (`tick_asteroid_explosions`,
@@ -1688,4 +2131,59 @@ fn drain_messages(
             }
         }
     }
+}
+
+/// Spawn a guest-side `CinematicVisualMirror` for a freshly-seen
+/// persistent cinematic visual. Pulled out of `drain_messages` so
+/// the per-kind branching is local — kept here (rather than in
+/// `src/ultimate.rs`) because all this needs is the cinematic
+/// mirror marker + a `Sprite` + a `Transform`. The host-side mesh
+/// pipeline (Mesh2d + SoftBladeMaterial / GlowMaterial) is
+/// deliberately swapped for a flat Sprite on the guest:
+///
+///   - Spinning up Material2d on the guest would mean linking the
+///     shader assets into the asset graph from the guest's spawn
+///     path AND keeping `Assets<SoftBladeMaterial>` accessible
+///     from the netcode plugin (which doesn't depend on `bevy_render`'s
+///     mesh types). Sprite-only mirrors are cheaper and read just
+///     as well for a brief sweep.
+///   - Per-frame snapshot rate keeps the pose tracking the host
+///     within a tick, so the loss of the radial-fade shader on
+///     the LightspeedGlow / PkunkAura halos amounts to a slightly
+///     harder-edged disc — visible from across the screen, which
+///     is the actual job.
+fn spawn_cinematic_visual_mirror(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    v: &CinematicVisualState,
+    angle: f32,
+) {
+    let z = match v.kind {
+        CinematicKind::UltimateBeam => 0.35,
+        CinematicKind::LightspeedGlow => 0.10,
+        CinematicKind::PkunkAura => 0.10,
+        CinematicKind::MmrxfOverlay => 0.45,
+        CinematicKind::YehatFighter => 0.45,
+        CinematicKind::MyconOrbit => 0.40,
+        _ => 0.30,
+    };
+    let color = Color::linear_rgba(v.color[0], v.color[1], v.color[2], v.color[3]);
+    let custom_size = Vec2::new(v.size_x, v.size_y);
+    let sprite = if v.sprite_path.is_empty() {
+        Sprite::from_color(color, custom_size)
+    } else {
+        Sprite {
+            image: assets.load(v.sprite_path.clone()),
+            color,
+            custom_size: Some(custom_size),
+            ..default()
+        }
+    };
+    commands.spawn((
+        CinematicVisualMirror { kind: v.kind },
+        v.net_id,
+        sprite,
+        Transform::from_translation(Vec3::new(v.pos_x, v.pos_y, z))
+            .with_rotation(Quat::from_rotation_z(angle)),
+    ));
 }

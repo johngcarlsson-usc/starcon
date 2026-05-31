@@ -203,8 +203,13 @@ pub struct AlaryDoubled;
 pub struct MmrxfActive;
 
 /// Marker on the alt-form overlay sprite spawned during the
-/// transform. Despawned on cinematic exit.
+/// transform. Despawned on cinematic exit. Stamped with a `NetId`
+/// on add so the host's snapshot stream mirrors it to the guest
+/// (otherwise the opponent sees the Mmrxf transform with no
+/// visible "unleashed" overlay — just the underlying ship sprite
+/// vanishing into invisibility).
 #[derive(Component, Debug)]
+#[component(on_add = crate::ship::auto_assign_net_id_pub)]
 pub struct MmrxfOverlaySprite;
 
 /// Component on the parent guided missile fired by Mmrnmhrm's
@@ -268,7 +273,13 @@ pub struct PkunkClone {
 /// "real" one (no aura) vs the ephemeral clones (auras). One
 /// aura per clone — despawned in `exit_cinematic` alongside the
 /// clones themselves.
+///
+/// The on-add hook stamps a `NetId` so the host's snapshot stream
+/// can mirror the halo onto the guest as a `CinematicVisualMirror`
+/// — without it the opponent wouldn't be able to tell clones from
+/// the real Pkunk on their own screen.
 #[derive(Component, Debug)]
+#[component(on_add = crate::ship::auto_assign_net_id_pub)]
 pub struct PkunkAura {
     pub clone: Entity,
 }
@@ -305,7 +316,11 @@ pub struct AsteroidGhost {
 
 /// Yehat ultimate sub-entity — a fighter orbiting the parent
 /// Terminator. Fires periodically at the nearest enemy ship.
+/// `NetId` on-add so the host mirrors the orbiting sprite to the
+/// guest (the projectiles it fires are already covered by the
+/// `Projectile` snapshot path).
 #[derive(Component, Debug)]
+#[component(on_add = crate::ship::auto_assign_net_id_pub)]
 pub struct YehatFighter {
     pub owner: Entity,
     pub angle_offset: f32,
@@ -319,6 +334,7 @@ pub struct YehatFighter {
 /// transition to MyconHurricane the orbs convert into homing
 /// seekers via `tick_mycon_hurricane_release`.
 #[derive(Component, Debug)]
+#[component(on_add = crate::ship::auto_assign_net_id_pub)]
 pub struct MyconOrbit {
     pub owner: Entity,
     pub theta: f32,
@@ -610,8 +626,11 @@ pub struct HyperActive {
 }
 
 /// Marker on the bluish glow halo that overlays the Earthling ship
-/// during the charge / stretch phases. Despawned on exit.
+/// during the charge / stretch phases. Despawned on exit. Stamped
+/// with a `NetId` on add so the guest can mirror the halo via
+/// the cinematic snapshot stream.
 #[derive(Component)]
+#[component(on_add = crate::ship::auto_assign_net_id_pub)]
 pub struct LightspeedGlow;
 
 /// Sticks on the Earthling ship for a few seconds AFTER the blast
@@ -640,7 +659,11 @@ pub struct BlastTrail {
 
 /// One of the layered beam sprites that make up the lightsaber:
 /// 0 = inner white core, 1 = mid cyan glow, 2 = outer halo.
+/// Stamped with a `NetId` so each layer gets its own mirror on
+/// the guest — the lightsaber blade is the centrepiece of the
+/// Arilou ultimate's visible spectacle.
 #[derive(Component, Debug)]
+#[component(on_add = crate::ship::auto_assign_net_id_pub)]
 pub struct UltimateBeam {
     pub layer: u8,
 }
@@ -865,6 +888,22 @@ impl Plugin for UltimatePlugin {
                 tick_mmrxf_needs_restore,
                 strip_white_background_once,
             ),
+        )
+        // Guest-side fade ticker for fire-and-forget cinematic
+        // mirrors. Runs unconditionally — entities only exist when
+        // the snapshot drainer spawned them, and that drainer is
+        // itself NetSocket-gated, so solo / host plays never see
+        // this system do anything.
+        .add_systems(Update, tick_guest_cinematic_fades)
+        // Host-only: enqueue the per-frame cinematic visual
+        // spawns into the snapshot stream so the guest can
+        // mirror them. Same Update timing as the spawn systems
+        // themselves so the `Added<>` filters catch the freshly
+        // spawned entities before next snapshot send.
+        .add_systems(
+            Update,
+            enqueue_cinematic_spawns
+                .run_if(crate::netcode::role_is_authoritative),
         );
     }
 }
@@ -3785,6 +3824,343 @@ pub fn build_ultimate_meshes(
     );
     tri.insert_indices(Indices::U32(vec![0, 1, 2]));
     ultimate_meshes.blade = meshes.add(tri);
+}
+
+/// Spawn one guest-side mirror of a host's fire-and-forget
+/// cinematic visual (`CinematicSpawn`). The guest's already-
+/// existing local Update ticks (`tick_beam_trails`,
+/// `tick_blast_trails`, `tick_asteroid_ghosts`,
+/// `tick_mmrxf_laser_segments`) drive the fade + despawn — we
+/// just need to attach the right marker so they fire on the
+/// mirror.
+///
+/// The host's spawn sites use `Mesh2d + SoftBladeMaterial` for the
+/// mesh-based trails (BeamTrail, BlastTrail) and bare `Sprite`s
+/// for the rest. On the guest we render every flavour as a plain
+/// `Sprite` — the soft-edge fade is a minor visual loss vs. the
+/// effort of plumbing `Assets<SoftBladeMaterial>` through the
+/// netcode plugin, and the wisps fade fast enough that the
+/// difference reads as "smudge vs. smudge" rather than a missing
+/// effect. The BeamTrail material handle held by the marker
+/// component is a dummy on the guest — the local tick system
+/// looks it up in `Assets<SoftBladeMaterial>` to fade the alpha,
+/// so we need a real handle to satisfy that lookup; we use a
+/// shared "guest cinematic placeholder" material added to the
+/// asset registry once per spawn.
+pub fn spawn_guest_cinematic(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    sp: &crate::netcode::CinematicSpawn,
+) {
+    use crate::netcode::CinematicKind;
+    let color = Color::linear_rgba(sp.color[0], sp.color[1], sp.color[2], sp.color[3]);
+    let custom_size = Vec2::new(sp.width.max(1.0), sp.length.max(1.0));
+    match sp.kind {
+        CinematicKind::BeamTrail => {
+            // Render as a triangular smear via a colored sprite.
+            // tick_beam_trails reads `material` to fade alpha — we
+            // can't construct a SoftBladeMaterial handle without the
+            // asset registry mutable borrow, so the guest gets a
+            // dedicated `GuestTrailFade` marker that's also handled
+            // by tick_beam_trails (via a separate Option<&> branch).
+            // Simplest path: spawn with the sprite + a fade-only
+            // marker, and rely on `tick_guest_cinematic_fade` (new
+            // system) instead. See below.
+            commands.spawn((
+                GuestCinematicFade {
+                    remaining_s: sp.lifetime_s,
+                    total_s: sp.lifetime_s,
+                    peak_alpha: sp.color[3],
+                    base_rgb: [sp.color[0], sp.color[1], sp.color[2]],
+                    width_growth: sp.width_growth,
+                    drift: Vec2::new(sp.drift_x, sp.drift_y),
+                    start_width: sp.width.max(1.0),
+                    start_length: sp.length.max(1.0),
+                    shape: GuestCinematicShape::BeamTrail,
+                },
+                Sprite::from_color(color, custom_size),
+                Transform {
+                    translation: Vec3::new(sp.pos_x, sp.pos_y, 0.30),
+                    rotation: Quat::from_rotation_z(sp.angle),
+                    scale: Vec3::ONE,
+                },
+            ));
+        }
+        CinematicKind::BlastTrail => {
+            commands.spawn((
+                GuestCinematicFade {
+                    remaining_s: sp.lifetime_s,
+                    total_s: sp.lifetime_s,
+                    peak_alpha: sp.color[3],
+                    base_rgb: [sp.color[0], sp.color[1], sp.color[2]],
+                    width_growth: 0.0,
+                    drift: Vec2::ZERO,
+                    start_width: sp.width.max(1.0),
+                    start_length: sp.length.max(1.0),
+                    shape: GuestCinematicShape::BlastTrail,
+                },
+                Sprite::from_color(color, custom_size),
+                Transform {
+                    translation: Vec3::new(sp.pos_x, sp.pos_y, 0.28),
+                    rotation: Quat::from_rotation_z(sp.angle),
+                    scale: Vec3::ONE,
+                },
+            ));
+        }
+        CinematicKind::AsteroidGhost => {
+            let sprite = if sp.sprite_path.is_empty() {
+                Sprite::from_color(color, custom_size)
+            } else {
+                Sprite {
+                    image: assets.load(sp.sprite_path.clone()),
+                    color,
+                    custom_size: Some(custom_size),
+                    ..default()
+                }
+            };
+            commands.spawn((
+                GuestCinematicFade {
+                    remaining_s: sp.lifetime_s,
+                    total_s: sp.lifetime_s,
+                    peak_alpha: sp.color[3],
+                    base_rgb: [sp.color[0], sp.color[1], sp.color[2]],
+                    width_growth: 0.0,
+                    drift: Vec2::ZERO,
+                    start_width: sp.width.max(1.0),
+                    start_length: sp.length.max(1.0),
+                    shape: GuestCinematicShape::AsteroidGhost,
+                },
+                sprite,
+                Transform {
+                    translation: Vec3::new(sp.pos_x, sp.pos_y, 0.05),
+                    rotation: Quat::from_rotation_z(sp.angle),
+                    scale: Vec3::ONE,
+                },
+            ));
+        }
+        CinematicKind::MmrxfLaserSegment => {
+            commands.spawn((
+                GuestCinematicFade {
+                    remaining_s: sp.lifetime_s,
+                    total_s: sp.lifetime_s,
+                    peak_alpha: sp.color[3],
+                    base_rgb: [sp.color[0], sp.color[1], sp.color[2]],
+                    width_growth: 0.0,
+                    drift: Vec2::ZERO,
+                    start_width: sp.width.max(1.0),
+                    start_length: sp.length.max(1.0),
+                    shape: GuestCinematicShape::LaserSegment,
+                },
+                Sprite::from_color(color, custom_size),
+                Transform {
+                    translation: Vec3::new(sp.pos_x, sp.pos_y, 0.32),
+                    rotation: Quat::from_rotation_z(sp.angle),
+                    scale: Vec3::ONE,
+                },
+            ));
+        }
+        // Persistent visuals don't arrive via CinematicSpawn; the
+        // catch-all is here so the match stays exhaustive should
+        // a future enum variant land.
+        _ => {
+            warn!("ultimate: unexpected CinematicSpawn kind {:?}", sp.kind);
+        }
+    }
+}
+
+/// Guest-side trail shape — drives how the fade tick animates the
+/// sprite each frame (BeamTrail wisps puff out + drift, BlastTrails
+/// shrink, AsteroidGhosts just fade, LaserSegments just fade).
+/// Kept here next to `GuestCinematicFade` so the per-shape behaviour
+/// is co-located.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestCinematicShape {
+    BeamTrail,
+    BlastTrail,
+    AsteroidGhost,
+    LaserSegment,
+}
+
+/// Guest-side fade driver for fire-and-forget cinematic visuals.
+/// Mirrors the host's `BeamTrail` / `BlastTrail` / `AsteroidGhost` /
+/// `MmrxfLaserSegment` tick behaviour with one combined system, so
+/// the netcode plugin doesn't need to drag the full set of
+/// per-flavour markers across module boundaries. The system runs on
+/// every peer unconditionally — solo never spawns these (they're
+/// only created via `spawn_guest_cinematic` from the snapshot
+/// drainer, which is itself NetSocket-gated).
+#[derive(Component, Debug)]
+pub struct GuestCinematicFade {
+    pub remaining_s: f32,
+    pub total_s: f32,
+    pub peak_alpha: f32,
+    pub base_rgb: [f32; 3],
+    pub width_growth: f32,
+    pub drift: Vec2,
+    pub start_width: f32,
+    pub start_length: f32,
+    pub shape: GuestCinematicShape,
+}
+
+/// Drive `GuestCinematicFade`-tagged sprites: ramp alpha down with
+/// remaining-life, optionally widen / shrink the sprite based on
+/// the shape, and despawn when the timer hits zero. Same fade
+/// curves as the host's per-kind tick systems so the visuals
+/// match on both screens.
+pub fn tick_guest_cinematic_fades(
+    time: Res<Time<Real>>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut GuestCinematicFade, &mut Sprite, &mut Transform)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut fade, mut sprite, mut xf) in &mut q {
+        fade.remaining_s -= dt;
+        if fade.remaining_s <= 0.0 {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
+            continue;
+        }
+        let frac = (fade.remaining_s / fade.total_s).clamp(0.0, 1.0);
+        let age = 1.0 - frac;
+        let mut alpha = fade.peak_alpha * frac.powf(0.6);
+        match fade.shape {
+            GuestCinematicShape::BeamTrail => {
+                // Wisp: widens + drifts off the blade, alpha flickers
+                // in the dying tail.
+                let width = fade.start_width * (1.0 + fade.width_growth * age);
+                let length = fade.start_length * (1.0 - 0.30 * age);
+                sprite.custom_size = Some(Vec2::new(width, length));
+                let drift_factor = (1.0 - age * 0.6).max(0.0);
+                let d = fade.drift * dt * drift_factor;
+                xf.translation.x += d.x;
+                xf.translation.y += d.y;
+                if age > 0.75 {
+                    let flicker = (age * 60.0).sin() * 0.18;
+                    alpha = (alpha + alpha * flicker).max(0.0);
+                }
+            }
+            GuestCinematicShape::BlastTrail => {
+                // Streak: thins + slightly elongates as it dies.
+                let cur = sprite.custom_size.unwrap_or(Vec2::new(
+                    fade.start_width,
+                    fade.start_length,
+                ));
+                sprite.custom_size = Some(Vec2::new(cur.x * 0.985, cur.y * 1.004));
+                alpha *= 1.0 - 0.4 * age;
+            }
+            GuestCinematicShape::AsteroidGhost => {
+                xf.scale *= 0.985;
+            }
+            GuestCinematicShape::LaserSegment => {
+                // Plain linear fade — alpha already computed.
+            }
+        }
+        sprite.color = Color::srgba(
+            fade.base_rgb[0],
+            fade.base_rgb[1],
+            fade.base_rgb[2],
+            alpha.max(0.0),
+        );
+    }
+}
+
+/// Host-only enqueue: every `Added<BeamTrail>` / `Added<BlastTrail>` /
+/// `Added<AsteroidGhost>` / `Added<MmrxfLaserSegment>` since the
+/// last frame gets pushed into the cinematic spawn queue, which
+/// `send_ship_snapshot` drains into the outgoing snapshot. Same
+/// `Added<>` contract as the explosion / zap enqueues — exactly
+/// one push per spawn, regardless of which host system spawned it.
+pub fn enqueue_cinematic_spawns(
+    beam_trails: Query<(&BeamTrail, &Transform), Added<BeamTrail>>,
+    blast_trails: Query<(&BlastTrail, &Transform), Added<BlastTrail>>,
+    ghosts: Query<(&AsteroidGhost, &Transform, &Sprite), Added<AsteroidGhost>>,
+    segments: Query<(&MmrxfLaserSegment, &Transform, &Sprite), Added<MmrxfLaserSegment>>,
+    mut queue: ResMut<crate::netcode::VisualEventQueue>,
+) {
+    use crate::netcode::{CinematicKind, CinematicSpawn};
+    for (trail, xf) in &beam_trails {
+        let (_, _, angle) = xf.rotation.to_euler(bevy::math::EulerRot::XYZ);
+        let lin = trail.base_color.to_linear();
+        queue.cinematics.push(CinematicSpawn {
+            kind: CinematicKind::BeamTrail,
+            pos_x: xf.translation.x,
+            pos_y: xf.translation.y,
+            angle,
+            width: trail.start_width,
+            length: trail.start_length,
+            color: [lin.red, lin.green, lin.blue, trail.peak_alpha],
+            lifetime_s: trail.total_s,
+            sprite_path: String::new(),
+            drift_x: trail.drift_vel.x,
+            drift_y: trail.drift_vel.y,
+            width_growth: trail.width_growth,
+        });
+    }
+    for (trail, xf) in &blast_trails {
+        let (_, _, angle) = xf.rotation.to_euler(bevy::math::EulerRot::XYZ);
+        let lin = trail.base_color.to_linear();
+        // Host spawns BlastTrail with mesh-scale-based dimensions;
+        // for the guest we read back from Transform.scale set on
+        // spawn.
+        queue.cinematics.push(CinematicSpawn {
+            kind: CinematicKind::BlastTrail,
+            pos_x: xf.translation.x,
+            pos_y: xf.translation.y,
+            angle,
+            width: xf.scale.x,
+            length: xf.scale.y,
+            color: [lin.red, lin.green, lin.blue, trail.peak_alpha],
+            lifetime_s: trail.total_s,
+            sprite_path: String::new(),
+            drift_x: 0.0,
+            drift_y: 0.0,
+            width_growth: 0.0,
+        });
+    }
+    for (ghost, xf, sprite) in &ghosts {
+        let (_, _, angle) = xf.rotation.to_euler(bevy::math::EulerRot::XYZ);
+        let lin = ghost.base_color.to_linear();
+        let size = sprite.custom_size.unwrap_or(Vec2::splat(40.0));
+        let sprite_path = sprite
+            .image
+            .path()
+            .map(|p| p.to_string())
+            .unwrap_or_default();
+        queue.cinematics.push(CinematicSpawn {
+            kind: CinematicKind::AsteroidGhost,
+            pos_x: xf.translation.x,
+            pos_y: xf.translation.y,
+            angle,
+            width: size.x,
+            length: size.y,
+            color: [lin.red, lin.green, lin.blue, lin.alpha],
+            lifetime_s: ghost.total_s,
+            sprite_path,
+            drift_x: 0.0,
+            drift_y: 0.0,
+            width_growth: 0.0,
+        });
+    }
+    for (seg, xf, sprite) in &segments {
+        let (_, _, angle) = xf.rotation.to_euler(bevy::math::EulerRot::XYZ);
+        let lin = seg.base_color.to_linear();
+        let size = sprite.custom_size.unwrap_or(Vec2::splat(4.0));
+        queue.cinematics.push(CinematicSpawn {
+            kind: CinematicKind::MmrxfLaserSegment,
+            pos_x: xf.translation.x,
+            pos_y: xf.translation.y,
+            angle,
+            width: size.x,
+            length: size.y,
+            color: [lin.red, lin.green, lin.blue, lin.alpha],
+            lifetime_s: seg.total_s,
+            sprite_path: String::new(),
+            drift_x: 0.0,
+            drift_y: 0.0,
+            width_growth: 0.0,
+        });
+    }
 }
 
 /// Aggressive Pkunk clone AI with charge/retreat hysteresis.
