@@ -3290,6 +3290,8 @@ pub(crate) fn apply_player_input(
     slot_inputs: Res<input::SlotInputs>,
     angular_override: Res<AngularControlOverride>,
     time: Res<Time<Physics>>,
+    role: Res<crate::netcode::NetRole>,
+    local: Res<crate::netcode::LocalHandle>,
     mut q: Query<(
         &Ship,
         &ShipClass,
@@ -3307,6 +3309,20 @@ pub(crate) fn apply_player_input(
         Option<&crate::ai::AiControlled>,
     )>,
 ) {
+    // On the guest, only predict the LOCAL slot's own ship. The system
+    // iterates every Ship in the query and would otherwise read
+    // `SlotInputs.held[opponent_slot]` — which on the guest is
+    // permanently the `PlayerInput::default()` zeros (nothing writes
+    // the host's input into `NetInputs.current[host_slot]` on the
+    // guest). Applying that all-zero input would clobber the
+    // opponent's `AngularVelocity` to 0 every FixedUpdate (Classic
+    // mode), and for Arilou ships would force `LinearVelocity` to
+    // `Vec2::ZERO`, leaving Avian to integrate one frame of zero
+    // motion before the snapshot reconciler in Update restores the
+    // host's authoritative values. Skipping non-local slots on the
+    // guest leaves their poses entirely under snapshot control.
+    let guest_local_only = role.is_guest();
+    let local_slot = local.0.min(3);
     for (
         ship,
         class,
@@ -3324,6 +3340,9 @@ pub(crate) fn apply_player_input(
         ai,
     ) in &mut q
     {
+        if guest_local_only && ship.player_slot != local_slot {
+            continue;
+        }
         // Ultimate cinematic: force-locked spin; skip player ang_vel
         // and thrust updates so the cinematic owns the ship's motion.
         if hyper.is_some() {

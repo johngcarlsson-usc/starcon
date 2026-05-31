@@ -76,6 +76,17 @@ impl Plugin for HudPlugin {
             // rollback restored its `Crew>0`, so the local death felt
             // permanent and the remote peer's later despawn produced
             // a divergent world.
+            // Both run on every peer in netplay. Crew is reconciled
+            // from the host's snapshot, so the guest's `Changed<Crew>`
+            // listener fires the same tick as the host's ship dies —
+            // both peers reach the same despawn + winner decision
+            // independently from the same authoritative data. No
+            // `role_is_authoritative` gate: gating despawn would leave
+            // a zombie ship on the guest (there's no
+            // "ship row missing from snapshot → despawn" reconcile
+            // sweep), and gating winner detection would leave the
+            // guest stuck in `MatchPhase::Live` forever (which would
+            // also break the post-match Ready toggle).
             .add_systems(
                 FixedUpdate,
                 (destroy_zero_crew_ships, detect_winner)
