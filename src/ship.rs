@@ -857,10 +857,26 @@ fn projectile_on_add(
         .unwrap_or(0);
     let layers = projectile_layers(slot);
     let need_layers = world.get::<CollisionLayers>(ctx.entity).is_none();
+    // Stamp a cross-peer NetId so the host can stream this projectile
+    // to the guest (which renders it as a `ProjectileMirror`). Only the
+    // authoritative peer ever spawns real `Projectile`s — the guest's
+    // combat sim is gated off — so this hook only runs host/solo-side
+    // and the allocation can't diverge. Mirrors carry no `Projectile`
+    // component, so this hook never touches them.
+    let new_net_id = if world.get::<crate::netcode::NetId>(ctx.entity).is_none() {
+        world
+            .get_resource_mut::<crate::netcode::NetIdAllocator>()
+            .map(|mut a| a.allocate())
+    } else {
+        None
+    };
     let mut commands = world.commands();
     let mut ec = commands.entity(ctx.entity);
     if need_layers {
         ec.try_insert(layers);
+    }
+    if let Some(id) = new_net_id {
+        ec.try_insert(id);
     }
 }
 
@@ -1218,6 +1234,11 @@ impl Plugin for ShipPlugin {
         // entries. We've outgrown it; split into two FixedUpdate
         // groups (the order across groups is unconstrained, but each
         // system inside this plugin is independent so that's fine).
+        // Movement + per-ship state. Runs on EVERY peer — including the
+        // guest — so the guest keeps locally predicting its own ship's
+        // motion (snapshots then correct it). None of these spawn
+        // projectiles or deal damage, so they're safe to run on the
+        // guest; only the combat group below is host-authoritative.
         app.add_systems(
             FixedUpdate,
             (
@@ -1230,18 +1251,29 @@ impl Plugin for ShipPlugin {
                 tick_shield,
                 tick_point_defense,
                 tick_battery_recharge,
+                orient_projectiles,
+            ),
+        );
+        // Combat: weapon-spawn + projectile-steer/lifetime + damage-zone
+        // systems. Host authority — gated off on the guest, which sees
+        // the results as snapshot state and projectile mirrors. Without
+        // this gate the guest would spawn its own projectiles alongside
+        // the host's mirrors (double vision) and double-apply damage.
+        app.add_systems(
+            FixedUpdate,
+            (
                 tick_chebr_crystal,
                 tick_meltr_charge,
                 tick_kohma_blade,
                 tick_kohma_passive_blades,
                 tick_projectile_lifetime,
                 steer_homing_projectiles,
-                orient_projectiles,
                 tick_damage_zones,
                 tick_attached_damage_zones,
                 tick_beams,
                 tick_tractors,
-            ),
+            )
+                .run_if(crate::netcode::role_is_authoritative),
         );
         // Pkunk aggressive-clone AI lives in its own add_systems
         // so we can apply `.after(apply_player_input)` without
@@ -1251,7 +1283,8 @@ impl Plugin for ShipPlugin {
         app.add_systems(
             FixedUpdate,
             crate::ultimate::tick_pkunk_aggressive_clones
-                .after(apply_player_input),
+                .after(apply_player_input)
+                .run_if(crate::netcode::role_is_authoritative),
         );
         // Planet gravity nudges LinearVelocity; run it before the speed
         // cap so the whip-boosted cap is honoured the same tick.
@@ -1268,7 +1301,8 @@ impl Plugin for ShipPlugin {
                 apply_planet_gravity.before(cap_velocity),
                 tick_planet_contact,
                 tick_planet_grind,
-            ),
+            )
+                .run_if(crate::netcode::role_is_authoritative),
         );
         // Orz turret + marines own their input handling; must run AFTER
         // apply_player_input so it can clobber the hull's ang_vel when
@@ -1281,7 +1315,8 @@ impl Plugin for ShipPlugin {
                 tick_orz_turret.after(apply_player_input),
                 tick_slylandro_drift.after(apply_player_input),
                 tick_orz_marines_boarded,
-            ),
+            )
+                .run_if(crate::netcode::role_is_authoritative),
         );
         app.add_systems(
             FixedUpdate,
@@ -1303,7 +1338,8 @@ impl Plugin for ShipPlugin {
                 tick_alary_mirv,
                 tick_alary_turrets,
                 tick_shofixti_glory,
-            ),
+            )
+                .run_if(crate::netcode::role_is_authoritative),
         )
         .add_systems(
             Update,
@@ -1635,6 +1671,10 @@ pub fn teardown_match(
     satellites: Query<Entity, With<ChmmrSatellite>>,
     asteroids: Query<Entity, With<Asteroid>>,
     planets: Query<Entity, With<Planet>>,
+    // Guest-side render-only projectile mirrors carry neither
+    // `Projectile` nor any other gameplay marker, so they'd leak
+    // across a rematch without their own sweep.
+    proj_mirrors: Query<Entity, With<crate::netcode::ProjectileMirror>>,
 ) {
     for e in &ships {
         commands.entity(e).try_despawn();
@@ -1667,6 +1707,9 @@ pub fn teardown_match(
         commands.entity(e).try_despawn();
     }
     for e in &asteroids {
+        commands.entity(e).try_despawn();
+    }
+    for e in &proj_mirrors {
         commands.entity(e).try_despawn();
     }
 }

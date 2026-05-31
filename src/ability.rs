@@ -303,9 +303,14 @@ pub struct AbilityPlugin;
 
 impl Plugin for AbilityPlugin {
     fn build(&self, app: &mut App) {
+        // Weapon fire is the authoritative peer's job only — the guest
+        // spawns no projectiles locally; it renders the host's shots as
+        // mirrors (see `netcode`). Without this gate the guest would
+        // double-spawn its own shots alongside the mirrors.
         app.add_systems(
             FixedUpdate,
-            (dispatch_primary, dispatch_special),
+            (dispatch_primary, dispatch_special)
+                .run_if(crate::netcode::role_is_authoritative),
         );
     }
 }

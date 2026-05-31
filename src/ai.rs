@@ -141,7 +141,11 @@ impl Plugin for AiPlugin {
                 tick_ai_pilots
                     .after(crate::input::SlotInputProducerSet)
                     .before(crate::ship::apply_player_input)
-                    .run_if(in_state(crate::AppState::InMatch)),
+                    .run_if(in_state(crate::AppState::InMatch))
+                    // AI only drives ships on the authoritative peer;
+                    // the guest receives AI-controlled ships as snapshot
+                    // state like any other.
+                    .run_if(crate::netcode::role_is_authoritative),
             );
     }
 }

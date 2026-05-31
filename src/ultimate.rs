@@ -759,7 +759,13 @@ impl Plugin for UltimatePlugin {
                 tick_druuge_barrage,
                 tick_kohrah_spawn,
                 tick_kohrah_blades,
-            ),
+            )
+                // Host authority: ultimate gameplay runs only on the
+                // authoritative peer. The guest's ship is driven into
+                // the ultimate by the host (which reads the guest's
+                // forwarded INPUT_ULTIMATE) and sees the results via
+                // snapshots, rather than re-simulating the ability.
+                .run_if(crate::netcode::role_is_authoritative),
         )
         .add_systems(
             FixedUpdate,
@@ -768,7 +774,8 @@ impl Plugin for UltimatePlugin {
                 tick_mmrxf_tangled_laser,
                 tick_mmrxf_split_launcher,
                 tick_mmrxf_split_missiles,
-            ),
+            )
+                .run_if(crate::netcode::role_is_authoritative),
         )
         // ---- Update: cinematic systems that MUST tick during
         // Time<Virtual> pause ----
@@ -819,7 +826,11 @@ impl Plugin for UltimatePlugin {
                 // Alary: lerp the cruiser to 2× during the
                 // paused AlaryGrowing phase (permanent).
                 tick_alary_grow,
-            ),
+            )
+                // These mutate game state (spawn fighters, freeze
+                // asteroids, trigger the cinematic). Host-authoritative
+                // only; the guest doesn't start ultimates locally.
+                .run_if(crate::netcode::role_is_authoritative),
         )
         // ---- Update: visual-only systems ----
         //

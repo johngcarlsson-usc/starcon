@@ -114,9 +114,18 @@ pub enum NetMessage {
     /// netplay entity's `NetId` + gameplay state (pose, velocity,
     /// crew, batt). Guest applies straight onto local entities,
     /// spawning missing IDs and despawning stragglers.
+    ///
+    /// `projectiles` rides alongside in its own list (not `entities`)
+    /// because a projectile needs a sprite descriptor — path + size +
+    /// tint — that ships and asteroids don't, and keeping it separate
+    /// avoids bloating every ship/asteroid row with empty visual
+    /// fields. Under host authority the guest runs no combat sim, so
+    /// these are the ONLY projectiles it sees — render-only mirrors of
+    /// the host's authoritative shots.
     Snapshot {
         tick: u32,
         entities: Vec<EntityState>,
+        projectiles: Vec<ProjState>,
     },
     /// Host → Guest. Lobby state echo so the guest can render the
     /// per-slot READY / class status during PostMatch.
@@ -176,6 +185,35 @@ pub enum EntityKind {
     Planet,
     SubEntity,
 }
+
+/// One projectile in a `NetMessage::Snapshot`. Carries pose + a
+/// self-describing sprite (asset path, on-screen size, tint) so the
+/// guest can spawn a render-only mirror without a shared weapon
+/// registry — the host just reads these straight off the live
+/// projectile's `Sprite` component. `vel_*` lets the guest dead-
+/// reckon the mirror between snapshots so fast shots don't strobe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjState {
+    pub net_id: NetId,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub rot_cos: f32,
+    pub rot_sin: f32,
+    pub vel_x: f32,
+    pub vel_y: f32,
+    /// `Sprite.image` asset path (e.g. `ships/chebr/sprites/..png`).
+    pub sprite_path: String,
+    /// `Sprite.custom_size` (square side); 0 → leave sprite native.
+    pub size: f32,
+    /// `Sprite.color` linear RGBA.
+    pub color: [f32; 4],
+}
+
+/// Marker on a guest-side render-only projectile mirror. Carries a
+/// `Transform` + `Sprite` only; the host's snapshot stream is the
+/// sole driver of its pose and lifetime (no local physics/collision).
+#[derive(Component)]
+pub struct ProjectileMirror;
 
 /// Per-slot lobby state echoed by the host so the guest's
 /// `update_status_banner` sees the same READY / class for every
@@ -367,6 +405,7 @@ fn send_heartbeat(
     let msg = NetMessage::Snapshot {
         tick: 0,
         entities: Vec::new(),
+        projectiles: Vec::new(),
     };
     let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) else {
         return;
@@ -422,6 +461,16 @@ fn send_ship_snapshot(
         &avian2d::prelude::LinearVelocity,
         &avian2d::prelude::AngularVelocity,
     )>,
+    projectiles: Query<
+        (
+            &NetId,
+            &avian2d::prelude::Position,
+            &avian2d::prelude::Rotation,
+            &avian2d::prelude::LinearVelocity,
+            &Sprite,
+        ),
+        With<crate::ship::Projectile>,
+    >,
     mut snapshot_tick: Local<u32>,
 ) {
     sock.heartbeat_s += time.delta_secs();
@@ -480,11 +529,36 @@ fn send_ship_snapshot(
         }
     }));
 
+    let projectiles: Vec<ProjState> = projectiles
+        .iter()
+        .map(|(net_id, pos, rot, lin, sprite)| {
+            let sprite_path = sprite
+                .image
+                .path()
+                .map(|p| p.to_string())
+                .unwrap_or_default();
+            let size = sprite.custom_size.map(|s| s.x).unwrap_or(0.0);
+            ProjState {
+                net_id: *net_id,
+                pos_x: pos.0.x,
+                pos_y: pos.0.y,
+                rot_cos: rot.cos,
+                rot_sin: rot.sin,
+                vel_x: lin.0.x,
+                vel_y: lin.0.y,
+                sprite_path,
+                size,
+                color: sprite.color.to_linear().to_f32_array(),
+            }
+        })
+        .collect();
+
     let tick = *snapshot_tick;
     *snapshot_tick = snapshot_tick.wrapping_add(1);
     let msg = NetMessage::Snapshot {
         tick,
         entities,
+        projectiles,
     };
     let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) else {
         return;
@@ -529,6 +603,11 @@ fn drain_messages(
         ),
         With<crate::ship::Asteroid>,
     >,
+    // Guest-side render-only projectile mirrors. Pure `Transform`
+    // (no Position/RigidBody/Collider) — the reconciler drives them
+    // straight from the snapshot, so they don't conflict with the
+    // Position-based ship/asteroid queries above.
+    mut proj_mirrors: Query<(Entity, &NetId, &mut Transform), With<ProjectileMirror>>,
     mut last_snapshot_tick: Local<u32>,
 ) {
     // Snapshot the slot lookup before taking the channel mut-borrow so
@@ -569,7 +648,7 @@ fn drain_messages(
                     net_inputs.current[slot] = input;
                 }
             }
-            NetMessage::Snapshot { tick, entities } => {
+            NetMessage::Snapshot { tick, entities, projectiles } => {
                 // Guest applies snapshots onto its local ships;
                 // host ignores them (it IS the authority).
                 if !role.is_guest() {
@@ -676,6 +755,54 @@ fn drain_messages(
                 if has_ships {
                     for (e, net_id, _, _, _, _) in &asteroids {
                         if !seen_asteroids.contains(net_id) {
+                            if let Ok(mut ec) = commands.get_entity(e) {
+                                ec.try_despawn();
+                            }
+                        }
+                    }
+                }
+
+                // --- Projectile mirrors ---
+                // Same reconcile shape as asteroids: update the pose of
+                // any mirror we already have, spawn a render-only mirror
+                // for a NetId we don't, and (on real snapshots) despawn
+                // mirrors the host dropped — a projectile that hit or
+                // expired vanishes on the host's authority.
+                for p in &projectiles {
+                    let angle = p.rot_sin.atan2(p.rot_cos);
+                    let mut hit = false;
+                    for (_e, net_id, mut xf) in &mut proj_mirrors {
+                        if *net_id != p.net_id {
+                            continue;
+                        }
+                        xf.translation.x = p.pos_x;
+                        xf.translation.y = p.pos_y;
+                        xf.rotation = Quat::from_rotation_z(angle);
+                        hit = true;
+                        break;
+                    }
+                    if !hit && !spawned_this_drain.contains(&p.net_id) {
+                        spawned_this_drain.push(p.net_id);
+                        let custom_size = (p.size > 0.0).then(|| Vec2::splat(p.size));
+                        commands.spawn((
+                            ProjectileMirror,
+                            p.net_id,
+                            Sprite {
+                                image: assets.load(p.sprite_path.clone()),
+                                color: Color::linear_rgba(
+                                    p.color[0], p.color[1], p.color[2], p.color[3],
+                                ),
+                                custom_size,
+                                ..default()
+                            },
+                            Transform::from_translation(Vec3::new(p.pos_x, p.pos_y, 0.5))
+                                .with_rotation(Quat::from_rotation_z(angle)),
+                        ));
+                    }
+                }
+                if has_ships {
+                    for (e, net_id, _) in &proj_mirrors {
+                        if !projectiles.iter().any(|p| p.net_id == *net_id) {
                             if let Ok(mut ec) = commands.get_entity(e) {
                                 ec.try_despawn();
                             }
