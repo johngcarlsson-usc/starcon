@@ -161,16 +161,6 @@ pub enum NetMessage {
         /// snapshot via `Added<>` queries on the host.
         cinematic_spawns: Vec<CinematicSpawn>,
     },
-    /// Host → Guest. Lobby state echo so the guest can render the
-    /// per-slot READY / class status during PostMatch.
-    Lobby { slots: Vec<LobbySlot> },
-    /// Guest → Host. Lobby vote update. Sent only when the vote
-    /// changes — the reliable channel guarantees delivery so we
-    /// don't need to keep re-sending.
-    LobbyVote {
-        class: u8,
-        ready: bool,
-    },
 }
 
 /// One row of a `NetMessage::Snapshot`. Minimal for now — covers
@@ -609,16 +599,6 @@ pub struct CinematicVisualBuffer {
     pub rows: Vec<CinematicVisualState>,
 }
 
-/// Per-slot lobby state echoed by the host so the guest's
-/// `update_status_banner` sees the same READY / class for every
-/// slot the host computed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LobbySlot {
-    pub slot: u8,
-    pub class: u8,
-    pub ready: bool,
-}
-
 /// Which slot the local peer owns. Replaces `bevy_ggrs::LocalPlayers`
 /// post-refactor. `0` is the default — it's also the slot the lone
 /// peer in a solo / hotseat game is on, so the default is harmless
@@ -707,12 +687,6 @@ impl Plugin for NetcodePlugin {
 /// no NetSocket, but the gate stays consistent).
 pub fn role_is_authoritative(role: Res<NetRole>) -> bool {
     role.is_authoritative()
-}
-
-/// True iff we're the guest in netplay — used to gate snapshot
-/// application.
-pub fn role_is_guest(role: Res<NetRole>) -> bool {
-    role.is_guest()
 }
 
 /// Per-FixedUpdate, online only: rotate `NetInputs.previous = current`,
@@ -2133,12 +2107,6 @@ fn drain_messages(
                         },
                     ));
                 }
-            }
-            NetMessage::Lobby { slots } => {
-                debug!("netcode: rx Lobby slots={} from {peer:?}", slots.len());
-            }
-            NetMessage::LobbyVote { class, ready } => {
-                debug!("netcode: rx LobbyVote class={class} ready={ready} from {peer:?}");
             }
         }
     }

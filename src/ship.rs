@@ -514,10 +514,7 @@ pub enum AngularControl {
 pub struct AngularControlOverride(pub Option<AngularControl>);
 
 /// Marker + per-instance data for an in-match ship entity.
-/// `auto_add_rollback` hook tags every spawned ship for inclusion
-/// in the rollback snapshot pipeline.
 #[derive(Component, Debug)]
-#[component(on_add = auto_add_rollback)]
 pub struct Ship {
     pub stats: ShipStats,
     pub player_slot: usize,
@@ -782,27 +779,6 @@ pub struct PointDefenseActive {
     /// physics tick), so it reads as visible pulses and doesn't deal
     /// 60-per-second damage.
     pub cooldown_s: f32,
-}
-
-/// Bevy component on-add hook: tag the new entity with
-/// `bevy_ggrs::Rollback` so its state is included in rollback
-/// snapshots. Used by every gameplay-relevant marker component
-/// (Projectile, DamageZone, SubEntity, ...) — beats remembering
-/// to add the marker at every spawn site.
-///
-/// Idempotent: if the entity already has `Rollback` (e.g.
-/// because two of these markers were inserted together), don't
-/// re-insert.
-fn auto_add_rollback(
-    _world: bevy::ecs::world::DeferredWorld,
-    _ctx: bevy::ecs::lifecycle::HookContext,
-) {
-    // No-op. Used to attach `bevy_ggrs::Rollback` for snapshotting.
-    // After the host/guest refactor there's no rollback to snapshot
-    // INTO, so the hook is left as a stub purely so the
-    // `#[component(on_add = auto_add_rollback)]` attributes scattered
-    // across this file keep compiling. Remove once those attrs are
-    // cleaned up.
 }
 
 /// Bevy component on-add hook: stamp the entity with a fresh
@@ -1126,7 +1102,6 @@ pub struct OrzTurret {
 /// `roll_accum_s` is the 50-ms tick accumulator so the system rolls at
 /// the canonical 20 Hz cadence regardless of our actual physics rate.
 #[derive(Component, Debug, Clone)]
-#[component(on_add = auto_add_rollback)]
 pub struct OrzMarineBoarded {
     pub host: Entity,
     pub roll_accum_s: f32,
@@ -7610,7 +7585,6 @@ fn tick_kohma_passive_blades(
 /// spawn a visually + physically matching mirror when a replenished
 /// asteroid first appears in a snapshot with a NetId it hasn't seen.
 #[derive(Component, Debug, Clone)]
-#[component(on_add = auto_add_rollback)]
 pub struct Asteroid {
     pub radius: f32,
     /// 1-based index into the `ASTERO01..64` sprite frames.
@@ -7790,7 +7764,6 @@ pub fn spawn_asteroids(
 
 /// Central gravity-well body. Static (never moves); pulls dynamic bodies in.
 #[derive(Component, Debug, Clone)]
-#[component(on_add = auto_add_rollback)]
 pub struct Planet {
     /// Solid collision radius (world units).
     pub radius: f32,

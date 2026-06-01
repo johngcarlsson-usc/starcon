@@ -13,7 +13,21 @@ Severity:
 
 ---
 
-## [BUG] Guest can never see host's lobby vote → rematch is host-only
+## [BUG] [FIXED in 0f8fdbc] Guest can never see host's lobby vote → rematch is host-only
+
+> **Resolved by `0f8fdbc` (symmetric input forwarding).**
+> `push_local_input_to_netinputs` now forwards the local peer's
+> `PlayerInput` in BOTH directions (gated only by `!Solo &&
+> !peers.is_empty()`), and `drain_messages` applies inbound input on
+> BOTH peers — writing the sender's input into
+> `NetInputs.current[their_slot]`. The host's class pick + `FLAG_READY`
+> bit (packed onto `PlayerInput`) therefore reach the guest, so the
+> guest's `gather_slot_inputs` → `SlotInputs.held[host_slot]` carries
+> the real values and its own `detect_all_ready` fires the rematch
+> transition. Safe alongside `b219555`: `apply_player_input` is
+> local-slot-only on the guest, so the host's input bytes never
+> double-drive the host's ship (its pose stays snapshot-driven).
+> Original analysis retained below for context.
 
 `src/lobby.rs:135-182` (`detect_all_ready`), `src/netcode.rs:544-602`
 (`push_local_input_to_netinputs`), `src/netcode.rs:1096-1113` (Input arm).
@@ -72,7 +86,15 @@ don't want to fight over the wire format mid-edit.
 
 ---
 
-## [BUG] Guest never enters `Resetting`; stale match entities leak forever
+## [BUG] [FIXED in 0f8fdbc] Guest never enters `Resetting`; stale match entities leak forever
+
+> **Resolved by `0f8fdbc`** as a consequence of the lobby-vote fix
+> above. With the host's `FLAG_READY` bit now reaching the guest, the
+> guest's own `detect_all_ready` fires and drives its local
+> `AppState::Resetting` transition — so `teardown_match` runs on the
+> guest too, clearing the previous match's ship / asteroid / mirror
+> entities before the next round spawns. No new wire-format signal was
+> needed; the existing input-echo path carries enough state.
 
 `src/main.rs:122` (`teardown_match` on Resetting), `src/lobby.rs:181`
 (only host sets `AppState::Resetting`).
@@ -101,7 +123,15 @@ as above.
 
 ---
 
-## [BUG] Stale-match NetId collisions on guest
+## [BUG] [FIXED in 0f8fdbc] Stale-match NetId collisions on guest
+
+> **Resolved by `0f8fdbc`.** This finding's own analysis noted the
+> root cause was the previous bug: "without a guest-side
+> `teardown_match` trigger, fixing the allocator alone doesn't help."
+> Now that the guest goes through `Resetting` → `teardown_match` on a
+> rematch, its previous-match mirror entities (and their NetIds) are
+> despawned before the host's new NetId-1.. entities arrive, so the
+> reconcile loops no longer match new host data onto stale mirrors.
 
 `src/netcode.rs:1241-1260` (asteroid spawn fallback),
 `src/ship.rs:7680` (`alloc.reset()` in `spawn_asteroids`).
@@ -224,7 +254,12 @@ bugs need; left for the structural pass.
 
 ---
 
-## [RISK] `update_status_banner` shows wrong opponent class on guest
+## [RISK] [FIXED in 0f8fdbc] `update_status_banner` shows wrong opponent class on guest
+
+> **Resolved by `0f8fdbc`.** The host's `class` byte now rides its
+> echoed `PlayerInput` to the guest every tick, so
+> `slot_inputs.held[host_slot].class` carries the host's real pick and
+> the banner renders the correct opponent class.
 
 `src/hud.rs:482-490`, depends on the lobby-vote-bug above.
 
@@ -240,23 +275,20 @@ Logged separately so we don't lose it after the root cause is fixed.
 
 ---
 
-## [RISK] `LobbyVote` / `Lobby` wire-format variants are receive-only stubs
+## [RISK] [RESOLVED — stubs deleted] `LobbyVote` / `Lobby` wire-format variants are receive-only stubs
 
-`src/netcode.rs:156-164` (definitions),
-`src/netcode.rs:1683-1688` (debug-log-only receive arms).
+> **Resolved by deleting the dead stubs.** Now that the lobby vote
+> definitively rides on `NetMessage::Input` (the host's class +
+> `FLAG_READY` bits are packed onto its echoed `PlayerInput`), the
+> `NetMessage::Lobby` / `NetMessage::LobbyVote` variants and the
+> `LobbySlot` struct were never emitted and only logged on receipt.
+> They've been removed along with their debug-log receive arms, so the
+> enum no longer advertises a path that doesn't exist.
 
-**What's wrong.** The enum variants exist but nothing in the host's
-`send_ship_snapshot` (or anywhere else) emits them. The receive arms
-just log at debug level. This is the wire-format scaffolding that the
-lobby-vote bug needs to be cured properly; right now they're dead code
-that masks the bug because a reader sees them in the enum and assumes
-they work.
-
-**Proposed fix.** Either delete the stubs (and lock in that the lobby
-vote rides on `NetMessage::Input` only, which is what currently happens
-in the guest→host direction) or actually implement the bidirectional
-send. Recommend keeping them and implementing properly — see lobby-vote
-bug.
+**What was wrong.** The enum variants existed but nothing in the host's
+`send_ship_snapshot` (or anywhere else) emitted them. The receive arms
+just logged at debug level — dead code that masked the bug because a
+reader saw them in the enum and assumed they worked.
 
 ---
 
@@ -319,14 +351,18 @@ loop is the load-bearing one and overshoots happily.
 
 ---
 
-## [POLISH] `bevy_ggrs`-era comments + `auto_add_rollback` stub remain
+## [POLISH] [RESOLVED] `bevy_ggrs`-era comments + `auto_add_rollback` stub remain
 
-The hook is a no-op (`src/ship.rs:796-806`) and `bevy_ggrs` is gone, but
-the `#[component(on_add = auto_add_rollback)]` attribute is still
-attached to Ship / Planet / Asteroid / ShipModes. Dead code; the
-comment in the stub even says "Remove once those attrs are cleaned up."
+> **Resolved.** The no-op `auto_add_rollback` hook and its four
+> `#[component(on_add = auto_add_rollback)]` attributes (Ship,
+> OrzMarineBoarded, Asteroid, Planet) were deleted, along with the
+> stale GGRS-era module doc in `src/netplay.rs` (which still described
+> a rollback session that no longer exists) and the orphaned
+> `read_local_inputs` doc comment. The dead GGRS constants `FPS` and
+> `INPUT_DELAY` and the unused `role_is_guest` run-condition went too.
 
-**No fix in this pass.** Cleanup, not a bug.
+The hook was a no-op and `bevy_ggrs` is gone; the stub's own comment
+said "Remove once those attrs are cleaned up." Done.
 
 ---
 
@@ -371,37 +407,60 @@ in `[RISK]` `destroy_zero_crew_ships / detect_winner` above).
 
 `cargo check --target wasm32-unknown-unknown`: clean.
 
-# What I deliberately didn't fix
+## Commit 0f8fdbc — `netcode: symmetric input forwarding`
 
-- The wire-format-level bugs (lobby vote not echoed, guest never enters
-  Resetting, stale-match NetId collisions, opponent class display
-  wrong) — all need either a new `NetMessage` variant or a new field on
-  `Snapshot`, both of which are the other agent's lane.
-- Mirror sprite-image updates after first spawn — same structural
-  reasoning.
-- The dead `bevy_ggrs`-era `auto_add_rollback` stub — pure cleanup,
-  zero behaviour change.
-- Visual-only ultimate Update systems' lack of explicit role gates —
-  cosmetic, behaviour is correct.
+Forwarded each peer's `PlayerInput` in BOTH directions and applied
+inbound input on BOTH peers. This was the single fix the "Quick
+takeaways" below called for (option 1) and it resolved the three
+top BUGs (#1 lobby vote, #2 guest-never-Resetting, #3 stale-match
+NetId collisions) plus the two dependent RISK items (opponent class
+display, lobby-vote stubs) as one coherent change — no new wire-format
+variant or `Snapshot` field was needed, because the host's class +
+`FLAG_READY` bits already fit on the echoed `PlayerInput`.
+
+## Cleanup pass — dead-code removal + doc reconcile
+
+Following the input-forwarding fix:
+- Deleted the now-dead `NetMessage::Lobby` / `NetMessage::LobbyVote`
+  variants, the `LobbySlot` struct, and their debug-log receive arms
+  (lobby votes ride `NetMessage::Input`).
+- Removed the no-op `auto_add_rollback` hook + its four
+  `#[component(on_add = …)]` attributes.
+- Rewrote the stale GGRS-era `src/netplay.rs` module doc to describe
+  the host-authoritative handoff that's actually shipping; removed the
+  orphaned `read_local_inputs` doc comment.
+- Removed the dead GGRS constants `FPS`, `INPUT_DELAY` and the unused
+  `role_is_guest` run-condition.
+- Reconciled this document: findings #1–#3 and the two dependent RISK
+  items are marked FIXED/RESOLVED above.
+
+`cargo check --target wasm32-unknown-unknown`: clean (24 warnings, all
+pre-existing domain-level dead-code, none from the netcode path).
+
+# What remains (still open / deliberately untouched)
+
+- **RISK** — Mirror entity sprite asset only updates at spawn time.
+  Latent; no current weapon swaps a projectile/beam sprite mid-flight.
+- **RISK** — `destroy_zero_crew_ships` / `detect_winner` run on the
+  guest without an authority gate. Re-examined and left as-is: both
+  peers reach the same answer from identical snapshot data, and gating
+  host-only would need a ship-row despawn reconcile in `drain_messages`
+  that doesn't exist yet.
+- **POLISH** — `send_heartbeat` + `send_ship_snapshot` both increment
+  `heartbeat_s`; effective rate ~2× nominal. Harmless overshoot.
+- **POLISH** — Visual-only ultimate Update systems lack explicit role
+  gates (correct by virtue of `UltimateState` never updating on the
+  guest, but implicit).
+- Pre-existing domain dead-code warnings (ship-stat config fields,
+  placeholder ability variants the ROADMAP tracks as in-progress,
+  unused ultimate-cinematic mesh consts). Left untouched — these are
+  parsed config / intentional placeholders, not refactor debris.
 
 # Quick takeaways for the orchestrator
 
-Highest impact bug to fix next: **rematch / lobby vote sync**. Today a
-host-side rematch leaves the guest stuck in PostMatch with the dead
-ship visible, and the visual entities accumulate across rounds because
-the guest never goes through `teardown_match`. Two cleanest fixes:
-1. Mirror the input-forwarding path so the host sends its slot's
-   PlayerInput to the guest each tick. Tiny addition to
-   `push_local_input_to_netinputs` (remove the `if !role.is_guest()`
-   early return, send to whichever peers we have, and on the receive
-   side write into `NetInputs.current` keyed by peer — already done
-   for the guest→host direction). The guest's `detect_all_ready` then
-   triggers naturally.
-2. Add a `match_id: u32` (or equivalent) to `NetMessage::Snapshot` so
-   the guest can detect a fresh match and trigger its own Resetting
-   transition (which fires `teardown_match` and clears the stale
-   entities).
-
-Doing both is ~30 lines combined. They're out-of-scope here because
-they touch the wire-format struct (the other agent's lane) — flag for
-the orchestrator.
+The top-priority **rematch / lobby vote sync** bug is now fixed
+(`0f8fdbc`). The cleanest remaining proof-of-correctness is a real
+2-peer run: host + guest, play a round, both press R, confirm the
+guest tears down and re-enters cleanly with the host's actual class
+pick shown. Everything still open is RISK/POLISH (see list above) —
+no remaining BUG-severity items.

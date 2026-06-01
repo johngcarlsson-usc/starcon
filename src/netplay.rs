@@ -1,107 +1,43 @@
-//! Network play: matchbox WebRTC peer discovery + GGRS rollback
-//! session.
+//! Network play: matchbox WebRTC peer discovery + the lobby that
+//! hands a connected match off to the host-authoritative netcode in
+//! `crate::netcode`.
 //!
-//! Architecture (this is the design target; see TODOs for what's
-//! actually wired up yet):
+//! GGRS rollback was the original design but never achieved
+//! cross-peer determinism; it was replaced by an authoritative-host
+//! + state-snapshot model. The full rationale and wire format live
+//! in `NETCODE_REFACTOR.md`; this module only owns lobby discovery
+//! and the handoff. The `bevy_matchbox` `ggrs` feature is still
+//! enabled because it pulls in the `WebRtcChannel` transport we
+//! reuse — no GGRS session is built.
+//!
+//! Flow:
 //!
 //!   1. Player picks "Online" in the title menu → `AppState`
-//!      moves to `LobbyOnline` and `LobbyRequest.requested = true`.
-//!   2. `connect_to_matchbox` runs on OnEnter(LobbyOnline) and
-//!      opens a `MatchboxSocket` to `DEFAULT_ROOM_URL`. The room
-//!      query (`?next=N`) asks the signaling server to bucket us
-//!      with N-1 other peers.
-//!   3. Each Update tick `update_lobby` calls
-//!      `socket.update_peers()`. When the connected-peer count
-//!      reaches `NUM_PLAYERS`, we build a GGRS `SessionBuilder`
-//!      with our local handle + each peer's `PlayerType::Remote`,
-//!      hand it the matchbox channel via
-//!      `socket.take_channel(0)`, and transition to InMatch.
-//!   4. In InMatch, gameplay systems read inputs from GGRS
-//!      (replacing `read_local_input` for non-local slots).
-//!      Rollback is handled by `bevy_ggrs` driving the
-//!      `GgrsSchedule` instead of `FixedUpdate`.
-//!
-//! Status:
-//!   - [x] Lobby state machine + setup UI (humans/ai pickers,
-//!         "Find Match" button, status text).
-//!   - [x] `MatchboxSocket` connect on a variant-specific URL
-//!         (`starcon-h{H}-a{A}?next=H`) so peers picking the
-//!         same combo land in the same bucket.
-//!   - [x] Peer-count loop transitions to SessionReady when
-//!         `target_humans` are connected.
-//!   - [x] GGRS `SessionBuilder` handoff: sorted PeerId
-//!         deterministic handle assignment, `Session<Config>`
-//!         + `LocalPlayers` resource installed on success.
-//!   - [x] Shared per-match seed: PeerId list is hashed with
-//!         Bevy's FixedHasher and written to `MatchSeed.0`, so
-//!         every peer initialises `GameRng` with the same seed
-//!         at the start of the match.
-//!   - [x] `read_local_inputs` writes `LocalInputs<Config>` in
-//!         the ReadInputs schedule so GGRS has something to
-//!         broadcast.
-//!   - [x] `net_inputs_bridge` in `GgrsSchedule` copies
-//!         `PlayerInputs<Config>` into a long-lived
-//!         `NetInputs` resource so FixedUpdate gameplay can
-//!         read it.
-//!   - [x] `SlotInputs` (in `input.rs`): per-slot held +
-//!         just_pressed + just_released, populated each
-//!         FixedUpdate from kbd (local slots) or NetInputs
-//!         (remote slots). All ~12 gameplay-system call sites
-//!         migrated to read SlotInputs by slot index. Remote
-//!         players' inputs now reach `apply_player_input`,
-//!         `dispatch_primary`, ability dispatch, and the
-//!         per-class fire / charge / ult systems.
-//!   - [x] `INPUT_ULTIMATE` bit: SPACE / mobile ULT route
-//!         through the same PlayerInput bitfield as the other
-//!         buttons, so remote players can trigger their own
-//!         ultimates.
-//!   - [x] Determinism: `crate::rng::GameRng` migrated for the
-//!         major gameplay-affecting RNG sites (projectile
-//!         spread, asteroid spawn, all ultimate spawn paths,
-//!         crystal-shatter shards). Visual-only sites stay on
-//!         global fastrand per the policy in `crate::rng`.
-//!
-//!   - [x] Physics + gameplay moved out of `FixedUpdate` into
-//!         `GgrsSchedule`. Avian via `PhysicsPlugins::new(
-//!         GgrsSchedule)`; ability dispatch, AI, ship tick,
-//!         ultimate gameplay systems all migrated. Offline
-//!         fallback (`physics::offline_tick`) drives
-//!         GgrsSchedule from FixedUpdate when no Session is
-//!         active, so local play still ticks.
-//!   - [x] Rollback registrations: Position, Rotation,
-//!         LinearVelocity, AngularVelocity, Crew, Battery,
-//!         WeaponCooldown, SpecialCooldown all registered as
-//!         rollback components; GameRng registered as rollback
-//!         resource. `auto_add_rollback` on_add hooks on Ship /
-//!         Projectile / DamageZone / SubEntity / Asteroid so
-//!         every spawn site is automatically included in
-//!         snapshots.
-//!   - [x] Time audit: every gameplay-affecting cinematic
-//!         system switched from `Res<Time<Real>>` to
-//!         `Res<Time>`, which resolves to `Time<GgrsTime>`
-//!         inside GgrsSchedule — deterministic 1/FPS delta on
-//!         every peer.
-//!
-//! What you can do right now: an online 2-4-player match
-//! (with optional AI slots) connects via matchbox WebRTC,
-//! starts a real GGRS P2P session, and runs the full game
-//! simulation deterministically in rollback. Remote players'
-//! ships, projectiles, asteroids, and ultimates all simulate
-//! identically on every peer; input mispredictions trigger
-//! GGRS rollback and re-simulate from the corrected frame.
-//!
-//! Known caveats / next polish:
-//!   - INPUT_DELAY = 2 frames means local feel is ~33 ms
-//!     behind raw input. Reduce to 0 (predict aggressively,
-//!     rollback often) for fighting-game-style snap; raise to
-//!     5-10 for laggy connections.
-//!   - Float determinism across architectures (x86 vs ARM vs
-//!     wasm) hasn't been verified. Cross-architecture play may
-//!     desync from accumulated FP differences. Same-arch
-//!     play (e.g. all browsers on x86) should be fine.
-//!   - Cinematic-cutscene phases pause `Time<Virtual>` which
-//!     freezes Avian physics; GGRS still ticks its frame
-//!     counter so the pause length is deterministic.
+//!      moves to `LobbyOnline`.
+//!   2. `connect_to_matchbox` opens a `MatchboxSocket` on a
+//!      variant-specific room URL (`starcon-h{H}-a{A}?next=H`) so
+//!      peers picking the same humans/AI combo land in the same
+//!      signaling bucket.
+//!   3. Each Update tick `update_lobby` pumps `update_peers()`.
+//!      When `target_humans` peers are connected it:
+//!        - sorts the PeerId list (same order on every machine),
+//!        - elects host/guest via `netcode::elect_role` (lowest
+//!          PeerId = Host),
+//!        - takes matchbox channel 0 and installs it as
+//!          `netcode::NetSocket` (the `NetMessage` transport for
+//!          inputs + snapshots); channel 1 (reliable) is left in
+//!          the socket for the future lobby-vote path,
+//!        - seeds `MatchSeed` from a `FixedHasher` of the sorted
+//!          PeerId list so any host-side RNG draws (planet
+//!          quadrant, asteroid spawns) match across peers,
+//!        - writes `MatchConfig.slots` (human slots first, AI
+//!          slots filling the rest) and transitions to `InMatch`.
+//!   4. In `InMatch`, `crate::netcode` runs the host-authoritative
+//!      loop: the host simulates and broadcasts snapshots; the
+//!      guest forwards its input and renders the snapshots. Guest
+//!      input forwarding rides `NetMessage::Input`; the host reads
+//!      its own keyboard through the existing `gather_slot_inputs`
+//!      local-handle path.
 //!
 //! On WASM (the primary deployment target), WebRTC peer
 //! connections work out of the box. On native, you'll need a
@@ -121,19 +57,6 @@ use crate::AppState;
 /// stub-AI ships when the match starts). 4 is the canonical
 /// Super Melee cap.
 pub const MAX_PLAYERS: usize = 4;
-
-/// GGRS frame rate. Matches Bevy's default `FixedUpdate`
-/// schedule (60 Hz) so the network tick aligns with the physics
-/// tick. Changing this requires also reconfiguring
-/// `Time<Fixed>::timestep()`.
-pub const FPS: usize = 60;
-
-/// Input-prediction window in frames. The local player's input
-/// is applied immediately; remote inputs lag by INPUT_DELAY
-/// frames and arrive over the network in the meantime. Smaller
-/// = more responsive but more rollbacks; 2 frames @ 60 Hz =
-/// 33 ms of perceptual lag, which is below human reaction time.
-pub const INPUT_DELAY: usize = 2;
 
 /// Matchbox signaling server URL base. The full URL appended
 /// to this includes the lobby variant + `?next=N` so peers who
@@ -927,13 +850,6 @@ fn update_lobby(
     next.set(AppState::InMatch);
 }
 
-/// Per-frame input collection for GGRS. Reads the local
-/// keyboard (always slot-0 keymap — arrows + Z/X — because each
-/// peer owns exactly one slot in an online match, and we want
-/// every peer's controls to match the local-P1 convention) and
-/// stashes the result in `LocalInputs<Config>` keyed by the
-/// local handle. GGRS picks this resource up before the
-/// rollback schedule runs.
 // `read_local_inputs` + `net_inputs_bridge` removed — the GGRS
 // input pipeline they fed is gone. Guest input forwarding lives
 // in `netcode::NetMessage::Input` now; host reads its own keyboard
