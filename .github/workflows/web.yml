@@ -3,6 +3,7 @@ name: Build & deploy WASM to GitHub Pages
 on:
   push:
     branches:
+      - claude/repository-review-u5WAK
       - claude/review-timewarp-legacy-ABWTL
       - main
   workflow_dispatch:
