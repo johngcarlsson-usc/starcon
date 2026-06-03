@@ -640,9 +640,20 @@ pub struct NetSocket {
 /// host with the guest's extrapolation using the stale, pre-tick
 /// velocity) bounded to one frame's worth.
 ///
-/// Bandwidth budget: a 10-entity snapshot is ~500 bytes encoded, so
-/// 60 Hz × 500 B = ~30 kB/s — fine even on a slow connection.
-const SNAPSHOT_INTERVAL_S: f32 = 1.0 / 60.0;
+/// Bandwidth note: the original 60 Hz looked cheap for a 10-entity
+/// snapshot (~500 B → ~30 kB/s), but during heavy combat a snapshot
+/// balloons to ~3 kB (a sprite-path string in every projectile / sub-
+/// entity / zone row), so 60 Hz ≈ 180 kB/s. On the *unreliable*
+/// matchbox channel (channel 0) that's enough to outrun a relayed /
+/// internet path: the SCTP send buffer backs up, latency climbs, and
+/// after a while projectile frames get dropped (they "vanish" on the
+/// guest while still dealing damage host-side) and even the tiny input
+/// packets — which carry the rematch READY bit — stall behind the
+/// backlog. 30 Hz halves the steady-state load while staying smooth
+/// enough without client-side interpolation. Interning sprite paths
+/// to a `u16` id (see NETCODE_REFACTOR.md) is the complementary
+/// size-side fix if 30 Hz isn't enough.
+const SNAPSHOT_INTERVAL_S: f32 = 1.0 / 30.0;
 
 /// Cadence of the connectivity heartbeat sent before / between
 /// snapshots. Once the host snapshot loop is running the heartbeat
@@ -1332,6 +1343,20 @@ pub fn scan_cinematic_visuals(
     }
 }
 
+/// Cross-call state for `drain_messages`, bundled into one `Local` so
+/// the system stays under Bevy's 16-param ceiling.
+#[derive(Default)]
+struct DrainState {
+    /// Highest snapshot tick applied, for out-of-order discard.
+    last_snapshot_tick: u32,
+    /// Ship slots present in the previous REAL snapshot. The death
+    /// sweep is edge-triggered off this (present→absent = a death) so
+    /// it never despawns a freshly-spawned rematch ship just because a
+    /// stale snapshot from the host's previous match phase listed fewer
+    /// ships.
+    last_seen_ship_slots: Vec<u8>,
+}
+
 fn drain_messages(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -1463,7 +1488,7 @@ fn drain_messages(
             Without<SatelliteMirror>,
         ),
     >,
-    mut last_snapshot_tick: Local<u32>,
+    mut state: Local<DrainState>,
 ) {
     // Snapshot the slot lookup before taking the channel mut-borrow so
     // we don't fight the borrow checker mid-loop.
@@ -1533,10 +1558,10 @@ fn drain_messages(
                 // unreliable doesn't guarantee delivery order, but
                 // we want the latest authority state — older ticks
                 // would overwrite with stale poses.
-                if tick != 0 && tick < *last_snapshot_tick {
+                if tick != 0 && tick < state.last_snapshot_tick {
                     continue;
                 }
-                *last_snapshot_tick = tick;
+                state.last_snapshot_tick = tick;
 
                 // A real world snapshot always carries the ships. An
                 // empty / shipless one is a connectivity heartbeat —
@@ -1687,12 +1712,18 @@ fn drain_messages(
                 // host despawns it *the same FixedUpdate tick* via
                 // `destroy_zero_crew_ships` — so the crew=0 value never
                 // makes it into a snapshot, and the ship's row simply
-                // stops appearing. Without this sweep the guest keeps a
-                // ghost ship at its last-synced crew (the "died on one
-                // screen, alive on the other" bug). A slot absent from a
-                // REAL snapshot means that ship is gone; despawn the
-                // local mirror so the guest's `detect_winner` can see the
-                // match end too. Skipped for heartbeats (no ships at all).
+                // stops appearing. Without handling this the guest keeps
+                // a ghost ship at its last-synced crew (the "died on one
+                // screen, alive on the other" bug).
+                //
+                // EDGE-TRIGGERED, not level: only despawn a ship whose
+                // slot was present in the PREVIOUS real snapshot and is
+                // absent now (a genuine death). A purely "absent now"
+                // test would also kill freshly-spawned rematch ships when
+                // a stale snapshot from the host's previous match phase
+                // (fewer ships) lands in the window after the guest has
+                // already respawned — which manifested as the guest stuck
+                // a match behind. Skipped for heartbeats (no ships).
                 if has_ships {
                     let seen_ship_slots: Vec<u8> = entities
                         .iter()
@@ -1702,12 +1733,16 @@ fn drain_messages(
                         })
                         .collect();
                     for (e, ship, ..) in &ships {
-                        if !seen_ship_slots.contains(&(ship.player_slot as u8)) {
+                        let slot = ship.player_slot as u8;
+                        if state.last_seen_ship_slots.contains(&slot)
+                            && !seen_ship_slots.contains(&slot)
+                        {
                             if let Ok(mut ec) = commands.get_entity(e) {
                                 ec.try_despawn();
                             }
                         }
                     }
+                    state.last_seen_ship_slots = seen_ship_slots;
                 }
 
                 // --- Projectile mirrors ---
