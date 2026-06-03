@@ -769,12 +769,20 @@ fn send_heartbeat(
     time: Res<Time<Real>>,
     role: Res<NetRole>,
     mut sock: ResMut<NetSocket>,
+    mut heartbeat_s: Local<f32>,
 ) {
-    sock.heartbeat_s += time.delta_secs();
-    if sock.heartbeat_s < HEARTBEAT_INTERVAL_S {
+    // Own accumulator — must NOT share `sock.heartbeat_s` with
+    // `send_ship_snapshot`. Both run every Update (chained); if both
+    // add `delta` to the same field, the snapshot accumulator advances
+    // at ~2× real time and the host streams snapshots at up to twice
+    // the intended `SNAPSHOT_INTERVAL_S` rate — extra load on the
+    // unreliable channel that shows up as dropped projectile frames on
+    // the guest under combat.
+    *heartbeat_s += time.delta_secs();
+    if *heartbeat_s < HEARTBEAT_INTERVAL_S {
         return;
     }
-    sock.heartbeat_s = 0.0;
+    *heartbeat_s = 0.0;
     if sock.peers.is_empty() {
         return;
     }
@@ -898,11 +906,13 @@ fn send_ship_snapshot(
     // queries the cinematic scan owns would push us over.
     mut cinematic_buffer: ResMut<CinematicVisualBuffer>,
     mut snapshot_tick: Local<u32>,
+    mut size_log_s: Local<f32>,
 ) {
+    // `sock.heartbeat_s` is the snapshot accumulator, owned solely by
+    // this system — `send_heartbeat` keeps its own `Local` so the two
+    // don't double-advance it (which used to inflate the send rate to
+    // ~2× `SNAPSHOT_INTERVAL_S`).
     sock.heartbeat_s += time.delta_secs();
-    // Reuse `heartbeat_s` as the snapshot accumulator — gated by the
-    // shorter `SNAPSHOT_INTERVAL_S` here. The standalone `send_heartbeat`
-    // also reads it but its threshold (1 s) catches up too.
     if sock.heartbeat_s < SNAPSHOT_INTERVAL_S {
         return;
     }
@@ -1105,6 +1115,9 @@ fn send_ship_snapshot(
 
     let tick = *snapshot_tick;
     *snapshot_tick = snapshot_tick.wrapping_add(1);
+    // Counts captured before the vecs move into `msg`, for the size
+    // diagnostic below.
+    let (n_entities, n_proj, n_sub) = (entities.len(), projectiles.len(), sub_entities.len());
     let msg = NetMessage::Snapshot {
         tick,
         entities,
@@ -1123,6 +1136,32 @@ fn send_ship_snapshot(
     let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) else {
         return;
     };
+    // Bug-#2 diagnostic: the snapshot rides matchbox channel 0
+    // (`ChannelConfig::unreliable()`). Oversized messages get dropped
+    // by the WebRTC data channel, and sending 60 Hz of multi-KB
+    // payloads can saturate its send buffer — both show up on the
+    // guest as projectiles that "stop appearing but still deal damage"
+    // during heavy combat. ~16 KB is the conservative cross-browser
+    // SCTP single-message ceiling; warn past it so a playtest tells us
+    // immediately whether size is the culprit. Periodic info log keeps
+    // an eye on the steady-state size without flooding the console.
+    const SNAPSHOT_WARN_BYTES: usize = 16_000;
+    if bytes.len() > SNAPSHOT_WARN_BYTES {
+        warn!(
+            "netcode: snapshot {} bytes over {SNAPSHOT_WARN_BYTES} ceiling \
+             ({n_entities} entities, {n_proj} projectiles, {n_sub} sub-entities) \
+             — guest may drop this frame",
+            bytes.len()
+        );
+    }
+    *size_log_s += time.delta_secs();
+    if *size_log_s >= 2.0 {
+        *size_log_s = 0.0;
+        info!(
+            "netcode: snapshot {} bytes ({n_entities} entities, {n_proj} projectiles, {n_sub} sub-entities)",
+            bytes.len()
+        );
+    }
     let peers = sock.peers.clone();
     let Some(channel) = sock.channel.as_mut() else {
         return;
@@ -1635,6 +1674,35 @@ fn drain_messages(
                 if has_ships {
                     for (e, net_id, _, _, _, _) in &asteroids {
                         if !seen_asteroids.contains(net_id) {
+                            if let Ok(mut ec) = commands.get_entity(e) {
+                                ec.try_despawn();
+                            }
+                        }
+                    }
+                }
+
+                // Reconcile ship deaths. Ships are keyed by `player_slot`,
+                // not NetId, so the asteroid sweep above doesn't cover
+                // them. When a ship dies on the host (crew hits 0), the
+                // host despawns it *the same FixedUpdate tick* via
+                // `destroy_zero_crew_ships` — so the crew=0 value never
+                // makes it into a snapshot, and the ship's row simply
+                // stops appearing. Without this sweep the guest keeps a
+                // ghost ship at its last-synced crew (the "died on one
+                // screen, alive on the other" bug). A slot absent from a
+                // REAL snapshot means that ship is gone; despawn the
+                // local mirror so the guest's `detect_winner` can see the
+                // match end too. Skipped for heartbeats (no ships at all).
+                if has_ships {
+                    let seen_ship_slots: Vec<u8> = entities
+                        .iter()
+                        .filter_map(|e| match e.kind {
+                            EntityKind::Ship { slot, .. } => Some(slot),
+                            _ => None,
+                        })
+                        .collect();
+                    for (e, ship, ..) in &ships {
+                        if !seen_ship_slots.contains(&(ship.player_slot as u8)) {
                             if let Ok(mut ec) = commands.get_entity(e) {
                                 ec.try_despawn();
                             }

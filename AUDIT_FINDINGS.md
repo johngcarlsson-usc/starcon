@@ -215,6 +215,16 @@ snapshot-reconciled). Worth a follow-up audit pass.
 
 `src/hud.rs:79-84` (registration).
 
+> **Update — partial fix landed.** Live 2-peer testing exposed the
+> hole this item hand-waved: `destroy_zero_crew_ships` despawns the
+> host's ship the *same* tick crew hits 0, so the crew=0 value never
+> reaches a snapshot and the ship's row simply vanishes — the guest's
+> `Changed<Crew>` never fires and it keeps a ghost ship alive ("died on
+> one screen, alive on the other"). `drain_messages` now carries a
+> ship-slot-absent despawn sweep (mirror of the asteroid sweep): on a
+> real snapshot, any local ship whose `player_slot` is missing gets
+> despawned, so the guest's `detect_winner` can end the match too.
+
 **What's wrong.** Both systems run on every peer in `FixedUpdate` with
 no `role_is_authoritative` gate.
 - `destroy_zero_crew_ships` watches `Changed<Crew>` and despawns ships
