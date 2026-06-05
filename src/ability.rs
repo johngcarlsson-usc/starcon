@@ -915,7 +915,7 @@ fn spawn_volley(ctx: &mut AbilityCtx, volley: &VolleySpec) {
                 world_dir.x * s + world_dir.y * c,
             );
         }
-        spawn_one_projectile(
+        let proj = spawn_one_projectile(
             ctx.commands,
             ctx.assets,
             ctx.entity,
@@ -925,6 +925,15 @@ fn spawn_volley(ctx: &mut AbilityCtx, volley: &VolleySpec) {
             volley,
             ctx.damage,
         );
+        // Androsynth primary fires wandering bubbles (shpandgu.cpp).
+        // Tag them so `tick_andro_bubbles` drives the random-drift +
+        // loose-homing course. Andgu's only projectile source is this
+        // primary, so keying off the ship code is unambiguous.
+        if ctx.ship.stats.code == "andgu" {
+            ctx.commands
+                .entity(proj)
+                .try_insert(crate::ship::AndroBubble { speed: volley.speed, course_s: 0.0 });
+        }
         if volley.recoil_impulse > 0.0 {
             ctx.vel.0 -= world_dir * volley.recoil_impulse / mass;
         }
@@ -940,7 +949,7 @@ fn spawn_one_projectile(
     ship_vel: Vec2,
     volley: &VolleySpec,
     damage: i32,
-) {
+) -> Entity {
     let projectile_vel = ship_vel + world_dir * volley.speed;
     // Sprite frame 1 points +Y (up). Rotate by the velocity vector's
     // angle minus π/2 so the art faces the direction of travel at spawn.
@@ -1003,4 +1012,5 @@ fn spawn_one_projectile(
             slowdown_factor: 0.5,
         });
     }
+    ent.id()
 }

@@ -845,6 +845,21 @@ pub struct Projectile {
     pub lifetime: f32,
 }
 
+/// Androsynth bubble behaviour marker (canon `AndrosynthBubble::calculate`,
+/// shpandgu.cpp). The bubble flies forward at first, then every 150 ms
+/// re-aims to a fresh RANDOM direction and adds a half-speed nudge toward
+/// the nearest enemy — so it drifts about erratically while loosely
+/// chasing. `tick_andro_bubbles` drives it (host-authoritative; the guest
+/// sees the resulting motion through the projectile-mirror stream).
+#[derive(Component, Debug, Clone)]
+pub struct AndroBubble {
+    /// The bubble's cruise speed `v` (world units/sec) — magnitude of both
+    /// the random course and the half-speed enemy-seek nudge.
+    pub speed: f32,
+    /// Accumulator toward the 150 ms re-course interval.
+    pub course_s: f32,
+}
+
 /// Layer bits used by `CollisionLayers` to filter own-slot projectiles
 /// out of a ship's contact set. Bit 0 is the Avian DEFAULT layer (used
 /// by anything we don't tag explicitly: asteroids, planet, damage zones,
@@ -1294,6 +1309,7 @@ impl Plugin for ShipPlugin {
                 tick_kohma_passive_blades,
                 tick_projectile_lifetime,
                 steer_homing_projectiles,
+                tick_andro_bubbles,
                 tick_damage_zones,
                 tick_attached_damage_zones,
                 tick_beams,
@@ -5641,6 +5657,60 @@ fn steer_homing_projectiles(
             current_dir.x * s + current_dir.y * c,
         );
         vel.0 = new_dir * speed;
+    }
+}
+
+/// Androsynth bubble course logic — canon `AndrosynthBubble::calculate`
+/// (shpandgu.cpp). Every 150 ms the bubble re-aims to a fresh random
+/// direction at cruise speed, then adds a half-speed nudge toward the
+/// nearest enemy, so it meanders erratically while loosely chasing.
+/// Host-authoritative (sits in the gated combat group); the guest sees
+/// the resulting motion via the projectile-mirror stream.
+fn tick_andro_bubbles(
+    time: Res<Time<Physics>>,
+    mut rng: ResMut<crate::rng::GameRng>,
+    mut bubbles: Query<(&Projectile, &Position, &mut LinearVelocity, &mut AndroBubble)>,
+    ships: Query<(&Ship, &Position), (Without<Projectile>, Without<Invisible>)>,
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    for (proj, bpos, mut vel, mut bub) in &mut bubbles {
+        bub.course_s += dt;
+        if bub.course_s < 0.150 {
+            continue;
+        }
+        bub.course_s -= 0.150;
+
+        // Fresh random heading at cruise speed (canon `vel = v *
+        // unit_vector(random(PI2))`). `signed_unit()` is the seeded,
+        // rollback-safe RNG so both peers' hosts would agree.
+        let ang = rng.signed_unit() * std::f32::consts::PI;
+        let (s, c) = ang.sin_cos();
+        let mut new_vel = Vec2::new(c, s) * bub.speed;
+
+        // Half-speed seek toward the nearest enemy on the torus (canon
+        // adds `unit_vector(trajectory_angle) * v / 2`). Skipped if no
+        // enemy is in play, leaving a purely random drift that tick.
+        let owner_slot = ships.get(proj.owner).ok().map(|(s, _)| s.player_slot);
+        let mut best: Option<(Vec2, f32)> = None;
+        for (s, p) in &ships {
+            if Some(s.player_slot) == owner_slot {
+                continue;
+            }
+            let d = crate::physics::min_image(p.0 - bpos.0);
+            let d2 = d.length_squared();
+            if best.map(|(_, bd)| d2 < bd).unwrap_or(true) {
+                best = Some((d, d2));
+            }
+        }
+        if let Some((d, d2)) = best {
+            if d2 > 0.0 {
+                new_vel += d.normalize() * bub.speed * 0.5;
+            }
+        }
+        vel.0 = new_vel;
     }
 }
 
