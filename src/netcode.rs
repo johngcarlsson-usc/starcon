@@ -247,6 +247,17 @@ pub struct ProjState {
 #[derive(Component)]
 pub struct ProjectileMirror;
 
+/// Last-known snapshot velocity (world units/sec) for a moving mirror
+/// (projectiles, sub-entities). Between snapshots — which arrive at
+/// `SNAPSHOT_INTERVAL_S`, ~33 ms apart — `extrapolate_mirrors` advances
+/// the mirror's `Transform` by this velocity so fast-moving projectiles
+/// glide smoothly instead of stepping once per snapshot. Each snapshot
+/// resets both pose and velocity, so prediction error never accumulates
+/// past one interval. Ships don't need this: the guest spawns them as
+/// real Avian bodies that integrate their snapshot velocity already.
+#[derive(Component, Default)]
+pub struct MirrorVel(pub Vec2);
+
 // ----------------------------------------------------------------
 // Visual-mirror wire formats.
 //
@@ -698,10 +709,31 @@ impl Plugin for NetcodePlugin {
             // same PostUpdate / pre-Propagate slot as the real bodies.
             .add_systems(
                 PostUpdate,
-                wrap_guest_mirrors
+                // Smooth fast movers between 30 Hz snapshots, THEN re-image
+                // the result around the camera — both before transform
+                // propagation, same slot as the real bodies' offset pass.
+                (extrapolate_mirrors, wrap_guest_mirrors)
+                    .chain()
                     .before(bevy::transform::TransformSystems::Propagate)
                     .run_if(resource_exists::<NetSocket>),
             );
+    }
+}
+
+/// Dead-reckon moving mirrors (projectiles, sub-entities) by their last
+/// snapshot velocity so they glide smoothly between the ~33 ms snapshot
+/// steps instead of teleporting once per snapshot. Each snapshot resets
+/// pose + velocity in `drain_messages`, so error never accumulates past
+/// one interval; `wrap_guest_mirrors` (next in the chain) re-images the
+/// advanced position around the camera.
+fn extrapolate_mirrors(time: Res<Time>, mut q: Query<(&mut Transform, &MirrorVel)>) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    for (mut xf, vel) in &mut q {
+        xf.translation.x += vel.0.x * dt;
+        xf.translation.y += vel.0.y * dt;
     }
 }
 
@@ -1443,7 +1475,7 @@ fn drain_messages(
     // gets its own mirror query so the despawn sweep at the bottom
     // of the snapshot arm can drop NetIds the host dropped.
     mut proj_mirrors: Query<
-        (Entity, &NetId, &mut Transform),
+        (Entity, &NetId, &mut Transform, &mut MirrorVel),
         (With<ProjectileMirror>, Without<BeamMirror>),
     >,
     mut beam_mirrors: Query<
@@ -1495,7 +1527,7 @@ fn drain_messages(
         ),
     >,
     mut sub_mirrors: Query<
-        (Entity, &NetId, &mut Transform, &mut Sprite),
+        (Entity, &NetId, &mut Transform, &mut Sprite, &mut MirrorVel),
         (
             With<SubEntityMirror>,
             Without<ProjectileMirror>,
@@ -1802,13 +1834,14 @@ fn drain_messages(
                 for p in &projectiles {
                     let angle = p.rot_sin.atan2(p.rot_cos);
                     let mut hit = false;
-                    for (_e, net_id, mut xf) in &mut proj_mirrors {
+                    for (_e, net_id, mut xf, mut vel) in &mut proj_mirrors {
                         if *net_id != p.net_id {
                             continue;
                         }
                         xf.translation.x = p.pos_x;
                         xf.translation.y = p.pos_y;
                         xf.rotation = Quat::from_rotation_z(angle);
+                        vel.0 = Vec2::new(p.vel_x, p.vel_y);
                         hit = true;
                         break;
                     }
@@ -1817,6 +1850,7 @@ fn drain_messages(
                         let custom_size = (p.size > 0.0).then(|| Vec2::splat(p.size));
                         commands.spawn((
                             ProjectileMirror,
+                            MirrorVel(Vec2::new(p.vel_x, p.vel_y)),
                             p.net_id,
                             Sprite {
                                 image: assets.load(p.sprite_path.clone()),
@@ -1832,7 +1866,7 @@ fn drain_messages(
                     }
                 }
                 if has_ships {
-                    for (e, net_id, _) in &proj_mirrors {
+                    for (e, net_id, _, _) in &proj_mirrors {
                         if !projectiles.iter().any(|p| p.net_id == *net_id) {
                             if let Ok(mut ec) = commands.get_entity(e) {
                                 ec.try_despawn();
@@ -2058,7 +2092,7 @@ fn drain_messages(
                 for s in &sub_entities {
                     let angle = s.rot_sin.atan2(s.rot_cos);
                     let mut hit = false;
-                    for (_e, net_id, mut xf, mut sprite) in &mut sub_mirrors {
+                    for (_e, net_id, mut xf, mut sprite, mut vel) in &mut sub_mirrors {
                         if *net_id != s.net_id {
                             continue;
                         }
@@ -2066,6 +2100,7 @@ fn drain_messages(
                         xf.translation.y = s.pos_y;
                         xf.translation.z = 0.4;
                         xf.rotation = Quat::from_rotation_z(angle);
+                        vel.0 = Vec2::new(s.vel_x, s.vel_y);
                         sprite.custom_size = Some(Vec2::splat(s.size));
                         sprite.color = Color::linear_rgba(
                             s.color[0], s.color[1], s.color[2], s.color[3],
@@ -2093,6 +2128,7 @@ fn drain_messages(
                         };
                         commands.spawn((
                             SubEntityMirror,
+                            MirrorVel(Vec2::new(s.vel_x, s.vel_y)),
                             s.net_id,
                             sprite,
                             Transform::from_translation(Vec3::new(s.pos_x, s.pos_y, 0.4))
@@ -2101,7 +2137,7 @@ fn drain_messages(
                     }
                 }
                 if has_ships {
-                    for (e, net_id, _, _) in &sub_mirrors {
+                    for (e, net_id, _, _, _) in &sub_mirrors {
                         if !sub_entities.iter().any(|s| s.net_id == *net_id) {
                             if let Ok(mut ec) = commands.get_entity(e) {
                                 ec.try_despawn();
