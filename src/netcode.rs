@@ -194,6 +194,13 @@ pub struct EntityState {
     /// during the opponent's ability — without it, the guest sees
     /// damage being absorbed with no visible cause.
     pub shield_factor: Option<f32>,
+    /// Active `ShipModes` index (Mmrnmhrm X↔Y form, Androsynth
+    /// normal↔Blazer). 0 for ships without modes / non-ship rows. The
+    /// guest copies this onto its local ship's `ShipModes.current` so
+    /// `tick_ship_modes` applies the matching sprite + stats — otherwise
+    /// a mode change (e.g. the Blazer comet) is invisible on the guest
+    /// because mode transitions only happen host-side.
+    pub mode: u8,
 }
 
 /// Which family of game object an `EntityState` is describing.
@@ -943,6 +950,7 @@ fn send_ship_snapshot(
             &crate::ship::Crew,
             &crate::ship::Battery,
             Option<&crate::ship::ShieldActive>,
+            Option<&crate::ship::ShipModes>,
         ),
     >,
     asteroids: Query<(
@@ -1012,7 +1020,7 @@ fn send_ship_snapshot(
 
     let mut entities: Vec<EntityState> = ships
         .iter()
-        .map(|(ship, pos, rot, lin, ang, crew, batt, shield)| EntityState {
+        .map(|(ship, pos, rot, lin, ang, crew, batt, shield, modes)| EntityState {
             net_id: NetId(0),
             kind: EntityKind::Ship {
                 // Guest reads the class for this slot from its own
@@ -1036,6 +1044,7 @@ fn send_ship_snapshot(
             crew: crew.current,
             batt: batt.current,
             shield_factor: shield.map(|s| s.damage_factor),
+            mode: modes.map(|m| m.current as u8).unwrap_or(0),
         })
         .collect();
 
@@ -1056,6 +1065,7 @@ fn send_ship_snapshot(
             crew: 0,
             batt: 0,
             shield_factor: None,
+            mode: 0,
         }
     }));
 
@@ -1455,6 +1465,7 @@ fn drain_messages(
             &mut crate::ship::Crew,
             &mut crate::ship::Battery,
             Option<&mut crate::ship::ShieldActive>,
+            Option<&mut crate::ship::ShipModes>,
         ),
         Without<crate::ship::Asteroid>,
     >,
@@ -1666,6 +1677,7 @@ fn drain_messages(
                                 mut crew,
                                 mut batt,
                                 shield,
+                                modes,
                             ) in &mut ships
                             {
                                 if ship.player_slot as u8 != slot {
@@ -1680,6 +1692,19 @@ fn drain_messages(
                                 ang.0 = state.ang_vel;
                                 crew.current = state.crew;
                                 batt.current = state.batt;
+                                // Follow the host's active mode (Blazer,
+                                // Mmrnmhrm form). `tick_ship_modes` runs on
+                                // the guest too and will swap sprite + stats
+                                // when `current` changes — without this the
+                                // guest never sees the mode change because
+                                // toggles only happen host-side.
+                                if let Some(mut modes) = modes {
+                                    let want = (state.mode as usize)
+                                        .min(modes.modes.len().saturating_sub(1));
+                                    if modes.current != want {
+                                        modes.current = want;
+                                    }
+                                }
                                 // Mirror the host's shield presence
                                 // onto the guest's ship. `draw_shield_rings`
                                 // (in Update on both peers) renders an
