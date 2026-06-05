@@ -1277,7 +1277,6 @@ impl Plugin for ShipPlugin {
                 tick_special_cooldown,
                 tick_shield,
                 tick_point_defense,
-                tick_battery_recharge,
                 orient_projectiles,
             ),
         );
@@ -1299,6 +1298,13 @@ impl Plugin for ShipPlugin {
                 tick_attached_damage_zones,
                 tick_beams,
                 tick_tractors,
+                // Battery recharge is host-authoritative: it's snapshot-
+                // reconciled AND shown on the HUD meter, so running it on
+                // the guest too made the bar climb locally then snap back
+                // to the host's slightly-older value on each snapshot —
+                // a visible backward flicker, worst over high-latency
+                // internet. Guest battery is now purely snapshot-driven.
+                tick_battery_recharge,
             )
                 .run_if(crate::netcode::role_is_authoritative),
         );
