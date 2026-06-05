@@ -335,6 +335,7 @@ fn dispatch_primary(
         Option<&crate::ai::AiControlled>,
         Option<&Invisible>,
     )>,
+    recoil: Res<crate::ship::SelfFireRecoil>,
 ) {
     for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active, pkunk_clone, ai, invisible) in &mut q {
         // While Mmrnmhrm's ultimate is active the tangled laser
@@ -379,6 +380,7 @@ fn dispatch_primary(
             damage,
             invisible: invisible.map(|_| ()),
             rng: &mut rng,
+            self_fire_recoil: recoil.0,
         };
         apply_kind(&mut ctx, &abilities.primary.kind);
         cd.0 = abilities.primary.cooldown_s;
@@ -430,6 +432,7 @@ fn dispatch_special(
     // MAX_DOGIS=4 from `shpchebr.cpp:67`). Read-only; we just count
     // entries whose `owner == this_ship`.
     subs: Query<&crate::ship::SubEntity>,
+    recoil: Res<crate::ship::SelfFireRecoil>,
 ) {
     for (entity, ship, abilities, mut pos, rot, mut vel, mut cd, mut batt, mut crew, mmrxf_active, pkunk_clone, invisible) in &mut q {
         // Mmrnmhrm ultimate replaces the special with the split
@@ -529,6 +532,7 @@ fn dispatch_special(
             damage,
             invisible: invisible.map(|_| ()),
             rng: &mut rng,
+            self_fire_recoil: recoil.0,
         };
         apply_kind(&mut ctx, &abilities.special.kind);
         cd.0 = abilities.special.cooldown_s;
@@ -573,6 +577,12 @@ struct AbilityCtx<'a, 'w, 's> {
     /// affects game state (shot spread, teleport offset).
     /// Visual-only jitter can keep using the global fastrand.
     rng: &'a mut crate::rng::GameRng,
+    /// When `false` (default), spawned projectiles carry their
+    /// firer-excluding `CollisionLayers` from frame 0 so a muzzle that
+    /// overlaps the hull can't bump it. When `true`, the layers are left
+    /// to the deferred hook, restoring the old "firing torques the ship"
+    /// behaviour (`SelfFireRecoil`).
+    self_fire_recoil: bool,
 }
 
 fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
@@ -896,6 +906,12 @@ fn apply_kind(ctx: &mut AbilityCtx, kind: &AbilityKind) {
 
 fn spawn_volley(ctx: &mut AbilityCtx, volley: &VolleySpec) {
     let mass = ctx.ship.stats.mass.max(0.0001);
+    // Bake the firer-excluding collision layers into the spawn bundle so
+    // a muzzle that overlaps the hull (e.g. Earcr's shot at 28 vs a
+    // 22-radius hull) can't bump and spin the ship on frame 0. Skipped
+    // only when the opt-in `SelfFireRecoil` mode wants that old kick.
+    let firer_layers = (!ctx.self_fire_recoil)
+        .then(|| crate::ship::projectile_layers(ctx.ship.player_slot));
     for barrel in &volley.barrels {
         let world_pos_offset = Vec2::new(
             barrel.local_pos.x * ctx.rot.cos - barrel.local_pos.y * ctx.rot.sin,
@@ -924,6 +940,7 @@ fn spawn_volley(ctx: &mut AbilityCtx, volley: &VolleySpec) {
             ctx.vel.0,
             volley,
             ctx.damage,
+            firer_layers,
         );
         // Androsynth primary fires wandering bubbles (shpandgu.cpp).
         // Tag them so `tick_andro_bubbles` drives the random-drift +
@@ -949,6 +966,7 @@ fn spawn_one_projectile(
     ship_vel: Vec2,
     volley: &VolleySpec,
     damage: i32,
+    firer_layers: Option<CollisionLayers>,
 ) -> Entity {
     let projectile_vel = ship_vel + world_dir * volley.speed;
     // Sprite frame 1 points +Y (up). Rotate by the velocity vector's

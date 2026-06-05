@@ -524,6 +524,16 @@ impl Default for AngularControlOverride {
     }
 }
 
+/// When `false` (the default) a ship's own projectiles never push or
+/// spin it: their firer-excluding `CollisionLayers` are baked into the
+/// spawn bundle, so a muzzle that overlaps the hull can't bump it on the
+/// frame it appears. When `true`, that exclusion is left to the deferred
+/// on-add hook, restoring the old behaviour where firing can torque the
+/// ship (the Earthling spinning after a missile) — an opt-in curiosity,
+/// off by default.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct SelfFireRecoil(pub bool);
+
 /// Marker + per-instance data for an in-match ship entity.
 #[derive(Component, Debug)]
 pub struct Ship {
@@ -1282,6 +1292,7 @@ impl Plugin for ShipPlugin {
         // gameplay systems into GgrsSchedule.
         app.init_resource::<MatchConfig>()
             .init_resource::<AngularControlOverride>()
+            .init_resource::<SelfFireRecoil>()
             .add_systems(Update, (class_picker_input, cycle_angular_override));
         // Bevy 0.18's `add_systems` macro caps a single tuple at 20
         // entries. We've outgrown it; split into two FixedUpdate
@@ -2215,6 +2226,7 @@ fn modes_for(
                 ],
                 current: 0,
                 applied: None,
+                drain_accum: 0.0,
             })
         }
 
@@ -2321,6 +2333,7 @@ fn modes_for(
                 ],
                 current: 0,
                 applied: None,
+                drain_accum: 0.0,
             })
         }
 
@@ -3751,11 +3764,20 @@ fn tick_weapon_cooldown(time: Res<Time<Physics>>, mut q: Query<&mut WeaponCooldo
 /// gets no natural recharge — only its harvest special tops it up.
 fn tick_battery_recharge(
     time: Res<Time<Physics>>,
-    mut q: Query<(&Ship, &mut Battery, &mut RechargeTimer)>,
+    mut q: Query<(&Ship, &mut Battery, &mut RechargeTimer, Option<&ShipModes>)>,
 ) {
     let dt = time.delta_secs();
-    for (ship, mut battery, mut timer) in &mut q {
+    for (ship, mut battery, mut timer, modes) in &mut q {
         if ship.stats.recharge_rate <= 0 || ship.stats.recharge_amount <= 0 {
+            continue;
+        }
+        // A draining mode (Androsynth Blazer, canon `recharge_amount = -1`)
+        // suppresses normal recharge — otherwise it would refill the
+        // battery the Blazer is supposed to be burning down.
+        if modes
+            .and_then(|m| m.modes.get(m.current))
+            .is_some_and(|m| m.batt_drain_per_tick > 0)
+        {
             continue;
         }
         // Period between recharge ticks in seconds: SC2 RechargeRate
@@ -4031,6 +4053,11 @@ pub struct ShipModes {
     /// `current == 0` (e.g. swapping in fresh `frames`/`abilities`
     /// that weren't built at spawn).
     pub applied: Option<usize>,
+    /// Fractional battery-drain carry. A mode draining 1 SC2-frame/tick
+    /// only loses ~0.33 battery per 60 Hz physics tick, so flooring each
+    /// tick independently rounded to 0 and the Blazer never drained.
+    /// Accumulate the fraction and spend it once it crosses a whole unit.
+    pub drain_accum: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -4135,10 +4162,21 @@ fn tick_ship_modes(
             modes.applied = Some(idx);
         }
 
-        // Per-tick battery drain.
+        // Per-tick battery drain, with a fractional carry. At 60 Hz a
+        // `batt_drain` of 1 SC2-frame/tick is only ~0.33/physics-tick, so
+        // rounding each tick alone floored to 0 and the Blazer never
+        // consumed battery (canon `recharge_amount = -1`). Accumulate the
+        // fraction and spend whole units. `tick_battery_recharge` skips
+        // draining modes so it can't refill against this.
         if batt_drain != 0 {
-            let drain = (batt_drain as f32 * dt_frames).round() as i32;
-            batt.current = (batt.current - drain).clamp(0, batt.max);
+            modes.drain_accum += batt_drain as f32 * dt_frames;
+            let whole = modes.drain_accum.floor();
+            if whole != 0.0 {
+                modes.drain_accum -= whole;
+                batt.current = (batt.current - whole as i32).clamp(0, batt.max);
+            }
+        } else {
+            modes.drain_accum = 0.0;
         }
 
         // Auto-revert when battery is exhausted (Andro Blazer).
@@ -4551,7 +4589,7 @@ fn tick_chebr_crystal(
                     // ends up on a projectile's velocity or
                     // collider, so peers must agree.
                     let n_shards = 14 + rng.usize_range(0..8);
-                    for _ in 0..n_shards {
+                    for i in 0..n_shards {
                         let theta = rng.f32() * std::f32::consts::TAU;
                         let speed_mult = 0.6 + rng.f32() * 1.4; // 0.6× to 2.0×
                         let dir = Vec2::new(theta.cos(), theta.sin());
@@ -4591,7 +4629,22 @@ fn tick_chebr_crystal(
                                 damage: shard_damage,
                                 lifetime: shard_lifetime,
                             },
-                            Sprite::from_color(shard_color, Vec2::splat(size * 1.8)),
+                            // Canon shards use `data->spriteExtra` — the
+                            // extracted `shot_e_NN_tga` crystal-shard frames
+                            // (12×12, 64 of them). Vary the frame by index so
+                            // the burst looks jagged/chaotic; the bluish
+                            // `shard_color` tints it. `i % 64` is deterministic
+                            // (no extra RNG draw), so peers stay in sync and
+                            // the guest mirror picks up the path.
+                            Sprite {
+                                image: assets.load(format!(
+                                    "ships/chebr/sprites/shot_e_{:02}_tga.png",
+                                    i % 64
+                                )),
+                                color: shard_color,
+                                custom_size: Some(Vec2::splat(size * 1.8)),
+                                ..default()
+                            },
                             Transform::from_translation(spawn_pos.extend(0.5)),
                             RigidBody::Dynamic,
                             collider,
