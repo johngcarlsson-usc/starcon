@@ -263,7 +263,7 @@ fn update_setting_labels(
                     Some(AngularControl::Classic) => "Classic",
                     Some(AngularControl::Inertial) => "Inertial",
                 };
-                format!("Steering: {v}")
+                format!("Angular: {v}")
             }
             SettingButton::Colliders => {
                 format!("Colliders: {}", if debug_collider.0 { "On" } else { "Off" })

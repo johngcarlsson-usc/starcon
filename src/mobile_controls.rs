@@ -132,11 +132,12 @@ impl Plugin for MobileControlsPlugin {
 /// phone tilt also rotates the ship when the stick is centred.
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MobileScheme {
-    #[default]
     Normal,
     /// Absolute aim + phone tilt rotates in place when stick is idle.
     AbsoluteTilt,
-    /// Absolute aim only — no tilt.
+    /// Absolute aim only — no tilt. The default: the stick points the
+    /// ship where you push, which is the most intuitive touch scheme.
+    #[default]
     Absolute,
 }
 

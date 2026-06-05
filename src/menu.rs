@@ -201,6 +201,7 @@ fn despawn_menu(mut commands: Commands, q: Query<Entity, With<MenuRoot>>) {
 }
 
 fn handle_menu_buttons(
+    mut commands: Commands,
     mut config: ResMut<MatchConfig>,
     mut next: ResMut<NextState<AppState>>,
     mut lobby_req: ResMut<crate::netplay::LobbyRequest>,
@@ -212,6 +213,24 @@ fn handle_menu_buttons(
     for (interaction, action) in &interactions {
         if !matches!(interaction, Interaction::Pressed) {
             continue;
+        }
+        // Starting any LOCAL match clears stale netplay identity. After a
+        // netplay session `NetRole`/`LocalHandle` persist (e.g. Guest in
+        // slot 1); without this reset `apply_player_input`'s guest gate
+        // would skip the solo player's own ship — controls would appear
+        // dead. The lobby's Online flow sets these itself, so only reset
+        // for the local-match actions.
+        if matches!(
+            action,
+            MenuAction::LocalTwo
+                | MenuAction::LocalThree
+                | MenuAction::LocalFour
+                | MenuAction::SoloVsOneAi
+                | MenuAction::SoloVsThreeAi
+        ) {
+            commands.insert_resource(crate::netcode::NetRole::Solo);
+            commands.insert_resource(crate::netcode::LocalHandle(0));
+            commands.remove_resource::<crate::netcode::NetSocket>();
         }
         match action {
             MenuAction::LocalTwo => {
@@ -297,7 +316,7 @@ fn update_menu_setting_labels(
                     Some(AngularControl::Classic) => "Classic",
                     Some(AngularControl::Inertial) => "Inertial",
                 };
-                format!("Steering: {v}")
+                format!("Angular: {v}")
             }
             MenuAction::CycleDifficulty => {
                 let v = match *difficulty {

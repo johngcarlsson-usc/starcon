@@ -678,6 +678,7 @@ impl Plugin for NetcodePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetRole>()
             .init_resource::<NetIdAllocator>()
+            .init_resource::<LocalHandle>()
             .init_resource::<VisualEventQueue>()
             .init_resource::<CinematicVisualBuffer>()
             .add_systems(

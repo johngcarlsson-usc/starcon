@@ -508,10 +508,21 @@ pub enum AngularControl {
 }
 
 /// Optional global override of every ship's per-class `AngularControl`.
-/// `None` means "use what each class declares" (currently Classic for
-/// every stock class — matches original SC2). Toggle with `M`.
-#[derive(Resource, Default, Clone, Copy, Debug)]
+/// `None` means "use what each class declares" (Classic for every stock
+/// class — matches original SC2). Toggle with `M` / the settings panel.
+///
+/// Default is `Some(Inertial)`: angular momentum on for every ship out
+/// of the box (collisions leave you tumbling; turning has real inertia),
+/// which is the feel we want by default. Players can cycle back to
+/// per-class Default or Classic.
+#[derive(Resource, Clone, Copy, Debug)]
 pub struct AngularControlOverride(pub Option<AngularControl>);
+
+impl Default for AngularControlOverride {
+    fn default() -> Self {
+        AngularControlOverride(Some(AngularControl::Inertial))
+    }
+}
 
 /// Marker + per-instance data for an in-match ship entity.
 #[derive(Component, Debug)]

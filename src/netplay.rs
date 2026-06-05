@@ -667,12 +667,14 @@ fn update_setup_visibility(
 /// genuinely done with that peer connection, so the cleanup is safe.
 fn drop_socket(mut commands: Commands, mut state: ResMut<LobbyState>) {
     commands.remove_resource::<crate::netcode::NetSocket>();
-    commands.remove_resource::<crate::netcode::LocalHandle>();
-    // NetRole and NetIdAllocator are `init_resource`'d at startup and
-    // read by always-on run conditions (e.g. `role_is_authoritative`),
-    // so they have to exist for the whole app lifetime. Reset them
-    // back to the Solo default instead of removing them.
+    // NetRole, LocalHandle and NetIdAllocator are `init_resource`'d at
+    // startup and read by always-on systems (`apply_player_input` takes
+    // `Res<LocalHandle>`; `role_is_authoritative` reads `NetRole`). A
+    // missing `Res` makes those systems silently skip — which is exactly
+    // how solo input broke. Reset to the Solo defaults instead of
+    // removing them.
     commands.insert_resource(crate::netcode::NetRole::Solo);
+    commands.insert_resource(crate::netcode::LocalHandle(0));
     commands.insert_resource(crate::netcode::NetIdAllocator::default());
     commands.remove_resource::<MatchboxSocket>();
     state.status = LobbyStatus::Setup;
