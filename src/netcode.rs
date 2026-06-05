@@ -689,7 +689,55 @@ impl Plugin for NetcodePlugin {
                 )
                     .chain()
                     .run_if(resource_exists::<NetSocket>),
+            )
+            // Guest mirrors are pure `Transform`+`Sprite` (no `Position`),
+            // so `starfield::apply_toroidal_render_offset` — which keys off
+            // `Position` — skips them and they render at their raw snapshot
+            // cell, vanishing off-screen until the player wraps around the
+            // torus to that cell. Re-image them around the camera in the
+            // same PostUpdate / pre-Propagate slot as the real bodies.
+            .add_systems(
+                PostUpdate,
+                wrap_guest_mirrors
+                    .before(bevy::transform::TransformSystems::Propagate)
+                    .run_if(resource_exists::<NetSocket>),
             );
+    }
+}
+
+/// PostUpdate (pre-Propagate): re-image guest mirror entities to the
+/// torus copy nearest the camera, mirroring what
+/// `starfield::apply_toroidal_render_offset` does for `Position`-bearing
+/// bodies. `nearest_image` depends only on the position's equivalence
+/// class mod the arena size, so imaging an already-imaged transform on a
+/// frame with no fresh snapshot is stable.
+#[allow(clippy::type_complexity)]
+fn wrap_guest_mirrors(
+    camera: Query<&Transform, With<Camera2d>>,
+    mut mirrors: Query<
+        &mut Transform,
+        (
+            Without<Camera2d>,
+            Or<(
+                With<ProjectileMirror>,
+                With<BeamMirror>,
+                With<DamageZoneMirror>,
+                With<AttachedZoneMirror>,
+                With<TractorMirror>,
+                With<SubEntityMirror>,
+                With<SatelliteMirror>,
+                With<CinematicVisualMirror>,
+                With<crate::ultimate::GuestCinematicFade>,
+            )>,
+        ),
+    >,
+) {
+    let Ok(cam) = camera.single() else { return };
+    let focus = cam.translation.truncate();
+    for mut xf in &mut mirrors {
+        let img = crate::physics::nearest_image(xf.translation.truncate(), focus);
+        xf.translation.x = img.x;
+        xf.translation.y = img.y;
     }
 }
 
