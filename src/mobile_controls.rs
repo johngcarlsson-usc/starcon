@@ -39,6 +39,9 @@ pub enum TouchAction {
     /// remains visible; used to show/hide the mobile-only buttons
     /// (default is hidden so the play area isn't covered).
     ToggleButtons,
+    /// Restart / rematch — stands in for the `R` key on touch. Only
+    /// shown during PostMatch (see `RematchButton` + `show_rematch_button`).
+    Rematch,
 }
 
 impl TouchAction {
@@ -49,7 +52,8 @@ impl TouchAction {
             TouchAction::Ultimate => Some(INPUT_ULTIMATE),
             TouchAction::CyclePrev
             | TouchAction::CycleNext
-            | TouchAction::ToggleButtons => None,
+            | TouchAction::ToggleButtons
+            | TouchAction::Rematch => None,
         }
     }
     fn label(self) -> &'static str {
@@ -63,9 +67,18 @@ impl TouchAction {
             // rest of the touch UI. Shorter than a word; reads as
             // a controller-y icon on small phone screens.
             TouchAction::ToggleButtons => "+",
+            TouchAction::Rematch => "REMATCH",
         }
     }
 }
+
+/// Marker on the standalone REMATCH button so `show_rematch_button`
+/// can reveal it only during PostMatch. Deliberately NOT a
+/// `TouchButtonCluster` — it's gated by match phase, not the `+`
+/// toggle, so a touch player always has a way to restart even with
+/// the rest of the controls hidden.
+#[derive(Component)]
+pub struct RematchButton;
 
 /// Tracks the previous-frame `Interaction` per button so we can emit
 /// just-pressed / just-released edges into `VirtualInput`.
@@ -106,6 +119,7 @@ impl Plugin for MobileControlsPlugin {
                     pump_tilt,
                     drive_virtual_input,
                     apply_visibility,
+                    show_rematch_button,
                     request_tilt_permission_on_enable,
                 ),
             );
@@ -465,6 +479,70 @@ fn spawn_touch_controls(mut commands: Commands, assets: Res<AssetServer>) {
                 18.0,
             );
         });
+
+    // ---- REMATCH button: bottom-center, only shown in PostMatch ----
+    // Stands in for the `R` key. Lives outside any TouchButtonCluster
+    // so it's gated by match phase (via `show_rematch_button`), not the
+    // `+` toggle — a touch player always has a way to restart even with
+    // the rest of the controls hidden. Starts hidden; `drive_virtual_input`
+    // raises `VirtualInput.rematch_just_pressed` on its press edge.
+    let rematch_color = Color::srgba(0.30, 0.85, 0.50, 0.55);
+    const REMATCH_W: f32 = 180.0;
+    const REMATCH_H: f32 = 56.0;
+    commands
+        .spawn((
+            RematchButton,
+            Button,
+            TouchAction::Rematch,
+            LastInteraction::default(),
+            Visibility::Hidden,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(90.0),
+                left: Val::Percent(50.0),
+                margin: UiRect {
+                    left: Val::Px(-REMATCH_W * 0.5),
+                    ..default()
+                },
+                width: Val::Px(REMATCH_W),
+                height: Val::Px(REMATCH_H),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                border: UiRect::all(Val::Px(2.0)),
+                border_radius: BorderRadius::all(Val::Px(12.0)),
+                ..default()
+            },
+            BackgroundColor(rematch_color),
+            BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.75)),
+        ))
+        .with_children(|b| {
+            b.spawn((
+                Text::new(TouchAction::Rematch.label()),
+                TextFont::from_font_size(20.0),
+                TextColor(Color::srgba(1.0, 1.0, 1.0, 0.95)),
+            ));
+        });
+}
+
+/// Reveal the REMATCH button only during PostMatch (both solo and
+/// netplay reach `MatchPhase::PostMatch` when a round ends), so it's
+/// out of the way during the fight and obvious when it's time to
+/// restart.
+fn show_rematch_button(
+    phase: Res<crate::hud::MatchPhase>,
+    mut q: Query<&mut Visibility, With<RematchButton>>,
+) {
+    if !phase.is_changed() {
+        return;
+    }
+    let target = if *phase == crate::hud::MatchPhase::PostMatch {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut q {
+        *v = target;
+    }
 }
 
 /// Spawn a single absolutely-positioned gamepad button inside its
@@ -539,6 +617,7 @@ fn drive_virtual_input(
     let mut ultimate_edge = false;
     let mut cycle_next_edge = false;
     let mut cycle_prev_edge = false;
+    let mut rematch_edge = false;
 
     for (interaction, action, mut last) in &mut buttons {
         let is_active = matches!(interaction, Interaction::Pressed);
@@ -559,6 +638,7 @@ fn drive_virtual_input(
             TouchAction::Ultimate if edge_press => ultimate_edge = true,
             TouchAction::CycleNext if edge_press => cycle_next_edge = true,
             TouchAction::CyclePrev if edge_press => cycle_prev_edge = true,
+            TouchAction::Rematch if edge_press => rematch_edge = true,
             TouchAction::ToggleButtons if edge_press => {
                 visible.0 = !visible.0;
                 info!("touch buttons: {}", if visible.0 { "shown" } else { "hidden" });
@@ -641,6 +721,7 @@ fn drive_virtual_input(
     virt.ultimate_just_pressed = ultimate_edge;
     virt.cycle_next_just_pressed = cycle_next_edge;
     virt.cycle_prev_just_pressed = cycle_prev_edge;
+    virt.rematch_just_pressed = rematch_edge;
 }
 
 /// Sync each cluster's Visibility with `TouchButtonsVisible`. The

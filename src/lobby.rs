@@ -113,15 +113,22 @@ fn tick_local_class_cycle(
 /// instead of mashing in and out of Ready while the key's held.
 fn tick_local_ready_toggle(
     keys: Res<ButtonInput<KeyCode>>,
+    virt: Res<crate::input::VirtualInput>,
     phase: Res<MatchPhase>,
     mut lobby: ResMut<LobbyVote>,
 ) {
     if *phase != MatchPhase::PostMatch {
         return;
     }
+    // `R` toggles; the on-screen REMATCH button (touch devices have no
+    // keyboard) *sets* ready — a one-way "I want a rematch" so a single
+    // tap can't accidentally un-ready.
     if keys.just_pressed(KeyCode::KeyR) {
         lobby.ready = !lobby.ready;
         info!("lobby: local peer ready = {}", lobby.ready);
+    } else if virt.rematch_just_pressed && !lobby.ready {
+        lobby.ready = true;
+        info!("lobby: local peer ready = true (touch)");
     }
 }
 

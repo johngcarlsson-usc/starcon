@@ -49,6 +49,10 @@ enum MenuAction {
     CycleSteering,
     /// Cycle Easy/Medium/Hard AI difficulty.
     CycleDifficulty,
+    /// Show/hide the on-screen touch controls (virtual stick + buttons)
+    /// from the menu, so a mobile player can turn them on *before* the
+    /// match starts instead of fumbling for the in-game `+` knob.
+    ToggleControls,
 }
 
 /// Marks a label whose text mirrors the live value of a setting,
@@ -107,12 +111,17 @@ fn spawn_menu(mut commands: Commands, windows: Query<&Window>) {
             root.spawn(Node {
                 margin: UiRect::top(Val::Px(14.0 * s)),
                 column_gap: Val::Px(10.0 * s),
+                row_gap: Val::Px(10.0 * s),
                 flex_direction: FlexDirection::Row,
+                flex_wrap: FlexWrap::Wrap,
+                justify_content: JustifyContent::Center,
+                max_width: Val::Percent(96.0),
                 ..default()
             })
             .with_children(|row| {
                 spawn_setting_button(row, MenuAction::CycleSteering, s);
                 spawn_setting_button(row, MenuAction::CycleDifficulty, s);
+                spawn_setting_button(row, MenuAction::ToggleControls, s);
             });
 
             root.spawn((
@@ -197,6 +206,7 @@ fn handle_menu_buttons(
     mut lobby_req: ResMut<crate::netplay::LobbyRequest>,
     mut angular: ResMut<AngularControlOverride>,
     mut difficulty: ResMut<AiDifficulty>,
+    mut touch_visible: ResMut<crate::mobile_controls::TouchButtonsVisible>,
     interactions: Query<(&Interaction, &MenuAction), Changed<Interaction>>,
 ) {
     for (interaction, action) in &interactions {
@@ -263,6 +273,9 @@ fn handle_menu_buttons(
                     AiDifficulty::Hard => AiDifficulty::Easy,
                 };
             }
+            MenuAction::ToggleControls => {
+                touch_visible.0 = !touch_visible.0;
+            }
         }
     }
 }
@@ -273,6 +286,7 @@ fn handle_menu_buttons(
 fn update_menu_setting_labels(
     angular: Res<AngularControlOverride>,
     difficulty: Res<AiDifficulty>,
+    touch_visible: Res<crate::mobile_controls::TouchButtonsVisible>,
     mut labels: Query<(&SettingButtonLabel, &mut Text)>,
 ) {
     for (label, mut text) in &mut labels {
@@ -292,6 +306,9 @@ fn update_menu_setting_labels(
                     AiDifficulty::Hard => "Hard",
                 };
                 format!("AI: {v}")
+            }
+            MenuAction::ToggleControls => {
+                format!("Controls: {}", if touch_visible.0 { "On" } else { "Off" })
             }
             _ => continue,
         };

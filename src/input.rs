@@ -192,6 +192,11 @@ pub struct VirtualInput {
     /// edges each frame.
     pub cycle_next_just_pressed: bool,
     pub cycle_prev_just_pressed: bool,
+    /// Edge-triggered: true the tick the on-screen REMATCH button is
+    /// hit. Stands in for the `R` key on touch devices — in solo it
+    /// rides `FLAG_REMATCH` to `request_rematch`; in netplay the lobby
+    /// ready-toggle reads it to vote for a rematch.
+    pub rematch_just_pressed: bool,
     /// Analog turn from the on-screen stick, in `[-1.0, 1.0]` (+1 =
     /// full left, −1 = full right). OR'd into player 1's input as the
     /// analog turn axis. `0.0` when the stick is centred or absent.
@@ -343,6 +348,13 @@ pub fn read_local_just_pressed_with_virtual(
     if slot == 0 {
         if let Some(v) = virt {
             input.buttons |= v.just_pressed.buttons;
+            // The on-screen REMATCH button stands in for the `R` key:
+            // raise the FLAG_REMATCH edge so `request_rematch` fires in
+            // solo / hotseat (in netplay the lobby reads the same
+            // virtual edge to drive the Ready vote instead).
+            if v.rematch_just_pressed {
+                input.flags |= FLAG_REMATCH;
+            }
         }
     }
     input

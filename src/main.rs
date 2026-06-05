@@ -161,6 +161,7 @@ fn resume_from_reset(
 
 fn request_rematch(
     slot_inputs: Res<input::SlotInputs>,
+    virt: Res<input::VirtualInput>,
     phase: Res<hud::MatchPhase>,
     session: Option<Res<netcode::NetSocket>>,
     mut next: ResMut<NextState<AppState>>,
@@ -172,8 +173,12 @@ fn request_rematch(
     if session.is_some() {
         return;
     }
+    // The on-screen REMATCH button (touch) is read directly here, the
+    // same Update-to-Update way `class_picker_input` reads the cycle
+    // buttons — routing its one-frame edge through `SlotInputs` (built
+    // in FixedUpdate) could drop it on frames with no fixed step.
     if *phase == hud::MatchPhase::PostMatch
-        && slot_inputs.any_flag_just_pressed(input::FLAG_REMATCH)
+        && (slot_inputs.any_flag_just_pressed(input::FLAG_REMATCH) || virt.rematch_just_pressed)
     {
         next.set(AppState::Resetting);
     }
