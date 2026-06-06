@@ -524,16 +524,6 @@ impl Default for AngularControlOverride {
     }
 }
 
-/// When `false` (the default) a ship's own projectiles never push or
-/// spin it: their firer-excluding `CollisionLayers` are baked into the
-/// spawn bundle, so a muzzle that overlaps the hull can't bump it on the
-/// frame it appears. When `true`, that exclusion is left to the deferred
-/// on-add hook, restoring the old behaviour where firing can torque the
-/// ship (the Earthling spinning after a missile) — an opt-in curiosity,
-/// off by default.
-#[derive(Resource, Clone, Copy, Debug, Default)]
-pub struct SelfFireRecoil(pub bool);
-
 /// Marker + per-instance data for an in-match ship entity.
 #[derive(Component, Debug)]
 pub struct Ship {
@@ -1292,7 +1282,6 @@ impl Plugin for ShipPlugin {
         // gameplay systems into GgrsSchedule.
         app.init_resource::<MatchConfig>()
             .init_resource::<AngularControlOverride>()
-            .init_resource::<SelfFireRecoil>()
             .add_systems(Update, (class_picker_input, cycle_angular_override));
         // Bevy 0.18's `add_systems` macro caps a single tuple at 20
         // entries. We've outgrown it; split into two FixedUpdate
