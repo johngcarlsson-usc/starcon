@@ -52,11 +52,17 @@ impl Plugin for MeleePlugin {
                     .run_if(in_state(AppState::InMatch))
                     .run_if(crate::netcode::role_is_authoritative),
             )
-            // Rendering runs on both peers (the guest's FleetMatch is
-            // populated from snapshots).
+            // Guest mirrors the host's melee state + swaps ships from
+            // snapshots; rendering runs on both peers.
             .add_systems(
                 Update,
-                (melee_picker_ui, update_melee_hud).run_if(in_state(AppState::InMatch)),
+                (
+                    guest_melee_apply,
+                    melee_picker_ui,
+                    update_melee_hud,
+                )
+                    .chain()
+                    .run_if(in_state(AppState::InMatch)),
             )
             .add_systems(OnExit(AppState::InMatch), melee_cleanup);
     }
@@ -596,6 +602,92 @@ fn melee_cleanup(
     for e in &ui {
         if let Ok(mut ec) = commands.get_entity(e) {
             ec.try_despawn();
+        }
+    }
+}
+
+// ===========================================================================
+//  Guest-side mirror: apply host melee state + swap ships
+// ===========================================================================
+
+/// On the guest, copy the host's melee projection (stashed on NetSocket
+/// by `drain_messages`) into the local `FleetMatch` so the picker/HUD
+/// render, and spawn/replace a slot's mirror ship when the host swaps it
+/// mid-melee (the regular snapshot reconcile only updates a ship in
+/// place — it can't change its class).
+#[allow(clippy::too_many_arguments)]
+fn guest_melee_apply(
+    sock: Option<Res<crate::netcode::NetSocket>>,
+    role: Res<crate::netcode::NetRole>,
+    catalog: Res<ShipCatalog>,
+    colliders: Res<ShipColliders>,
+    assets: Res<AssetServer>,
+    mut fleet: ResMut<FleetMatch>,
+    ships: Query<(Entity, &Ship, &ShipClass)>,
+    mut commands: Commands,
+    mut cooldown: Local<[u8; 4]>,
+) {
+    if !role.is_guest() {
+        return;
+    }
+    let Some(sock) = sock else {
+        return;
+    };
+    let m = &sock.latest_melee;
+    if !m.active {
+        fleet.active = false;
+        return;
+    }
+    fleet.active = true;
+    for slot in 0..4 {
+        fleet.choosing[slot] = (m.choosing >> slot) & 1 == 1;
+        fleet.eliminated[slot] = (m.eliminated >> slot) & 1 == 1;
+        fleet.cursor[slot] = m.cursor[slot] as usize;
+        fleet.pool[slot] = m.pool[slot]
+            .iter()
+            .map(|i| crate::ship::class_from_index(*i))
+            .collect();
+    }
+
+    // Which class (if any) currently occupies each slot on the guest.
+    let mut present: [Option<(Entity, ShipClass)>; 4] = [None; 4];
+    for (e, ship, class) in &ships {
+        if ship.player_slot < 4 {
+            present[ship.player_slot] = Some((e, *class));
+        }
+    }
+    for c in cooldown.iter_mut() {
+        *c = c.saturating_sub(1);
+    }
+    for slot in 0..4 {
+        let Some(info) = sock.latest_ship_pose[slot] else {
+            continue;
+        };
+        let want = crate::ship::class_from_index(info.class_idx);
+        let pos = Vec2::new(info.pos_x, info.pos_y);
+        let rot = info.rot_sin.atan2(info.rot_cos);
+        let needs_spawn = match present[slot] {
+            Some((_, cur)) if cur == want => false,
+            Some((e, _)) => {
+                // Slot's ship changed class — drop the stale mirror.
+                if cooldown[slot] == 0 {
+                    if let Ok(mut ec) = commands.get_entity(e) {
+                        ec.try_despawn();
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            None => cooldown[slot] == 0,
+        };
+        if needs_spawn
+            && spawn_class(&mut commands, &catalog, &assets, want, pos, rot, slot, &colliders)
+                .is_some()
+        {
+            // Guard against re-spawning before the deferred spawn lands
+            // in the query.
+            cooldown[slot] = 4;
         }
     }
 }

@@ -793,6 +793,8 @@ fn update_lobby(
         heartbeat_s: 0.0,
         peers: remote_peers,
         slot_to_peer: peer_ids.clone(),
+        latest_melee: Default::default(),
+        latest_ship_pose: [None; 4],
     });
     // Channel 1 (the reliable one) stays in the socket for now. The
     // lobby-vote re-routing in step 5 of NETCODE_REFACTOR.md will

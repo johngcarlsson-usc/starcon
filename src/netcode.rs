@@ -160,7 +160,27 @@ pub enum NetMessage {
         /// segments, asteroid ghosts). Accumulated since the last
         /// snapshot via `Added<>` queries on the host.
         cinematic_spawns: Vec<CinematicSpawn>,
+        /// Fleet-melee state (choosing / reserve pools). `active=false`
+        /// on heartbeats and in non-melee matches; the guest only
+        /// applies it when `active` is set.
+        melee: MeleeNet,
     },
+}
+
+/// Melee fleet state mirrored to the guest so it can render the
+/// next-ship picker and fleet counter. The host owns the authoritative
+/// `FleetMatch`; this is the wire projection of it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MeleeNet {
+    pub active: bool,
+    /// Bitmask of slots currently choosing their next ship.
+    pub choosing: u8,
+    /// Bitmask of slots whose fleet is wiped.
+    pub eliminated: u8,
+    /// Selection cursor per slot.
+    pub cursor: [u8; 4],
+    /// Remaining reserve ships per slot, as `ALL_CLASSES` indices.
+    pub pool: [Vec<u8>; 4],
 }
 
 /// One row of a `NetMessage::Snapshot`. Minimal for now — covers
@@ -647,6 +667,24 @@ pub struct NetSocket {
     /// `NetMessage::Input` from `peer` back to the slot whose
     /// `NetInputs.current` entry the host should write into.
     pub slot_to_peer: Vec<PeerId>,
+    /// Latest melee state received from the host (guest side). Stashed
+    /// here by `drain_messages` (which holds the channel borrow and
+    /// can't touch other resources) and consumed by `guest_melee_apply`.
+    pub latest_melee: MeleeNet,
+    /// Latest per-slot ship class + pose seen in a snapshot (guest side),
+    /// so `guest_melee_apply` can spawn/replace a slot's mirror ship when
+    /// the host swaps it mid-melee. `None` = no ship for that slot.
+    pub latest_ship_pose: [Option<GuestShipPose>; 4],
+}
+
+/// A slot's ship class + pose as last seen in a guest snapshot.
+#[derive(Clone, Copy, Default)]
+pub struct GuestShipPose {
+    pub class_idx: u8,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub rot_cos: f32,
+    pub rot_sin: f32,
 }
 
 /// Host snapshot cadence. Driven against `Time<Real>` in the
@@ -903,6 +941,7 @@ fn send_heartbeat(
         zaps: Vec::new(),
         cinematic_visuals: Vec::new(),
         cinematic_spawns: Vec::new(),
+        melee: MeleeNet::default(),
     };
     let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) else {
         return;
@@ -1007,6 +1046,7 @@ fn send_ship_snapshot(
     mut cinematic_buffer: ResMut<CinematicVisualBuffer>,
     mut snapshot_tick: Local<u32>,
     mut size_log_s: Local<f32>,
+    fleet: Res<crate::melee::FleetMatch>,
 ) {
     // `sock.heartbeat_s` is the snapshot accumulator, owned solely by
     // this system — `send_heartbeat` keeps its own `Local` so the two
@@ -1215,6 +1255,30 @@ fn send_ship_snapshot(
     let cinematic_spawns = std::mem::take(&mut events.cinematics);
     let cinematic_visuals = std::mem::take(&mut cinematic_buffer.rows);
 
+    // Project the authoritative melee state for the guest's picker/HUD.
+    let melee_net = if fleet.active {
+        let mut m = MeleeNet {
+            active: true,
+            ..default()
+        };
+        for slot in 0..4 {
+            if fleet.choosing[slot] {
+                m.choosing |= 1 << slot;
+            }
+            if fleet.eliminated[slot] {
+                m.eliminated |= 1 << slot;
+            }
+            m.cursor[slot] = fleet.cursor[slot].min(255) as u8;
+            m.pool[slot] = fleet.pool[slot]
+                .iter()
+                .map(|c| crate::ship::class_to_index(*c))
+                .collect();
+        }
+        m
+    } else {
+        MeleeNet::default()
+    };
+
     let tick = *snapshot_tick;
     *snapshot_tick = snapshot_tick.wrapping_add(1);
     // Counts captured before the vecs move into `msg`, for the size
@@ -1234,6 +1298,7 @@ fn send_ship_snapshot(
         zaps,
         cinematic_visuals,
         cinematic_spawns,
+        melee: melee_net,
     };
     let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) else {
         return;
@@ -1591,6 +1656,12 @@ fn drain_messages(
     // two snapshots in one frame both listing a new NetId would spawn
     // it twice.
     let mut spawned_this_drain: Vec<NetId> = Vec::new();
+    // Melee state + per-slot ship pose from the newest snapshot this
+    // pass. Collected while the channel borrow is held, then stashed on
+    // `sock` after the loop for `guest_melee_apply` to consume.
+    let is_guest = role.is_guest();
+    let mut newest_melee: Option<MeleeNet> = None;
+    let mut newest_ship_pose: [Option<GuestShipPose>; 4] = [None; 4];
     let Some(channel) = sock.channel.as_mut() else {
         return;
     };
@@ -1640,6 +1711,7 @@ fn drain_messages(
                 zaps,
                 cinematic_visuals,
                 cinematic_spawns,
+                melee,
             } => {
                 // Guest applies snapshots onto its local ships;
                 // host ignores them (it IS the authority).
@@ -1664,9 +1736,22 @@ fn drain_messages(
                     .any(|e| matches!(e.kind, EntityKind::Ship { .. }));
 
                 let mut seen_asteroids: Vec<NetId> = Vec::with_capacity(entities.len());
+                // Stash this snapshot's melee projection for the guest.
+                if is_guest {
+                    newest_melee = Some(melee.clone());
+                }
                 for state in &entities {
                     match state.kind {
-                        EntityKind::Ship { slot, .. } => {
+                        EntityKind::Ship { slot, class_idx } => {
+                            if is_guest && (slot as usize) < 4 {
+                                newest_ship_pose[slot as usize] = Some(GuestShipPose {
+                                    class_idx,
+                                    pos_x: state.pos_x,
+                                    pos_y: state.pos_y,
+                                    rot_cos: state.rot_cos,
+                                    rot_sin: state.rot_sin,
+                                });
+                            }
                             for (
                                 ship_entity,
                                 ship,
@@ -2321,6 +2406,15 @@ fn drain_messages(
                     ));
                 }
             }
+        }
+    }
+    // Hand the newest melee projection + ship poses to the guest-side
+    // reconciler. Only when a snapshot was actually applied this pass, so
+    // an empty drain doesn't wipe the last-known poses. No-op for host.
+    if is_guest {
+        if let Some(m) = newest_melee {
+            sock.latest_melee = m;
+            sock.latest_ship_pose = newest_ship_pose;
         }
     }
 }
