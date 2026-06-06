@@ -42,6 +42,8 @@ enum MenuAction {
     LocalTwo,
     LocalThree,
     LocalFour,
+    /// Local fleet-melee: build two teams, then fight them ship-by-ship.
+    MeleeLocal,
     SoloVsOneAi,
     SoloVsThreeAi,
     Online,
@@ -104,6 +106,7 @@ fn spawn_menu(mut commands: Commands, windows: Query<&Window>) {
             spawn_button(root, MenuAction::LocalTwo, "Local 2-Player", s);
             spawn_button(root, MenuAction::LocalThree, "Local 3-Player (hotseat)", s);
             spawn_button(root, MenuAction::LocalFour, "Local 4-Player (hotseat)", s);
+            spawn_button(root, MenuAction::MeleeLocal, "Melee 2P (build fleets)", s);
             spawn_button(root, MenuAction::SoloVsOneAi, "Solo vs 1 AI", s);
             spawn_button(root, MenuAction::SoloVsThreeAi, "Solo vs 3 AI", s);
             spawn_button(root, MenuAction::Online, "Online (2-4 players)", s);
@@ -212,6 +215,7 @@ fn handle_menu_buttons(
     mut difficulty: ResMut<AiDifficulty>,
     mut touch_visible: ResMut<crate::mobile_controls::TouchButtonsVisible>,
     mut key_config_open: ResMut<crate::keyconfig::KeyConfigOpen>,
+    mut team_builder: ResMut<crate::melee::TeamBuilder>,
     interactions: Query<(&Interaction, &MenuAction), Changed<Interaction>>,
 ) {
     for (interaction, action) in &interactions {
@@ -247,6 +251,7 @@ fn handle_menu_buttons(
                     SlotConfig::human(ShipClass::Spael),
                     SlotConfig::human(ShipClass::Yehte),
                 ];
+                config.melee = false;
                 next.set(AppState::InMatch);
             }
             MenuAction::LocalFour => {
@@ -256,7 +261,13 @@ fn handle_menu_buttons(
                     SlotConfig::human(ShipClass::Yehte),
                     SlotConfig::human(ShipClass::Chmav),
                 ];
+                config.melee = false;
                 next.set(AppState::InMatch);
+            }
+            MenuAction::MeleeLocal => {
+                // Build two local fleets, then play them as a melee.
+                team_builder.begin(2, false);
+                next.set(AppState::TeamSelect);
             }
             MenuAction::SoloVsOneAi => {
                 // Straight 1v1 — player vs a single AI opponent.
@@ -267,6 +278,7 @@ fn handle_menu_buttons(
                     SlotConfig::human(ShipClass::Earcr),
                     SlotConfig::ai(ShipClass::Spael),
                 ];
+                config.melee = false;
                 next.set(AppState::InMatch);
             }
             MenuAction::SoloVsThreeAi => {
@@ -276,6 +288,7 @@ fn handle_menu_buttons(
                     SlotConfig::ai(ShipClass::Pkufu),
                     SlotConfig::ai(ShipClass::Kohma),
                 ];
+                config.melee = false;
                 next.set(AppState::InMatch);
             }
             MenuAction::Online => {

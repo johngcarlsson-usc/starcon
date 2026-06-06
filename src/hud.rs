@@ -419,18 +419,30 @@ fn destroy_zero_crew_ships(
 fn detect_winner(
     ships: Query<&Ship>,
     config: Res<crate::ship::MatchConfig>,
+    fleet: Res<crate::melee::FleetMatch>,
     mut outcome: ResMut<MatchOutcome>,
     mut phase: ResMut<MatchPhase>,
 ) {
     if *phase == MatchPhase::PostMatch {
         return;
     }
-    // Track which slots still have a living ship.
+    // Track which slots are still in play. In a melee a slot stays in
+    // play while it has ships in reserve — its ship being momentarily
+    // dead (mid-respawn or choosing) doesn't lose the match; only an
+    // emptied fleet (`eliminated`) does. Quick matches use the plain
+    // "has a living ship" rule.
     let active_slots = config.slot_count().min(4);
     let mut alive = [false; 4];
     for ship in &ships {
         if ship.player_slot < 4 {
             alive[ship.player_slot] = true;
+        }
+    }
+    if fleet.active {
+        for slot in 0..4 {
+            if !fleet.eliminated[slot] {
+                alive[slot] = true;
+            }
         }
     }
     let live_count = alive[..active_slots].iter().filter(|a| **a).count();

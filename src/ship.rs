@@ -354,6 +354,23 @@ pub struct ShipCatalog {
     pub ships: HashMap<String, ShipStats>,
 }
 
+impl ShipCatalog {
+    /// Stats for a class, looked up by its `.ini` code.
+    pub fn stats_of(&self, class: ShipClass) -> Option<&ShipStats> {
+        self.ships.get(class.code())
+    }
+    /// Fleet point value (TWCost) for a class; 0 if not loaded.
+    pub fn cost_of(&self, class: ShipClass) -> i32 {
+        self.stats_of(class).map(|s| s.cost).unwrap_or(0)
+    }
+    /// Display name for a class, falling back to the code.
+    pub fn name_of(&self, class: ShipClass) -> String {
+        self.stats_of(class)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| class.code().to_string())
+    }
+}
+
 /// Who controls a given match slot. Drives input dispatch and
 /// the lobby/menu flow:
 ///   - `Human`: a local keyboard player (uses `keymap(slot)` —
@@ -410,6 +427,10 @@ impl SlotConfig {
 #[derive(Resource, Debug, Clone)]
 pub struct MatchConfig {
     pub slots: Vec<SlotConfig>,
+    /// Fleet-melee match: each slot's `fleet` may hold several ships,
+    /// deployed one at a time with a mid-match pick on death. Off for
+    /// the quick single-ship modes.
+    pub melee: bool,
 }
 
 impl MatchConfig {
@@ -418,6 +439,7 @@ impl MatchConfig {
     pub fn local_two(p1: ShipClass, p2: ShipClass) -> Self {
         Self {
             slots: vec![SlotConfig::human(p1), SlotConfig::human(p2)],
+            melee: false,
         }
     }
     pub fn slot_count(&self) -> usize {
@@ -1647,6 +1669,11 @@ fn class_picker_input(
     // Bail before reading any keys so a stray Tab can't damage the
     // local-only MatchConfig either.
     if session.is_some() {
+        return;
+    }
+    // Melee: the fleet is fixed at match start; a digit/Tab must not
+    // collapse it to a single ship. The mid-match pick handles swaps.
+    if config.melee {
         return;
     }
     const P1_DIGITS: [KeyCode; 10] = [

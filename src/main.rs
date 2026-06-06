@@ -8,6 +8,7 @@ mod netcode;
 mod indicator;
 mod input;
 mod keyconfig;
+mod melee;
 mod menu;
 mod netplay;
 mod physics;
@@ -29,6 +30,10 @@ pub enum AppState {
     /// Online). Pick one to populate `MatchConfig` and transition
     /// into either `LobbyOnline` (matchmaking) or `InMatch` (local).
     MainMenu,
+    /// Fleet/team builder: each player assembles a melee team before
+    /// the match. Local melee builds all teams in sequence; online
+    /// melee builds the local team and exchanges rosters.
+    TeamSelect,
     /// Online lobby: connect to the matchbox signaling server,
     /// wait for peers, and transition to InMatch once the GGRS
     /// session is ready.
@@ -111,6 +116,7 @@ fn main() {
         ))
         .add_plugins((
             keyconfig::KeyConfigPlugin,
+            melee::MeleePlugin,
             indicator::IndicatorPlugin,
             audio::AudioPlugin,
             lobby::LobbyPlugin,
