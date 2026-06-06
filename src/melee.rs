@@ -18,10 +18,7 @@
 use bevy::prelude::*;
 
 use crate::collider::ShipColliders;
-use crate::input::{
-    read_local_just_pressed_with_virtual, VirtualInput, INPUT_FIRE, INPUT_LEFT, INPUT_RIGHT,
-    INPUT_SPECIAL,
-};
+use crate::input::{INPUT_FIRE, INPUT_LEFT, INPUT_RIGHT, INPUT_SPECIAL};
 use crate::ship::{
     spawn_class, MatchConfig, PlayerKind, Ship, ShipCatalog, ShipClass, SlotConfig, ALL_CLASSES,
 };
@@ -43,16 +40,23 @@ impl Plugin for MeleePlugin {
             )
             // In-match fleet logic.
             .add_systems(OnEnter(AppState::InMatch), (init_fleet_pools, spawn_melee_hud))
+            // Authoritative (host / solo): detect deaths and drive the
+            // pick from SlotInputs, which already merges local keys, touch,
+            // and forwarded network input per slot. On FixedUpdate so the
+            // just-pressed edges line up with the input producer.
+            .add_systems(
+                FixedUpdate,
+                (melee_manage_respawn, melee_pick_input)
+                    .chain()
+                    .after(crate::input::SlotInputProducerSet)
+                    .run_if(in_state(AppState::InMatch))
+                    .run_if(crate::netcode::role_is_authoritative),
+            )
+            // Rendering runs on both peers (the guest's FleetMatch is
+            // populated from snapshots).
             .add_systems(
                 Update,
-                (
-                    melee_manage_respawn,
-                    melee_pick_input,
-                    melee_picker_ui,
-                    update_melee_hud,
-                )
-                    .chain()
-                    .run_if(in_state(AppState::InMatch)),
+                (melee_picker_ui, update_melee_hud).run_if(in_state(AppState::InMatch)),
             )
             .add_systems(OnExit(AppState::InMatch), melee_cleanup);
     }
@@ -525,8 +529,7 @@ fn melee_manage_respawn(
 /// slots steer with their own turn keys + fire to deploy; AI auto-picks.
 #[allow(clippy::too_many_arguments)]
 fn melee_pick_input(
-    keys: Res<ButtonInput<KeyCode>>,
-    virt: Res<VirtualInput>,
+    slot_inputs: Res<crate::input::SlotInputs>,
     config: Res<MatchConfig>,
     catalog: Res<ShipCatalog>,
     assets: Res<AssetServer>,
@@ -551,7 +554,9 @@ fn melee_pick_input(
     if is_ai {
         deploy = Some(0);
     } else {
-        let jp = read_local_just_pressed_with_virtual(&keys, Some(&virt), slot);
+        // `just_pressed[slot]` already merges local keys, P1 touch, and
+        // (on the host) the network input forwarded for a remote slot.
+        let jp = slot_inputs.just_pressed[slot];
         if jp.pressed(INPUT_LEFT) {
             fleet.cursor[slot] = (fleet.cursor[slot] + len - 1) % len;
         }
