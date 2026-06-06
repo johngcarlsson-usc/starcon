@@ -94,6 +94,9 @@ pub const SIGNALING_URL: &str = "wss://basic-boilerplate.replit.app";
 #[derive(Resource, Default)]
 pub struct LobbyRequest {
     pub requested: bool,
+    /// The match should be a fleet melee — route through TeamSelect +
+    /// roster exchange after connecting instead of straight to InMatch.
+    pub melee: bool,
 }
 
 /// Optional override for the matchbox signaling server URL.
@@ -695,6 +698,8 @@ fn update_lobby(
     mut config: ResMut<crate::ship::MatchConfig>,
     mut seed: ResMut<crate::rng::MatchSeed>,
     mut next: ResMut<NextState<AppState>>,
+    lobby_req: Res<LobbyRequest>,
+    mut team_builder: ResMut<crate::melee::TeamBuilder>,
 ) {
     if matches!(state.status, LobbyStatus::Setup) {
         return;
@@ -795,6 +800,7 @@ fn update_lobby(
         slot_to_peer: peer_ids.clone(),
         latest_melee: Default::default(),
         latest_ship_pose: [None; 4],
+        received_rosters: [None, None, None, None],
     });
     // Channel 1 (the reliable one) stays in the socket for now. The
     // lobby-vote re-routing in step 5 of NETCODE_REFACTOR.md will
@@ -851,7 +857,16 @@ fn update_lobby(
         "netplay: session up — role = {:?}, {} humans + {} AI, local handle = {}, seed = {:#x}",
         role, humans, ai_count, local_handle, seed.0
     );
-    next.set(AppState::InMatch);
+    // Online melee: build the local fleet first, then exchange rosters
+    // (online_roster_exchange) before entering the match. Plain online
+    // goes straight in with the default one-ship-per-slot config.
+    config.melee = false;
+    if lobby_req.melee {
+        team_builder.begin_online(local_handle);
+        next.set(AppState::TeamSelect);
+    } else {
+        next.set(AppState::InMatch);
+    }
 }
 
 // `read_local_inputs` + `net_inputs_bridge` removed — the GGRS

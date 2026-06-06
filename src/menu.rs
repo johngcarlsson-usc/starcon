@@ -47,6 +47,8 @@ enum MenuAction {
     SoloVsOneAi,
     SoloVsThreeAi,
     Online,
+    /// Online fleet melee: connect, then build teams and exchange them.
+    MeleeOnline,
     /// Cycle the global Classic/Inertial/Default steering override.
     CycleSteering,
     /// Cycle Easy/Medium/Hard AI difficulty.
@@ -110,6 +112,7 @@ fn spawn_menu(mut commands: Commands, windows: Query<&Window>) {
             spawn_button(root, MenuAction::SoloVsOneAi, "Solo vs 1 AI", s);
             spawn_button(root, MenuAction::SoloVsThreeAi, "Solo vs 3 AI", s);
             spawn_button(root, MenuAction::Online, "Online (2-4 players)", s);
+            spawn_button(root, MenuAction::MeleeOnline, "Online Melee (build fleets)", s);
 
             // Compact controls row — cycle the most-changed prefs from
             // here so the player can set them without entering the match.
@@ -293,6 +296,12 @@ fn handle_menu_buttons(
             }
             MenuAction::Online => {
                 lobby_req.requested = true;
+                lobby_req.melee = false;
+                next.set(AppState::LobbyOnline);
+            }
+            MenuAction::MeleeOnline => {
+                lobby_req.requested = true;
+                lobby_req.melee = true;
                 next.set(AppState::LobbyOnline);
             }
             MenuAction::CycleSteering => {

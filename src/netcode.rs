@@ -110,6 +110,14 @@ pub enum NetMessage {
         tick: u32,
         input: crate::input::PlayerInput,
     },
+    /// Either direction during online-melee team build. Broadcasts a
+    /// peer's chosen fleet (its slot + `ALL_CLASSES` indices). Re-sent
+    /// every frame until the match starts, so dropping it on the
+    /// unreliable channel is self-healing.
+    FleetRoster {
+        slot: u8,
+        classes: Vec<u8>,
+    },
     /// Host → Guest. Periodic full-world snapshot. Carries every
     /// netplay entity's `NetId` + gameplay state (pose, velocity,
     /// crew, batt). Guest applies straight onto local entities,
@@ -675,6 +683,10 @@ pub struct NetSocket {
     /// so `guest_melee_apply` can spawn/replace a slot's mirror ship when
     /// the host swaps it mid-melee. `None` = no ship for that slot.
     pub latest_ship_pose: [Option<GuestShipPose>; 4],
+    /// Fleet rosters received from peers during online-melee team build
+    /// (`ALL_CLASSES` indices per slot). Consumed by
+    /// `melee::online_roster_exchange`.
+    pub received_rosters: [Option<Vec<u8>>; 4],
 }
 
 /// A slot's ship class + pose as last seen in a guest snapshot.
@@ -1662,6 +1674,7 @@ fn drain_messages(
     let is_guest = role.is_guest();
     let mut newest_melee: Option<MeleeNet> = None;
     let mut newest_ship_pose: [Option<GuestShipPose>; 4] = [None; 4];
+    let mut got_rosters: [Option<Vec<u8>>; 4] = [None, None, None, None];
     let Some(channel) = sock.channel.as_mut() else {
         return;
     };
@@ -1695,6 +1708,11 @@ fn drain_messages(
                 };
                 if slot < net_inputs.current.len() {
                     net_inputs.current[slot] = input;
+                }
+            }
+            NetMessage::FleetRoster { slot, classes } => {
+                if (slot as usize) < 4 {
+                    got_rosters[slot as usize] = Some(classes);
                 }
             }
             NetMessage::Snapshot {
@@ -2415,6 +2433,12 @@ fn drain_messages(
         if let Some(m) = newest_melee {
             sock.latest_melee = m;
             sock.latest_ship_pose = newest_ship_pose;
+        }
+    }
+    // Roster exchange (online-melee team build) flows both directions.
+    for slot in 0..4 {
+        if got_rosters[slot].is_some() {
+            sock.received_rosters[slot] = got_rosters[slot].take();
         }
     }
 }

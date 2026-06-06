@@ -35,7 +35,12 @@ impl Plugin for MeleePlugin {
             .add_systems(OnExit(AppState::TeamSelect), despawn_team_builder_ui)
             .add_systems(
                 Update,
-                (tb_handle_buttons, tb_handle_keyboard, tb_update_ui)
+                (
+                    tb_handle_buttons,
+                    tb_handle_keyboard,
+                    online_roster_exchange,
+                    tb_update_ui,
+                )
                     .run_if(in_state(AppState::TeamSelect)),
             )
             // In-match fleet logic.
@@ -86,6 +91,10 @@ pub struct TeamBuilder {
     pub fleets: Vec<Vec<ShipClass>>,
     /// Keyboard highlight into `ALL_CLASSES`.
     pub cursor: usize,
+    /// Online: the local peer's match slot (where its fleet goes).
+    pub local_slot: usize,
+    /// Online: the local fleet is locked in and being exchanged.
+    pub submitted: bool,
 }
 
 impl TeamBuilder {
@@ -97,6 +106,14 @@ impl TeamBuilder {
         self.current = 0;
         self.fleets = vec![Vec::new(); self.num_players];
         self.cursor = 0;
+        self.local_slot = 0;
+        self.submitted = false;
+    }
+    /// Begin an online build: just the local peer's one fleet, destined
+    /// for match slot `local_slot`. Roster exchange fills the rest.
+    pub fn begin_online(&mut self, local_slot: usize) {
+        self.begin(1, true);
+        self.local_slot = local_slot;
     }
 }
 
@@ -409,6 +426,13 @@ fn confirm_player(
     if tb.fleets.get(tb.current).map(|f| f.is_empty()).unwrap_or(true) {
         return;
     }
+    if tb.online {
+        // Lock in the local fleet; `online_roster_exchange` broadcasts it
+        // and starts the match once both peers' rosters are in.
+        tb.submitted = true;
+        info!("melee: local fleet submitted, exchanging rosters");
+        return;
+    }
     if tb.current + 1 < tb.num_players {
         tb.current += 1;
         tb.cursor = 0;
@@ -433,6 +457,90 @@ fn confirm_player(
     next.set(AppState::InMatch);
 }
 
+/// Online-melee roster handshake (runs in TeamSelect). Once the local
+/// fleet is submitted, broadcast it every frame (self-healing over the
+/// unreliable channel), fold in peers' rosters as they arrive, and start
+/// the match after a short grace once every remote slot's roster is in.
+fn online_roster_exchange(
+    tb: Res<TeamBuilder>,
+    sock: Option<ResMut<crate::netcode::NetSocket>>,
+    mut config: ResMut<MatchConfig>,
+    mut next: ResMut<NextState<AppState>>,
+    mut grace: Local<u32>,
+) {
+    if !tb.online {
+        return;
+    }
+    let Some(mut sock) = sock else {
+        return;
+    };
+
+    // Fold in any rosters we've received into the match config.
+    for slot in 0..config.slots.len().min(4) {
+        if let Some(classes) = sock.received_rosters[slot].clone() {
+            if !classes.is_empty() {
+                config.slots[slot].fleet = classes
+                    .iter()
+                    .map(|i| crate::ship::class_from_index(*i))
+                    .collect();
+            }
+        }
+    }
+
+    if !tb.submitted {
+        *grace = 0;
+        return;
+    }
+
+    // Put our own fleet into the config and broadcast it.
+    let my_fleet: Vec<ShipClass> = match tb.fleets.first() {
+        Some(f) if !f.is_empty() => f.clone(),
+        _ => vec![ShipClass::Earcr],
+    };
+    if let Some(s) = config.slots.get_mut(tb.local_slot) {
+        s.fleet = my_fleet.clone();
+    }
+    let classes: Vec<u8> = my_fleet
+        .iter()
+        .map(|c| crate::ship::class_to_index(*c))
+        .collect();
+    let msg = crate::netcode::NetMessage::FleetRoster {
+        slot: tb.local_slot as u8,
+        classes,
+    };
+    if let Ok(bytes) = bincode::serde::encode_to_vec(&msg, bincode::config::standard()) {
+        let peers = sock.peers.clone();
+        if let Some(channel) = sock.channel.as_mut() {
+            for peer in peers {
+                let _ = channel.try_send(bytes.clone().into(), peer);
+            }
+        }
+    }
+
+    // Ready when every *remote* slot has sent a roster.
+    let remotes_ready = config.slots.iter().enumerate().all(|(i, s)| {
+        !matches!(s.kind, PlayerKind::Remote)
+            || sock
+                .received_rosters
+                .get(i)
+                .map(|r| r.is_some())
+                .unwrap_or(false)
+    });
+    if remotes_ready {
+        // Keep broadcasting a little longer so the peer reliably gets our
+        // roster before we stop sending (no explicit ack on the
+        // unreliable channel).
+        *grace += 1;
+        if *grace > 40 {
+            config.melee = true;
+            info!("melee: rosters exchanged, starting online match");
+            next.set(AppState::InMatch);
+        }
+    } else {
+        *grace = 0;
+    }
+}
+
 fn tb_update_ui(
     tb: Res<TeamBuilder>,
     catalog: Res<ShipCatalog>,
@@ -451,7 +559,11 @@ fn tb_update_ui(
         *t = Text::new(format!("Player {} — build your fleet", tb.current + 1));
     }
     if let Ok(mut t) = status.single_mut() {
-        *t = Text::new(format!("Ships: {count}    Points: {points}"));
+        *t = Text::new(if tb.online && tb.submitted {
+            "Waiting for opponent...".to_string()
+        } else {
+            format!("Ships: {count}    Points: {points}")
+        });
     }
     if let Ok(mut t) = fleet_list.single_mut() {
         let names: Vec<String> = fleet
