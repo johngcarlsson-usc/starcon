@@ -294,7 +294,7 @@ fn update_rebind_labels(
     for (label, mut text) in &mut labels {
         let armed = rebinding.0 == Some((label.slot, label.action));
         *text = Text::new(if armed {
-            "press a key…".to_string()
+            "press a key...".to_string()
         } else {
             key_name(bindings.slots[label.slot][label.action])
         });

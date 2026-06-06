@@ -160,10 +160,14 @@ fn update_indicators(
     }
 }
 
-/// Map a direction vector (math convention, +y up) to one of eight arrows.
+/// Map a direction vector (math convention, +y up) to one of eight
+/// compass labels. We use ASCII letters (N/NE/E/…) rather than Unicode
+/// arrow glyphs: the bundled font has no arrow glyphs, so those rendered
+/// as blank "tofu" squares. The chip is also pinned to the screen edge
+/// in the ship's direction, so the label just reinforces that.
 fn arrow_glyph(dx: f32, dy: f32) -> &'static str {
     use std::f32::consts::FRAC_PI_4;
-    const GLYPHS: [&str; 8] = ["→", "↗", "↑", "↖", "←", "↙", "↓", "↘"];
+    const GLYPHS: [&str; 8] = ["E", "NE", "N", "NW", "W", "SW", "S", "SE"];
     let ang = dy.atan2(dx); // -PI..PI
     let octant = (((ang / FRAC_PI_4).round() as i32) + 8) % 8;
     GLYPHS[octant as usize]

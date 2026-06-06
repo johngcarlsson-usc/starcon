@@ -336,7 +336,7 @@ fn update_menu_setting_labels(
             MenuAction::ToggleControls => {
                 format!("Controls: {}", if touch_visible.0 { "On" } else { "Off" })
             }
-            MenuAction::OpenKeys => "Keys…".to_string(),
+            MenuAction::OpenKeys => "Keys".to_string(),
             _ => continue,
         };
         *text = Text::new(s);

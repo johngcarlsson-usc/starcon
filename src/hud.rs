@@ -244,7 +244,7 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, slot: usize) {
         .with_children(|panel| {
             // Heading: e.g. "P1  Earthling Cruiser"
             panel.spawn((
-                Text::new(format!("P{} —", slot + 1)),
+                Text::new(format!("P{} -", slot + 1)),
                 TextFont::from_font_size(16.0),
                 TextColor(player_label),
                 StatLabel {
@@ -363,8 +363,8 @@ fn update_stat_labels(
             (Some((_, _, batt)), StatKind::Battery) => {
                 format!("{:>2}/{:>2}", batt.current, batt.max)
             }
-            (None, StatKind::Name) => format!("P{}  —", label.slot + 1),
-            (None, _) => "—".into(),
+            (None, StatKind::Name) => format!("P{}  -", label.slot + 1),
+            (None, _) => "-".into(),
         };
     }
 }
