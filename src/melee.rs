@@ -42,10 +42,15 @@ impl Plugin for MeleePlugin {
                     .run_if(in_state(AppState::TeamSelect)),
             )
             // In-match fleet logic.
-            .add_systems(OnEnter(AppState::InMatch), init_fleet_pools)
+            .add_systems(OnEnter(AppState::InMatch), (init_fleet_pools, spawn_melee_hud))
             .add_systems(
                 Update,
-                (melee_manage_respawn, melee_pick_input, melee_picker_ui)
+                (
+                    melee_manage_respawn,
+                    melee_pick_input,
+                    melee_picker_ui,
+                    update_melee_hud,
+                )
                     .chain()
                     .run_if(in_state(AppState::InMatch)),
             )
@@ -580,13 +585,84 @@ fn melee_pick_input(
 fn melee_cleanup(
     mut commands: Commands,
     mut fleet: ResMut<FleetMatch>,
-    ui: Query<Entity, With<MeleePickerRoot>>,
+    ui: Query<Entity, Or<(With<MeleePickerRoot>, With<MeleeHudRoot>)>>,
 ) {
     *fleet = FleetMatch::default();
     for e in &ui {
         if let Ok(mut ec) = commands.get_entity(e) {
             ec.try_despawn();
         }
+    }
+}
+
+// ===========================================================================
+//  In-match fleet counter (top of screen)
+// ===========================================================================
+
+#[derive(Component)]
+struct MeleeHudRoot;
+#[derive(Component)]
+struct MeleeHudText;
+
+fn spawn_melee_hud(mut commands: Commands, config: Res<MatchConfig>) {
+    if !config.melee {
+        return;
+    }
+    commands
+        .spawn((
+            MeleeHudRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(6.0),
+                left: Val::Percent(50.0),
+                margin: UiRect {
+                    left: Val::Px(-220.0),
+                    ..default()
+                },
+                width: Val::Px(440.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Text::new(""),
+                MeleeHudText,
+                TextFont::from_font_size(15.0),
+                TextColor(Color::srgba(0.85, 0.95, 1.0, 0.9)),
+            ));
+        });
+}
+
+fn update_melee_hud(
+    fleet: Res<FleetMatch>,
+    config: Res<MatchConfig>,
+    ships: Query<&Ship>,
+    mut text: Query<&mut Text, With<MeleeHudText>>,
+) {
+    if !fleet.active {
+        return;
+    }
+    let mut has = [false; 4];
+    for s in &ships {
+        if s.player_slot < 4 {
+            has[s.player_slot] = true;
+        }
+    }
+    let n = config.slot_count().min(4);
+    let parts: Vec<String> = (0..n)
+        .map(|slot| {
+            // Ships left = reserve pool + the one currently flying.
+            let left = fleet.pool[slot].len() + usize::from(has[slot]);
+            if fleet.eliminated[slot] {
+                format!("P{}: OUT", slot + 1)
+            } else {
+                format!("P{}: {} left", slot + 1, left)
+            }
+        })
+        .collect();
+    if let Ok(mut t) = text.single_mut() {
+        *t = Text::new(parts.join("    "));
     }
 }
 
