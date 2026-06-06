@@ -7,6 +7,7 @@ mod lobby;
 mod netcode;
 mod indicator;
 mod input;
+mod keyconfig;
 mod menu;
 mod netplay;
 mod physics;
@@ -109,6 +110,7 @@ fn main() {
             settings_menu::SettingsMenuPlugin,
         ))
         .add_plugins((
+            keyconfig::KeyConfigPlugin,
             indicator::IndicatorPlugin,
             audio::AudioPlugin,
             lobby::LobbyPlugin,

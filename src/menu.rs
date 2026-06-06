@@ -53,6 +53,8 @@ enum MenuAction {
     /// from the menu, so a mobile player can turn them on *before* the
     /// match starts instead of fumbling for the in-game `+` knob.
     ToggleControls,
+    /// Open the key-rebinding panel (`keyconfig`).
+    OpenKeys,
 }
 
 /// Marks a label whose text mirrors the live value of a setting,
@@ -122,6 +124,7 @@ fn spawn_menu(mut commands: Commands, windows: Query<&Window>) {
                 spawn_setting_button(row, MenuAction::CycleSteering, s);
                 spawn_setting_button(row, MenuAction::CycleDifficulty, s);
                 spawn_setting_button(row, MenuAction::ToggleControls, s);
+                spawn_setting_button(row, MenuAction::OpenKeys, s);
             });
 
             root.spawn((
@@ -208,6 +211,7 @@ fn handle_menu_buttons(
     mut angular: ResMut<AngularControlOverride>,
     mut difficulty: ResMut<AiDifficulty>,
     mut touch_visible: ResMut<crate::mobile_controls::TouchButtonsVisible>,
+    mut key_config_open: ResMut<crate::keyconfig::KeyConfigOpen>,
     interactions: Query<(&Interaction, &MenuAction), Changed<Interaction>>,
 ) {
     for (interaction, action) in &interactions {
@@ -295,6 +299,9 @@ fn handle_menu_buttons(
             MenuAction::ToggleControls => {
                 touch_visible.0 = !touch_visible.0;
             }
+            MenuAction::OpenKeys => {
+                key_config_open.0 = true;
+            }
         }
     }
 }
@@ -329,6 +336,7 @@ fn update_menu_setting_labels(
             MenuAction::ToggleControls => {
                 format!("Controls: {}", if touch_visible.0 { "On" } else { "Off" })
             }
+            MenuAction::OpenKeys => "Keys…".to_string(),
             _ => continue,
         };
         *text = Text::new(s);

@@ -209,51 +209,120 @@ pub struct VirtualInput {
     pub aim: Vec2,
 }
 
-fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
-    // Local hotseat keymaps. Online play uses network inputs for
-    // slots that aren't the local player — these tables only
-    // matter when more than one human is at the same keyboard.
-    match slot {
-        // P1 lives entirely on the RIGHT of the keyboard: arrow
-        // cluster to steer, and the `/` (fire) / `.` (special) keys
-        // just left of the arrows. Down-arrow is the inert "backward"
-        // key used only for the ultimate chord.
-        0 => &[
-            (KeyCode::ArrowLeft, INPUT_LEFT),
-            (KeyCode::ArrowRight, INPUT_RIGHT),
-            (KeyCode::ArrowUp, INPUT_THRUST),
-            (KeyCode::ArrowDown, INPUT_BACKWARD),
-            (KeyCode::Slash, INPUT_FIRE),
-            (KeyCode::Period, INPUT_SPECIAL),
-        ],
-        // P2 lives entirely on the LEFT: WAD to steer, Z + L-Shift
-        // (both bottom-left) to fire, S as the inert "backward" key for
-        // the ultimate chord. We avoid Left-Ctrl for fire: with W as
-        // thrust, Ctrl+W would close the browser tab.
-        1 => &[
-            (KeyCode::KeyA, INPUT_LEFT),
-            (KeyCode::KeyD, INPUT_RIGHT),
-            (KeyCode::KeyW, INPUT_THRUST),
-            (KeyCode::KeyS, INPUT_BACKWARD),
-            (KeyCode::KeyZ, INPUT_FIRE),
-            (KeyCode::ShiftLeft, INPUT_SPECIAL),
-        ],
-        2 => &[
-            (KeyCode::KeyJ, INPUT_LEFT),
-            (KeyCode::KeyL, INPUT_RIGHT),
-            (KeyCode::KeyI, INPUT_THRUST),
-            (KeyCode::KeyK, INPUT_BACKWARD),
-            (KeyCode::KeyN, INPUT_FIRE),
-            (KeyCode::KeyM, INPUT_SPECIAL),
-        ],
-        _ => &[
-            (KeyCode::Numpad4, INPUT_LEFT),
-            (KeyCode::Numpad6, INPUT_RIGHT),
-            (KeyCode::Numpad8, INPUT_THRUST),
-            (KeyCode::Numpad2, INPUT_BACKWARD),
-            (KeyCode::Numpad0, INPUT_FIRE),
-            (KeyCode::NumpadEnter, INPUT_SPECIAL),
-        ],
+/// The five remappable gameplay actions, in the order the
+/// `KeyBindings` resource and the rebind UI store them.
+pub const BINDABLE_ACTIONS: [(u8, &str); 5] = [
+    (INPUT_LEFT, "Turn left"),
+    (INPUT_RIGHT, "Turn right"),
+    (INPUT_THRUST, "Thrust"),
+    (INPUT_FIRE, "Fire"),
+    (INPUT_SPECIAL, "Special"),
+];
+
+/// Factory-default keymap per slot. Six entries: the five bindable
+/// actions plus the inert `BACKWARD` key (used only for the ultimate
+/// chord, not remappable). `KeyBindings`/`LIVE_KEYMAP` start from this.
+const DEFAULT_KEYMAP: [[(KeyCode, u8); 6]; 4] = [
+    // P1: right-of-keyboard — arrows + `/`(fire) `.`(special).
+    [
+        (KeyCode::ArrowLeft, INPUT_LEFT),
+        (KeyCode::ArrowRight, INPUT_RIGHT),
+        (KeyCode::ArrowUp, INPUT_THRUST),
+        (KeyCode::ArrowDown, INPUT_BACKWARD),
+        (KeyCode::Slash, INPUT_FIRE),
+        (KeyCode::Period, INPUT_SPECIAL),
+    ],
+    // P2: left-of-keyboard — WAD + Z(fire) L-Shift(special).
+    [
+        (KeyCode::KeyA, INPUT_LEFT),
+        (KeyCode::KeyD, INPUT_RIGHT),
+        (KeyCode::KeyW, INPUT_THRUST),
+        (KeyCode::KeyS, INPUT_BACKWARD),
+        (KeyCode::KeyZ, INPUT_FIRE),
+        (KeyCode::ShiftLeft, INPUT_SPECIAL),
+    ],
+    [
+        (KeyCode::KeyJ, INPUT_LEFT),
+        (KeyCode::KeyL, INPUT_RIGHT),
+        (KeyCode::KeyI, INPUT_THRUST),
+        (KeyCode::KeyK, INPUT_BACKWARD),
+        (KeyCode::KeyN, INPUT_FIRE),
+        (KeyCode::KeyM, INPUT_SPECIAL),
+    ],
+    [
+        (KeyCode::Numpad4, INPUT_LEFT),
+        (KeyCode::Numpad6, INPUT_RIGHT),
+        (KeyCode::Numpad8, INPUT_THRUST),
+        (KeyCode::Numpad2, INPUT_BACKWARD),
+        (KeyCode::Numpad0, INPUT_FIRE),
+        (KeyCode::NumpadEnter, INPUT_SPECIAL),
+    ],
+];
+
+/// Live keymap the input readers consult each tick. Mirrors the
+/// `KeyBindings` resource (synced by `sync_key_bindings`) via a global
+/// `RwLock` so the pure `read_local_*` helpers don't have to thread the
+/// resource through every call site. Read-mostly; written only when a
+/// binding changes.
+static LIVE_KEYMAP: std::sync::RwLock<[[(KeyCode, u8); 6]; 4]> =
+    std::sync::RwLock::new(DEFAULT_KEYMAP);
+
+/// Player-editable key bindings (the five `BINDABLE_ACTIONS` per slot).
+/// The rebind UI mutates this; `sync_key_bindings` pushes it into
+/// `LIVE_KEYMAP`. The inert BACKWARD chord key stays at its default.
+#[derive(Resource, Clone, Debug)]
+pub struct KeyBindings {
+    /// `[slot][action]` where action indexes into `BINDABLE_ACTIONS`.
+    pub slots: [[KeyCode; 5]; 4],
+}
+
+impl Default for KeyBindings {
+    fn default() -> Self {
+        let mut slots = [[KeyCode::Space; 5]; 4];
+        for s in 0..4 {
+            let row = &DEFAULT_KEYMAP[s];
+            // indices 0,1,2 = left,right,thrust; 4,5 = fire,special
+            // (index 3 is the non-remappable BACKWARD key).
+            slots[s] = [row[0].0, row[1].0, row[2].0, row[4].0, row[5].0];
+        }
+        Self { slots }
+    }
+}
+
+/// Push the `KeyBindings` resource into the `LIVE_KEYMAP` the readers
+/// use. Runs whenever the resource changes (rebind, reset to defaults).
+pub fn sync_key_bindings(bindings: Res<KeyBindings>) {
+    if !bindings.is_changed() {
+        return;
+    }
+    // BACKWARD stays per-slot default — not remappable.
+    let backward = [
+        DEFAULT_KEYMAP[0][3],
+        DEFAULT_KEYMAP[1][3],
+        DEFAULT_KEYMAP[2][3],
+        DEFAULT_KEYMAP[3][3],
+    ];
+    if let Ok(mut map) = LIVE_KEYMAP.write() {
+        for s in 0..4 {
+            let b = &bindings.slots[s];
+            map[s] = [
+                (b[0], INPUT_LEFT),
+                (b[1], INPUT_RIGHT),
+                (b[2], INPUT_THRUST),
+                backward[s],
+                (b[3], INPUT_FIRE),
+                (b[4], INPUT_SPECIAL),
+            ];
+        }
+    }
+}
+
+/// Run `f` for each (key, mask) in the live keymap for `slot`.
+fn for_each_binding(slot: usize, mut f: impl FnMut(KeyCode, u8)) {
+    if let Ok(map) = LIVE_KEYMAP.read() {
+        for (key, mask) in map[slot.min(3)].iter() {
+            f(*key, *mask);
+        }
     }
 }
 
@@ -267,11 +336,11 @@ fn keymap(slot: usize) -> &'static [(KeyCode, u8)] {
 /// because there's only one set of touch buttons on screen.
 pub fn read_local_input(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput {
     let mut buttons = 0u8;
-    for (key, mask) in keymap(slot) {
-        if keys.pressed(*key) {
+    for_each_binding(slot, |key, mask| {
+        if keys.pressed(key) {
             buttons |= mask;
         }
-    }
+    });
     // Keyboard steering is bang-bang: a held turn key is full deflection
     // (sign matches the `dir` convention — LEFT = +1, RIGHT = −1).
     let turn = if buttons & INPUT_LEFT != 0 {
@@ -330,11 +399,11 @@ pub fn read_local_input_with_virtual(
 /// flip the mode 3 times in the cooldown window.
 pub fn read_local_just_pressed(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput {
     let mut buttons = 0u8;
-    for (key, mask) in keymap(slot) {
-        if keys.just_pressed(*key) {
+    for_each_binding(slot, |key, mask| {
+        if keys.just_pressed(key) {
             buttons |= mask;
         }
-    }
+    });
     let flags = if keys.just_pressed(KeyCode::KeyR) { FLAG_REMATCH } else { 0 };
     PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0, flags, class: 0 }
 }
@@ -367,11 +436,11 @@ pub fn read_local_just_pressed_with_virtual(
 /// collision-induced spin that arrived while the key was held.
 pub fn read_local_just_released(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput {
     let mut buttons = 0u8;
-    for (key, mask) in keymap(slot) {
-        if keys.just_released(*key) {
+    for_each_binding(slot, |key, mask| {
+        if keys.just_released(key) {
             buttons |= mask;
         }
-    }
+    });
     let flags = if keys.just_released(KeyCode::KeyR) { FLAG_REMATCH } else { 0 };
     PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0, flags, class: 0 }
 }
@@ -383,6 +452,10 @@ impl Plugin for InputPlugin {
         app.init_resource::<VirtualInput>()
             .init_resource::<SlotInputs>()
             .init_resource::<NetInputs>()
+            .init_resource::<KeyBindings>()
+            // Mirror the editable `KeyBindings` into the live keymap the
+            // readers consult. Runs every frame but no-ops unless changed.
+            .add_systems(Update, sync_key_bindings)
             // Refresh per-slot inputs once per FixedUpdate
             // BEFORE any gameplay system runs. We put it in
             // FixedUpdate (not Update) so the input snapshot
