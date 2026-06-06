@@ -77,6 +77,7 @@ required-features = ["tools"]
 web-sys = { version = "0.3", features = [
     "Window",
     "Location",
+    "Storage",
     "EventTarget",
     "DeviceOrientationEvent",
 ] }

@@ -123,6 +123,47 @@ pub struct IceOverride {
     pub stun_url: Option<String>,
 }
 
+/// metered.ca TCP relay host — same for every free account; only the
+/// per-account username/credential differ.
+const TURN_HOST: &str = "turn:global.relay.metered.ca:80?transport=tcp";
+
+/// Free metered.ca relay accounts. We rotate through them once per launch
+/// (persisted in localStorage) so each account's 500 MB free-trial pool
+/// drains evenly instead of burning one out. Add a `(username,
+/// credential)` line for each account you register — regenerate them in
+/// the metered dashboard if abused. These ship in the public build, which
+/// is fine for a tiny private game.
+const TURN_ACCOUNTS: &[(&str, &str)] = &[
+    ("a6c88029d884fc61f4607daa", "4cJdlCmAI4qGgnwo"),
+    // ("USERNAME_2", "CREDENTIAL_2"),
+    // ("USERNAME_3", "CREDENTIAL_3"),
+];
+
+/// Pick the next relay account, advancing a persisted rotation index so
+/// each browser launch uses the following account in `TURN_ACCOUNTS`.
+/// Falls back to the first account if localStorage is unavailable.
+#[cfg(target_arch = "wasm32")]
+fn next_turn_account() -> Option<(&'static str, &'static str)> {
+    let n = TURN_ACCOUNTS.len();
+    if n == 0 {
+        return None;
+    }
+    let idx = web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .map(|storage| {
+            let cur: usize = storage
+                .get_item("turn_rot")
+                .ok()
+                .flatten()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let _ = storage.set_item("turn_rot", &cur.wrapping_add(1).to_string());
+            cur
+        })
+        .unwrap_or(0);
+    Some(TURN_ACCOUNTS[idx % n])
+}
+
 /// Build the ICE server list for the matchbox socket.
 ///
 /// Defaults (tuned for this game's players, who sit behind symmetric
@@ -152,14 +193,16 @@ fn build_ice_config(over: &IceOverride) -> RtcIceServerConfig {
             credential: over.turn_cred.clone(),
         }
     } else {
-        // metered.ca TCP relay — the transport proven to connect fast
-        // on a lossy-UDP / symmetric-NAT network. Free-tier creds; you
-        // can regenerate them in the metered dashboard if abused.
-        urls.push("turn:global.relay.metered.ca:80?transport=tcp".to_string());
+        // No URL override: use the first rotation account. On WASM
+        // `capture_signal_override` normally sets `turn_url` from the
+        // per-launch rotation before we get here, so this fallback only
+        // bites on native or if localStorage is unavailable.
+        let (user, cred) = TURN_ACCOUNTS.first().copied().unwrap_or(("", ""));
+        urls.push(TURN_HOST.to_string());
         RtcIceServerConfig {
             urls,
-            username: Some("a6c88029d884fc61f4607daa".to_string()),
-            credential: Some("4cJdlCmAI4qGgnwo".to_string()),
+            username: Some(user.to_string()),
+            credential: Some(cred.to_string()),
         }
     }
 }
@@ -213,6 +256,17 @@ fn capture_signal_override(
             let decoded = decode(rest);
             info!("netplay: STUN override from URL: {}", decoded);
             ice.stun_url = Some(decoded);
+        }
+    }
+    // No explicit `?turn=` in the URL → rotate through the baked-in
+    // metered.ca accounts (advances a saved index each launch) so the
+    // free 500 MB pools drain evenly. A manual URL override still wins.
+    if ice.turn_url.is_none() {
+        if let Some((user, cred)) = next_turn_account() {
+            info!("netplay: rotating TURN account → {}", user);
+            ice.turn_url = Some(TURN_HOST.to_string());
+            ice.turn_user = Some(user.to_string());
+            ice.turn_cred = Some(cred.to_string());
         }
     }
 }
