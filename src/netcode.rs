@@ -1002,6 +1002,7 @@ fn send_ship_snapshot(
             &crate::ship::Battery,
             Option<&crate::ship::ShieldActive>,
             Option<&crate::ship::ShipModes>,
+            &crate::ship::ShipClass,
         ),
     >,
     asteroids: Query<(
@@ -1072,18 +1073,15 @@ fn send_ship_snapshot(
 
     let mut entities: Vec<EntityState> = ships
         .iter()
-        .map(|(ship, pos, rot, lin, ang, crew, batt, shield, modes)| EntityState {
+        .map(|(ship, pos, rot, lin, ang, crew, batt, shield, modes, class)| EntityState {
             net_id: NetId(0),
             kind: EntityKind::Ship {
-                // Guest reads the class for this slot from its own
-                // `MatchConfig` (set at match start) rather than
-                // from the snapshot — `Ship.stats` doesn't expose
-                // the canonical `ShipClass` enum directly, just the
-                // 5-char code. Class is stable for the duration of
-                // a match so the snapshot byte is redundant; leave
-                // it for the future "host says use class X for slot
-                // Y" path when class can change mid-match.
-                class_idx: 0,
+                // The guest needs the real class so it can swap a slot's
+                // mirror ship when a melee deploy changes it mid-match
+                // (it can't otherwise tell from `Ship.stats`, which only
+                // carries the 5-char code). In a non-melee match this is
+                // constant and the guest's by-class reconcile is a no-op.
+                class_idx: crate::ship::class_to_index(*class),
                 slot: ship.player_slot as u8,
             },
             pos_x: pos.0.x,
