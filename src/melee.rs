@@ -136,6 +136,16 @@ pub struct FleetMatch {
     /// A ship was just deployed for this slot; ignore its momentary
     /// absence until the new entity actually appears.
     pub deploying: [bool; 4],
+    /// Held button bits seen last tick for a choosing slot, used to
+    /// derive press edges locally. We can't use `SlotInputs.just_pressed`
+    /// for a *remote* slot: `NetInputs.previous` is rotated before the
+    /// remote slot's `current` is filled (in a later schedule), so its
+    /// edge is always zero. `held` is reliable, so we edge-detect here.
+    pub pick_prev: [u8; 4],
+    /// False until we've captured a baseline `pick_prev` for the current
+    /// choice — so a fire button still held from the moment of death
+    /// doesn't instantly deploy the next ship.
+    pub pick_armed: [bool; 4],
 }
 
 // ===========================================================================
@@ -638,6 +648,9 @@ fn melee_manage_respawn(
         } else {
             fleet.choosing[slot] = true;
             fleet.cursor[slot] = 0;
+            // Re-arm so the first pick tick captures a baseline instead
+            // of acting on whatever's held at the instant of death.
+            fleet.pick_armed[slot] = false;
             info!("melee: P{} choosing next ship", slot + 1);
         }
     }
@@ -672,16 +685,25 @@ fn melee_pick_input(
     if is_ai {
         deploy = Some(0);
     } else {
-        // `just_pressed[slot]` already merges local keys, P1 touch, and
-        // (on the host) the network input forwarded for a remote slot.
-        let jp = slot_inputs.just_pressed[slot];
-        if jp.pressed(INPUT_LEFT) {
+        // Edge-detect from the HELD button state (reliable for both the
+        // local and remote slots) rather than `just_pressed`, which is
+        // always zero for a remote slot. The first tick of a choice just
+        // captures the baseline so a held-from-death fire can't deploy.
+        let held = slot_inputs.held[slot].buttons;
+        if !fleet.pick_armed[slot] {
+            fleet.pick_prev[slot] = held;
+            fleet.pick_armed[slot] = true;
+            return;
+        }
+        let edge = held & !fleet.pick_prev[slot];
+        fleet.pick_prev[slot] = held;
+        if edge & INPUT_LEFT != 0 {
             fleet.cursor[slot] = (fleet.cursor[slot] + len - 1) % len;
         }
-        if jp.pressed(INPUT_RIGHT) {
+        if edge & INPUT_RIGHT != 0 {
             fleet.cursor[slot] = (fleet.cursor[slot] + 1) % len;
         }
-        if jp.pressed(INPUT_FIRE) || jp.pressed(INPUT_SPECIAL) {
+        if edge & (INPUT_FIRE | INPUT_SPECIAL) != 0 {
             deploy = Some(fleet.cursor[slot].min(len - 1));
         }
     }
