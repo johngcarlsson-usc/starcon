@@ -5975,13 +5975,33 @@ fn handle_projectile_hits(
         // crippled.
         if let Ok(limpet) = limpets.get(proj_entity) {
             if let Ok(mut derived) = deriveds.get_mut(other_entity) {
-                let sl = 0.4 * limpet.slowdown_factor;
+                // Canon `Ship::handle_speed_loss` (mship.cpp): a permanent,
+                // mass-scaled, diminishing cut to speed / accel / turn.
+                //   sl = 30/(mass+30) * slowdown_factor
+                //   speed_max *= 1 - sl * speed_max/(speed_max + scale_velocity(10))
+                //   turn_rate *= 1 - sl * turn_rate/(turn_rate + scale_turning(4))
+                // In our world units scale_velocity(10)=96 and
+                // scale_turning(4)≈1.571. Earlier we used a fixed sl=0.2,
+                // ~half canon strength; using the real mass-scaled sl
+                // (≈0.30–0.43) makes limpets bite like the original — a
+                // few stick and the target is crawling.
+                let mass = ships
+                    .get(other_entity)
+                    .map(|s| s.stats.mass)
+                    .unwrap_or(9.0)
+                    .max(0.1);
+                let sl = (30.0 / (mass + 30.0)) * limpet.slowdown_factor;
                 let s = derived.speed_max;
                 if s > 0.0 {
-                    derived.speed_max = s * (1.0 - sl * s / (s + 96.0));
+                    let factor = 1.0 - sl * s / (s + 96.0);
+                    derived.speed_max = s * factor;
+                    // Accel tracks top speed (canon also reduces accel_rate).
+                    derived.thrust_force *= factor;
                 }
-                derived.thrust_force *= 0.85;
-                derived.target_omega *= 0.92;
+                let w = derived.target_omega;
+                if w > 0.0 {
+                    derived.target_omega = w * (1.0 - sl * w / (w + 1.5708));
+                }
                 if let Ok(mut vel) = velocities.get_mut(other_entity) {
                     // Immediate clamp so the hit feels punchy.
                     let speed = vel.0.length();
@@ -5990,8 +6010,8 @@ fn handle_projectile_hits(
                     }
                 }
                 info!(
-                    "limpet hit: speed_max → {:.0}",
-                    derived.speed_max
+                    "limpet hit (mass {:.0}): speed_max → {:.0}, turn → {:.2}",
+                    mass, derived.speed_max, derived.target_omega
                 );
             }
             if gone.insert(proj_entity) {
@@ -8374,6 +8394,17 @@ pub fn spawn_asteroid_explosion(
             ..default()
         },
         Transform::from_translation(pos.extend(0.15)),
+    ));
+    // Canon plays a size-indexed BOOM sample on a body's death
+    // (mcbodies.cpp: `play_sound(melee[MELEE_BOOM + i])`). Map the
+    // explosion radius to one of the four `boom_pl0N` clips and fire a
+    // throwaway audio entity. Runs wherever the explosion is spawned —
+    // host, solo, and the guest's `ExplosionSpawn` mirror path all call
+    // here — so the kaboom is heard on every screen.
+    let boom = ((radius / 8.0) as i32 - 1).clamp(0, 3) + 1;
+    commands.spawn((
+        AudioPlayer::<AudioSource>(assets.load(format!("sfx/boom_pl{boom:02}.wav"))),
+        PlaybackSettings::DESPAWN,
     ));
 }
 
