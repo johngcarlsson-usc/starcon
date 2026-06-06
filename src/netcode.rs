@@ -825,7 +825,7 @@ fn push_local_input_to_netinputs(
     //     PostMatch the bit must read zero or `detect_all_ready` could
     //     trip from a stray value that survived state reset.
     if let Some(slot_cfg) = config.slots.get(slot) {
-        local_input.class = crate::ship::class_to_index(slot_cfg.class);
+        local_input.class = crate::ship::class_to_index(slot_cfg.first());
     }
     if *phase == crate::hud::MatchPhase::PostMatch && lobby.ready {
         local_input.flags |= crate::input::FLAG_READY;

@@ -94,11 +94,11 @@ fn tick_local_class_cycle(
         None
     };
     if let Some(dir) = cycle {
-        if let Some(class_ref) = config.class_mut(local_slot) {
-            let cur_idx = class_to_index(*class_ref) as i32;
+        if let Some(cur) = config.first(local_slot) {
+            let cur_idx = class_to_index(cur) as i32;
             let n = ALL_CLASSES.len() as i32;
             let new_idx = (cur_idx + dir).rem_euclid(n);
-            *class_ref = class_from_index(new_idx as u8);
+            config.set_single(local_slot, class_from_index(new_idx as u8));
             info!(
                 "lobby: P{} cycled to {:?}",
                 local_slot + 1,
@@ -173,14 +173,14 @@ fn detect_all_ready(
         if matches!(slot_cfg.kind, PlayerKind::Human | PlayerKind::Remote) {
             let vote = slot_inputs.held[i].class;
             let class = class_from_index(vote);
-            if slot_cfg.class != class {
+            if slot_cfg.first() != class {
                 info!(
                     "lobby: P{} locked in {:?} (was {:?})",
                     i + 1,
                     class,
-                    slot_cfg.class
+                    slot_cfg.first()
                 );
-                slot_cfg.class = class;
+                slot_cfg.fleet = vec![class];
             }
         }
     }

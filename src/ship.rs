@@ -213,7 +213,11 @@ impl ShipStats {
                 let m: f32 = g(ship, "Mass");
                 if m == 0.0 { 1.0 } else { m }
             },
-            cost: g(ship, "Cost"),
+            // Fleet point value. The canonical TimeWarp melee cost lives
+            // in `[Info] TWCost` (mship.cpp loads `get_config_int("Info",
+            // "TWCost")`), NOT `[Ship] Cost` — which doesn't exist, so the
+            // old key silently parsed to 0 for every ship.
+            cost: g(info, "TWCost"),
             weapon_range: weapon.map(|w| g::<f32>(w, "Range")).unwrap_or(0.0),
             weapon_damage: weapon.map(|w| g::<i32>(w, "Damage")).unwrap_or(0),
             description: txt_str.to_string(),
@@ -368,19 +372,32 @@ pub enum PlayerKind {
     Remote,
 }
 
-/// One slot in a match: which ship to fly + who's flying it.
-#[derive(Clone, Copy, Debug)]
+/// One slot in a match: the player's FLEET (in deploy order) + who's
+/// flying it. `fleet[0]` deploys first; in melee, when the active ship
+/// dies the player picks the next survivor from the remaining pool.
+/// Quick single-ship modes just use a one-element fleet.
+#[derive(Clone, Debug)]
 pub struct SlotConfig {
-    pub class: ShipClass,
+    pub fleet: Vec<ShipClass>,
     pub kind: PlayerKind,
 }
 
 impl SlotConfig {
     pub fn human(class: ShipClass) -> Self {
-        Self { class, kind: PlayerKind::Human }
+        Self { fleet: vec![class], kind: PlayerKind::Human }
     }
     pub fn ai(class: ShipClass) -> Self {
-        Self { class, kind: PlayerKind::Ai }
+        Self { fleet: vec![class], kind: PlayerKind::Ai }
+    }
+    pub fn fleet_human(fleet: Vec<ShipClass>) -> Self {
+        Self { fleet, kind: PlayerKind::Human }
+    }
+    pub fn fleet_ai(fleet: Vec<ShipClass>) -> Self {
+        Self { fleet, kind: PlayerKind::Ai }
+    }
+    /// The first ship to deploy (an empty fleet falls back to Earcr).
+    pub fn first(&self) -> ShipClass {
+        self.fleet.first().copied().unwrap_or(ShipClass::Earcr)
     }
 }
 
@@ -406,15 +423,22 @@ impl MatchConfig {
     pub fn slot_count(&self) -> usize {
         self.slots.len()
     }
-    /// Compatibility shim: returns the class list for callers
-    /// that don't care about who controls each slot.
+    /// Compatibility shim: returns each slot's FIRST ship for callers
+    /// that don't care about who controls each slot or the full fleet.
     pub fn classes(&self) -> impl Iterator<Item = ShipClass> + '_ {
-        self.slots.iter().map(|s| s.class)
+        self.slots.iter().map(|s| s.first())
     }
-    /// Get a mutable handle to slot N's class. Returns None if
-    /// the slot doesn't exist in this config.
-    pub fn class_mut(&mut self, slot: usize) -> Option<&mut ShipClass> {
-        self.slots.get_mut(slot).map(|s| &mut s.class)
+    /// Slot N's first ship, if the slot exists.
+    pub fn first(&self, slot: usize) -> Option<ShipClass> {
+        self.slots.get(slot).map(|s| s.first())
+    }
+    /// Replace slot N's fleet with a single ship. Used by the local
+    /// class-picker keys and the online single-ship lobby vote, which
+    /// swap the whole (one-ship) fleet.
+    pub fn set_single(&mut self, slot: usize, class: ShipClass) {
+        if let Some(s) = self.slots.get_mut(slot) {
+            s.fleet = vec![class];
+        }
     }
     pub fn kind(&self, slot: usize) -> Option<PlayerKind> {
         self.slots.get(slot).map(|s| s.kind)
@@ -1509,7 +1533,7 @@ pub fn spawn_match(
             &mut commands,
             &catalog,
             &assets,
-            slot_cfg.class,
+            slot_cfg.first(),
             pos,
             rot,
             slot,
@@ -1547,7 +1571,7 @@ pub fn spawn_match(
     // the way there. Iterate the spawn table again so we can
     // overwrite the compass-point pos we already set.
     for (vux_slot, vux_cfg) in config.slots.iter().enumerate().take(4) {
-        if vux_cfg.class != ShipClass::Vuxin {
+        if vux_cfg.first() != ShipClass::Vuxin {
             continue;
         }
         // Find another slot to anchor to. In 1v1 that's the only
@@ -1669,11 +1693,11 @@ fn class_picker_input(
     for (i, key) in P1_DIGITS.iter().enumerate() {
         if keys.just_pressed(*key) {
             let idx = bank_offset + i;
-            if let (Some(class), Some(slot)) =
-                (ALL_CLASSES.get(idx).copied(), config.class_mut(0))
+            if let (Some(class), Some(cur)) =
+                (ALL_CLASSES.get(idx).copied(), config.first(0))
             {
-                if *slot != class {
-                    *slot = class;
+                if cur != class {
+                    config.set_single(0, class);
                     info!("P1 → {:?}", class);
                     changed = true;
                 }
@@ -1683,11 +1707,11 @@ fn class_picker_input(
     for (i, key) in P2_FKEYS.iter().enumerate() {
         if keys.just_pressed(*key) {
             let idx = bank_offset + i;
-            if let (Some(class), Some(slot)) =
-                (ALL_CLASSES.get(idx).copied(), config.class_mut(1))
+            if let (Some(class), Some(cur)) =
+                (ALL_CLASSES.get(idx).copied(), config.first(1))
             {
-                if *slot != class {
-                    *slot = class;
+                if cur != class {
+                    config.set_single(1, class);
                     info!("P2 → {:?}", class);
                     changed = true;
                 }
@@ -1704,17 +1728,19 @@ fn class_picker_input(
         keys.just_pressed(KeyCode::Tab) && shift || virt.cycle_prev_just_pressed;
     if cycle_next || cycle_prev {
         let dir: i32 = if cycle_prev { -1 } else { 1 };
-        if let Some(slot) = config.class_mut(0) {
-            *slot = cycle_class(*slot, dir);
-            info!("P1 → {:?}", *slot);
+        if let Some(cur) = config.first(0) {
+            let next = cycle_class(cur, dir);
+            config.set_single(0, next);
+            info!("P1 → {:?}", next);
             changed = true;
         }
     }
     if keys.just_pressed(KeyCode::Backquote) {
         let dir: i32 = if shift { -1 } else { 1 };
-        if let Some(slot) = config.class_mut(1) {
-            *slot = cycle_class(*slot, dir);
-            info!("P2 → {:?}", *slot);
+        if let Some(cur) = config.first(1) {
+            let next = cycle_class(cur, dir);
+            config.set_single(1, next);
+            info!("P2 → {:?}", next);
             changed = true;
         }
     }

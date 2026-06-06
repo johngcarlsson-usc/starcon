@@ -819,7 +819,7 @@ fn update_lobby(
     let mut slots = Vec::with_capacity(humans + ai_count);
     for i in 0..humans {
         slots.push(SlotConfig {
-            class: class_palette[i.min(3)],
+            fleet: vec![class_palette[i.min(3)]],
             kind: PlayerKind::Remote,
         });
     }
@@ -828,7 +828,7 @@ fn update_lobby(
     }
     for i in 0..ai_count {
         slots.push(SlotConfig {
-            class: class_palette[(humans + i).min(3)],
+            fleet: vec![class_palette[(humans + i).min(3)]],
             kind: PlayerKind::Ai,
         });
     }
