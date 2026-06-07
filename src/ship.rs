@@ -3447,6 +3447,48 @@ pub(crate) fn apply_player_input(
         // this ship until speed drops back under speed_max).
         if coasting.is_some() {
             let input = slot_inputs.held[ship.player_slot.min(3)];
+            // Joystick (absolute-aim) players steer toward the stick and
+            // brake by pushing it — without this branch the coast only
+            // read the digital keys, so a stick player had NO way to
+            // steer or shed the over-speed and was stuck coasting (the
+            // "can't move after Earthling ult" bug).
+            if input.pressed(input::INPUT_ABSOLUTE) {
+                use std::f32::consts::{PI, TAU};
+                let forward = Vec2::new(-rot.sin, rot.cos);
+                let facing = forward.y.atan2(forward.x);
+                let aim = input.aim_vec();
+                let pushing = aim.length() > 0.25;
+                if pushing {
+                    let desired = aim.y.atan2(aim.x);
+                    let mut err = desired - facing;
+                    while err > PI {
+                        err -= TAU;
+                    }
+                    while err < -PI {
+                        err += TAU;
+                    }
+                    let dt = time.delta_secs().max(1e-4);
+                    ang_vel.0 = (err / dt).clamp(-derived.target_omega, derived.target_omega);
+                    // Brake opposite to current travel while the stick is held.
+                    let v = lin_vel.0;
+                    let speed = v.length();
+                    thrust.0 = if speed > 1.0 {
+                        let world_brake = -v / speed;
+                        Vec2::new(
+                            world_brake.x * rot.cos + world_brake.y * rot.sin,
+                            -world_brake.x * rot.sin + world_brake.y * rot.cos,
+                        ) * derived.thrust_force
+                    } else {
+                        Vec2::ZERO
+                    };
+                } else {
+                    ang_vel.0 = input.turn_f32().clamp(-1.0, 1.0) * derived.target_omega;
+                    thrust.0 = Vec2::ZERO;
+                }
+                torque.0 = 0.0;
+                last_turn.had_input = pushing;
+                continue;
+            }
             // Steering: keep normal Classic snap behaviour so the
             // player can re-orient mid-coast.
             let dir = if input.pressed(input::INPUT_LEFT) {
@@ -3518,11 +3560,21 @@ pub(crate) fn apply_player_input(
                 // Thrust once we're facing roughly toward the target —
                 // "turn, then go" — so we don't accelerate backwards
                 // while still spinning around.
-                thrust.0 = if err.abs() < FRAC_PI_2 {
-                    Vec2::new(0.0, derived.thrust_force)
+                let go = err.abs() < FRAC_PI_2;
+                if inertialess.is_some() {
+                    // Arilou: direct velocity control even on the stick —
+                    // move at full speed toward the heading, instant stop
+                    // otherwise. Mirrors the keyboard inertialess path so
+                    // releasing the stick halts immediately.
+                    thrust.0 = Vec2::ZERO;
+                    lin_vel.0 = if go { forward * derived.speed_max } else { Vec2::ZERO };
                 } else {
-                    Vec2::ZERO
-                };
+                    thrust.0 = if go {
+                        Vec2::new(0.0, derived.thrust_force)
+                    } else {
+                        Vec2::ZERO
+                    };
+                }
             } else {
                 // Stick centred: tilt rotates in place, no thrust.
                 let dir = input.turn_f32().clamp(-1.0, 1.0);
@@ -3530,6 +3582,11 @@ pub(crate) fn apply_player_input(
                 torque.0 = 0.0;
                 last_turn.had_input = dir.abs() > 1e-3;
                 thrust.0 = Vec2::ZERO;
+                // Inertialess: stick released ⇒ stop dead (the Arilou's
+                // signature). Without this it kept the force-path momentum.
+                if inertialess.is_some() {
+                    lin_vel.0 = Vec2::ZERO;
+                }
             }
             continue;
         }

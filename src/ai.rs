@@ -217,7 +217,7 @@ fn next_state_desired_mode(class: ShipClass, distance: f32, batt: i32) -> Option
 fn optimal_range(class: ShipClass) -> f32 {
     match class {
         // Long-range / kite classes.
-        ShipClass::Spael => 500.0, // run at this distance, BUTT does the rest
+        ShipClass::Spael => 320.0, // close-ish; BUTT does the rest while harassing
         ShipClass::Druma => 700.0, // recoil cannon best at standoff
         ShipClass::Chmav => 600.0, // tractor's only useful in close, but laser long
         ShipClass::Meltr => 600.0, // charged plasma reaches far
@@ -334,8 +334,8 @@ fn tick_ai_pilots(
         //    missile (special) flies backward into the opponent;
         //    every ~3 seconds spin around briefly and fire primary.
         let spathi_run = *class == ShipClass::Spael;
-        let spathi_burst_window = 0.45; // seconds spent facing target
-        let spathi_run_window = 2.6; // seconds spent running between bursts
+        let spathi_burst_window = 0.7; // seconds spent facing target (more aggressive)
+        let spathi_run_window = 1.5; // seconds spent running between bursts
         if spathi_run {
             let cycle = spathi_run_window + spathi_burst_window;
             let phase = brain.burst_timer_s % cycle;
@@ -362,8 +362,10 @@ fn tick_ai_pilots(
             steer_err.abs() < THRUST_BEARING_TOLERANCE
         } else if spathi_run && !brain.bursting {
             // Running phase: keep the throttle open so the BUTT
-            // missile fires from a moving platform (harder to dodge).
-            steer_err.abs() < THRUST_BEARING_TOLERANCE && distance < opt * 3.0
+            // missile fires from a moving platform (harder to dodge),
+            // but don't flee to the far side of the arena — once we're a
+            // bit past optimal, stop running so the next burst re-engages.
+            steer_err.abs() < THRUST_BEARING_TOLERANCE && distance < opt * 1.5
         } else if distance > opt {
             // Too far — close in.
             steer_err.abs() < THRUST_BEARING_TOLERANCE && distance > STANDOFF_DISTANCE
