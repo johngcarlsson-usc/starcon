@@ -1828,6 +1828,7 @@ pub fn teardown_match(
                 With<Planet>,
                 With<AsteroidExplosion>,
                 With<ZapFlash>,
+                With<crate::ultimate::YehatOrb>,
             )>,
             Or<(
                 With<crate::netcode::ProjectileMirror>,

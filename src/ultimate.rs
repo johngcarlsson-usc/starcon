@@ -327,6 +327,19 @@ pub struct YehatFighter {
     pub fire_cooldown_s: f32,
 }
 
+/// Persistent Yehat-ultimate orb. The cinematic spawns one; it then
+/// lives ~20 s in normal gameplay tracing a pentagram around its owner.
+/// Later steps add projectile/asteroid absorption (accumulating into
+/// `absorbed_damage`) and a homing-missile finish.
+#[derive(Component, Debug)]
+pub struct YehatOrb {
+    pub owner: Entity,
+    pub owner_slot: usize,
+    pub age_s: f32,
+    pub phase: f32,
+    pub absorbed_damage: i32,
+}
+
 /// One of the Mycon plasma orbs that orbits the Podship during the
 /// `MyconGathering` phase. Tracks its phase angle so the orbital
 /// motion is deterministic; `radius_t` is 0..1 across the gather
@@ -841,6 +854,9 @@ impl Plugin for UltimatePlugin {
                 // bug as above: needs to live in Update or
                 // the fighters never spawn.
                 tick_yehat_battle_fleet,
+                // Persistent orb mover/lifetime — runs in normal play
+                // too, so the orb outlives the cinematic for its ~20 s.
+                tick_yehat_orb,
                 // Chmmr bump-set-spike: positions satellites in
                 // ChmmrCharging (paused) + drives the volley
                 // sub-stages in ChmmrVolley.
@@ -962,6 +978,8 @@ const YEHAT_ORB_RADIUS: f32 = 200.0;
 const YEHAT_ORB_SIZE: f32 = 40.0;
 /// Pentagram laps per second (one full one-stroke star ≈ every 4 s).
 const YEHAT_ORB_STAR_RATE: f32 = 0.25;
+/// How long the orb lives before launching as a homing missile.
+const YEHAT_ORB_LIFE_S: f32 = 20.0;
 
 /// Point along a one-stroke 5-pointed star (pentagram) of the given
 /// point-radius, the way you'd draw it without lifting the pen: visit
@@ -2931,66 +2949,71 @@ fn tick_blast_trails(
 /// steps add projectile/asteroid absorption and the homing-missile
 /// finish; for now it only orbits.
 fn tick_yehat_battle_fleet(
-    // Time<Real> so the orbit keeps moving during the PAUSED
-    // YehatSummoning phase. Same reason as tick_ultimate_phases.
-    time: Res<Time<Real>>,
-    mut state: ResMut<UltimateState>,
+    state: Res<UltimateState>,
     mut commands: Commands,
-    assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut color_mats: ResMut<Assets<ColorMaterial>>,
-    ships: Query<(&Position, &Rotation), With<Ship>>,
-    other_ships: Query<(Entity, &Ship, &Position), (With<Ship>, Without<crate::ship::Invisible>)>,
-    mut fighters: Query<
-        (Entity, &mut YehatFighter, &mut Transform),
-        Without<Ship>,
-    >,
-    owner_ship: Query<&Ship>,
+    ships: Query<(&Position, &Ship)>,
+    orbs: Query<(), With<YehatOrb>>,
 ) {
     if state.variant != UltimateVariant::Yehat {
         return;
     }
     let Some(p1) = state.player_entity else { return };
-    let Ok((ship_pos, _)) = ships.get(p1) else { return };
-
-    // Spawn the single orb once, on entry to Summoning. It traces a
-    // 5-pointed star around the Terminator. (Absorption + missile finish
-    // come in later steps; for now it just appears and orbits.)
-    if state.phase == UltimatePhase::YehatSummoning && state.yehat_fighters.is_empty() {
+    // Spawn the single orb once, on entry to Summoning. `tick_yehat_orb`
+    // (a persistent system) then owns its motion + lifetime, so it lives
+    // on through normal gameplay after the cinematic ends.
+    if state.phase == UltimatePhase::YehatSummoning && orbs.is_empty() {
+        let Ok((ship_pos, ship)) = ships.get(p1) else { return };
         let pos = ship_pos.0 + star_point(0.0, YEHAT_ORB_RADIUS);
         let mesh = meshes.add(Circle::new(YEHAT_ORB_SIZE * 0.5));
         let mat = color_mats.add(ColorMaterial::from(Color::srgb(0.35, 0.65, 1.0)));
-        let id = commands
-            .spawn((
-                YehatFighter {
-                    owner: p1,
-                    angle_offset: 0.0,
-                    fire_cooldown_s: 0.0,
-                },
-                Mesh2d(mesh),
-                MeshMaterial2d(mat),
-                Transform::from_translation(pos.extend(0.45)),
-            ))
-            .id();
-        state.yehat_fighters.push(id);
+        commands.spawn((
+            YehatOrb {
+                owner: p1,
+                owner_slot: ship.player_slot,
+                age_s: 0.0,
+                phase: 0.0,
+                absorbed_damage: 0,
+            },
+            Mesh2d(mesh),
+            MeshMaterial2d(mat),
+            Transform::from_translation(pos.extend(0.45)),
+        ));
     }
+}
 
-    let active =
-        matches!(state.phase, UltimatePhase::YehatSummoning | UltimatePhase::YehatBattle);
-    if !active {
-        return;
-    }
+/// Persistent: move the orb along its star path around the owner, age
+/// it, and despawn at the end of its life. Runs in normal gameplay (not
+/// just during the cinematic), so the orb survives the cinematic exit
+/// and lives its full ~20 s. Absorption + the homing-missile finish are
+/// added in later steps; for now it just orbits then vanishes.
+fn tick_yehat_orb(
+    time: Res<Time<Real>>,
+    mut commands: Commands,
+    ships: Query<&Position, With<Ship>>,
+    mut orbs: Query<(Entity, &mut YehatOrb, &mut Transform)>,
+) {
     let dt = time.delta_secs();
-    // Firing was removed in this step (the orb absorbs rather than
-    // shoots); these params come back in the next step (absorption).
-    let _ = (&other_ships, &owner_ship, &assets, &commands);
-
-    for (_e, mut fighter, mut xf) in &mut fighters {
-        // Advance the star-path phase. Real-time dt so the orb keeps
-        // moving even while time<Virtual> is paused during the summon
-        // beat (same reasoning as the old circular orbit).
-        fighter.angle_offset += YEHAT_ORB_STAR_RATE * dt;
-        let world = ship_pos.0 + star_point(fighter.angle_offset, YEHAT_ORB_RADIUS);
+    for (e, mut orb, mut xf) in &mut orbs {
+        // Owner ship gone (died / despawned) → the orb goes with it.
+        let Ok(owner_pos) = ships.get(orb.owner) else {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
+            continue;
+        };
+        orb.age_s += dt;
+        if orb.age_s >= YEHAT_ORB_LIFE_S {
+            // Step 4 will convert this into a homing missile carrying
+            // base + absorbed damage. For now it simply expires.
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
+            continue;
+        }
+        orb.phase += YEHAT_ORB_STAR_RATE * dt;
+        let world = owner_pos.0 + star_point(orb.phase, YEHAT_ORB_RADIUS);
         xf.translation.x = world.x;
         xf.translation.y = world.y;
     }
