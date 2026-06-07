@@ -955,9 +955,32 @@ const EARTH_STRETCH_PEAK: f32 = 2.4;
 // -- Yehat battle fleet --
 const YEHAT_SUMMON_S: f32 = 0.6;
 const YEHAT_BATTLE_S: f32 = 4.0;
-const YEHAT_FIGHTER_RADIUS: f32 = 140.0;
-const YEHAT_FIGHTER_ORBIT_RPS: f32 = 0.6;
-const YEHAT_FIGHTER_FIRE_INTERVAL_S: f32 = 0.5;
+// -- Yehat orb (new ultimate) --
+/// Outer/inner radius of the 5-pointed star the orb traces.
+const YEHAT_ORB_OUTER_R: f32 = 175.0;
+const YEHAT_ORB_INNER_R: f32 = 72.0;
+/// On-screen size of the orb sprite.
+const YEHAT_ORB_SIZE: f32 = 40.0;
+/// Star-path loops per second (one full star ≈ every 3.3 s).
+const YEHAT_ORB_STAR_RATE: f32 = 0.30;
+
+/// Point on a 5-pointed star outline. `phase` wraps every 1.0 (one full
+/// trip around the star). The star has 10 vertices alternating between
+/// `outer` and `inner` radius; we walk the edges between them so the
+/// orb's orbit is visibly a star rather than a circle. A point of the
+/// star faces "up" (+y).
+fn star_point(phase: f32, outer: f32, inner: f32) -> Vec2 {
+    use std::f32::consts::{FRAC_PI_2, TAU};
+    let p = phase.rem_euclid(1.0) * 10.0; // 0..10 across the 10 edges
+    let seg = p.floor() as usize; // which edge (0..9)
+    let f = p - seg as f32; // 0..1 along the edge
+    let vertex = |k: usize| -> Vec2 {
+        let r = if k % 2 == 0 { outer } else { inner };
+        let a = (k as f32) * TAU / 10.0 + FRAC_PI_2; // point up
+        Vec2::new(a.cos(), a.sin()) * r
+    };
+    vertex(seg).lerp(vertex((seg + 1) % 10), f)
+}
 
 // -- Spathi missile storm --
 const SPATHI_LOCKON_S: f32 = 0.5;
@@ -2926,32 +2949,23 @@ fn tick_yehat_battle_fleet(
     let Some(p1) = state.player_entity else { return };
     let Ok((ship_pos, _)) = ships.get(p1) else { return };
 
-    // Spawn the three fighters once, on entry to Summoning.
+    // Spawn the single orb once, on entry to Summoning. It traces a
+    // 5-pointed star around the Terminator. (Absorption + missile finish
+    // come in later steps; for now it just appears and orbits.)
     if state.phase == UltimatePhase::YehatSummoning && state.yehat_fighters.is_empty() {
-        use std::f32::consts::TAU;
-        for i in 0..3 {
-            let angle_offset = (i as f32) * TAU / 3.0;
-            let pos = ship_pos.0
-                + Vec2::new(angle_offset.cos(), angle_offset.sin())
-                    * YEHAT_FIGHTER_RADIUS;
-            let id = commands
-                .spawn((
-                    YehatFighter {
-                        owner: p1,
-                        angle_offset,
-                        fire_cooldown_s: 0.5 + i as f32 * 0.15,
-                    },
-                    Sprite {
-                        image: assets.load("ships/yehte/sprites/ship_p00.png"),
-                        color: Color::srgba(1.0, 0.9, 0.55, 1.0),
-                        custom_size: Some(Vec2::splat(36.0)),
-                        ..default()
-                    },
-                    Transform::from_translation(pos.extend(0.45)),
-                ))
-                .id();
-            state.yehat_fighters.push(id);
-        }
+        let pos = ship_pos.0 + star_point(0.0, YEHAT_ORB_OUTER_R, YEHAT_ORB_INNER_R);
+        let id = commands
+            .spawn((
+                YehatFighter {
+                    owner: p1,
+                    angle_offset: 0.0,
+                    fire_cooldown_s: 0.0,
+                },
+                Sprite::from_color(Color::srgb(0.35, 0.65, 1.0), Vec2::splat(YEHAT_ORB_SIZE)),
+                Transform::from_translation(pos.extend(0.45)),
+            ))
+            .id();
+        state.yehat_fighters.push(id);
     }
 
     let active =
@@ -2959,84 +2973,20 @@ fn tick_yehat_battle_fleet(
     if !active {
         return;
     }
-    let in_battle = matches!(state.phase, UltimatePhase::YehatBattle);
     let dt = time.delta_secs();
-    let owner_slot = owner_ship.get(p1).map(|s| s.player_slot).unwrap_or(0);
+    // Firing was removed in this step (the orb absorbs rather than
+    // shoots); these params come back in the next step (absorption).
+    let _ = (&other_ships, &owner_ship, &assets, &commands);
 
     for (_e, mut fighter, mut xf) in &mut fighters {
-        // Orbit. Angle advances in real time so the fighters keep
-        // moving even while time<Virtual> is paused (during the
-        // summon phase).
-        fighter.angle_offset += YEHAT_FIGHTER_ORBIT_RPS * std::f32::consts::TAU * dt;
-        let off = Vec2::new(fighter.angle_offset.cos(), fighter.angle_offset.sin())
-            * YEHAT_FIGHTER_RADIUS;
-        let world = ship_pos.0 + off;
+        // Advance the star-path phase. Real-time dt so the orb keeps
+        // moving even while time<Virtual> is paused during the summon
+        // beat (same reasoning as the old circular orbit).
+        fighter.angle_offset += YEHAT_ORB_STAR_RATE * dt;
+        let world =
+            ship_pos.0 + star_point(fighter.angle_offset, YEHAT_ORB_OUTER_R, YEHAT_ORB_INNER_R);
         xf.translation.x = world.x;
         xf.translation.y = world.y;
-        // Face the orbit-tangent so the sprite "leans" into the path.
-        let tangent_angle = fighter.angle_offset + std::f32::consts::FRAC_PI_2;
-        xf.rotation = Quat::from_rotation_z(tangent_angle - std::f32::consts::FRAC_PI_2);
-
-        if !in_battle {
-            continue;
-        }
-
-        // Fire cooldown.
-        fighter.fire_cooldown_s -= dt;
-        if fighter.fire_cooldown_s > 0.0 {
-            continue;
-        }
-        fighter.fire_cooldown_s = YEHAT_FIGHTER_FIRE_INTERVAL_S;
-
-        // Pick nearest enemy ship in range.
-        let mut best: Option<(Vec2, f32)> = None;
-        for (e, s, p) in &other_ships {
-            if e == p1 || s.player_slot == owner_slot {
-                continue;
-            }
-            let d2 = (p.0 - world).length_squared();
-            if best.map_or(true, |(_, b)| d2 < b) {
-                best = Some((p.0, d2));
-            }
-        }
-        let Some((target, _)) = best else { continue };
-        let delta = target - world;
-        let d = delta.length();
-        if d < 0.5 {
-            continue;
-        }
-        let dir = delta / d;
-        let speed = 80.0 * crate::ship::SC2_VEL_SCALE;
-        let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
-
-        // Standard Projectile via Avian: handle_projectile_hits
-        // picks it up for damage on contact, projectile_lifetime
-        // despawns it after `lifetime` seconds.
-        commands.spawn((
-            crate::ship::Projectile {
-                owner: p1,
-                damage: 4,
-                lifetime: 2.5,
-            },
-            Sprite {
-                image: assets.load("ships/yehte/sprites/shot_a01.png"),
-                color: Color::srgb(1.0, 0.85, 0.4),
-                custom_size: Some(Vec2::splat(10.0)),
-                ..default()
-            },
-            Transform::from_translation(world.extend(0.5)),
-            RigidBody::Dynamic,
-            Collider::circle(5.0),
-            Sensor,
-            Mass(0.5),
-            Position(world),
-            Rotation::radians(init_angle),
-            LinearVelocity(dir * speed),
-            AngularVelocity::ZERO,
-            LinearDamping(0.0),
-            AngularDamping(0.0),
-            CollisionEventsEnabled,
-        ));
     }
 }
 
