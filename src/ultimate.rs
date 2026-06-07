@@ -914,8 +914,10 @@ impl Plugin for UltimatePlugin {
 
 /// Fast ram-in while the world is paused — the dramatic pause
 /// before the punch. Long enough to read the portrait and feel
-/// the held breath.
-const PHASE_ZOOM_IN_S: f32 = 0.45;
+/// the held breath. The portrait reaches full opacity early (see the
+/// `DramaticZoomIn` arm) and then holds for the rest of this window, so
+/// most of this duration is a clear freeze-frame of the captain.
+const PHASE_ZOOM_IN_S: f32 = 0.95;
 /// Time STILL paused. Camera pulls back from the close-up to the
 /// original framing (and untilts the 90° flourish) across this
 /// duration. Time only resumes once this finishes.
@@ -1625,7 +1627,11 @@ fn tick_ultimate_phases(
         match state.phase {
             UltimatePhase::DramaticZoomIn => {
                 let p = (state.phase_timer_s / PHASE_ZOOM_IN_S).clamp(0.0, 1.0);
-                let eased = 1.0 - (1.0 - p).powi(3);
+                // Portrait fades to full over the first ~30% of the ram-in
+                // then HOLDS, so the rest of the (now longer) window is a
+                // clear freeze-frame instead of a still-fading flash.
+                let fade = (p / 0.3).clamp(0.0, 1.0);
+                let eased = 1.0 - (1.0 - fade).powi(3);
                 (PHASE_ZOOM_IN_S, eased, false, 0.0, true)
             }
             UltimatePhase::DramaticZoomOut => {

@@ -8269,12 +8269,15 @@ pub fn preload_all_assets(
             .push(assets.load::<Image>(path).untyped());
     }
 
-    // Ultimate portraits + voices — eight known captains, all
-    // copied into assets/ultimate/ (missing ones just won't load,
-    // no harm done, but the asset server still avoids re-fetching
-    // the misses repeatedly).
+    // Ultimate portraits + voices. Preload EVERY captain's portrait (all
+    // 25 files exist) so the first ultimate of a match doesn't flash a
+    // blank frame while the texture decodes — previously only 8 were
+    // warmed, so any other captain's first ult showed nothing. Each code
+    // has a matching `_voi.wav`, so we warm both in one pass.
     for code in [
-        "arisk", "earcr", "yehte", "spael", "chebr", "shosc", "pkufu", "slypr",
+        "andgu", "arisk", "chebr", "chmav", "druma", "earcr", "ilwav", "kohma", "meltr",
+        "mmrxf", "mypo", "orzne", "pkufu", "shosc", "slypr", "spael", "supbl", "sypen", "thrto",
+        "umgdr", "urqdr", "utwju", "vuxin", "yehte", "zoqst",
     ] {
         preloaded.handles.push(
             assets
