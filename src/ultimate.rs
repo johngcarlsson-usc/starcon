@@ -956,30 +956,33 @@ const EARTH_STRETCH_PEAK: f32 = 2.4;
 const YEHAT_SUMMON_S: f32 = 0.6;
 const YEHAT_BATTLE_S: f32 = 4.0;
 // -- Yehat orb (new ultimate) --
-/// Outer/inner radius of the 5-pointed star the orb traces.
-const YEHAT_ORB_OUTER_R: f32 = 175.0;
-const YEHAT_ORB_INNER_R: f32 = 72.0;
-/// On-screen size of the orb sprite.
+/// Radius of the five outer points of the pentagram.
+const YEHAT_ORB_RADIUS: f32 = 200.0;
+/// Diameter of the orb sprite (circle mesh).
 const YEHAT_ORB_SIZE: f32 = 40.0;
-/// Star-path loops per second (one full star ≈ every 3.3 s).
-const YEHAT_ORB_STAR_RATE: f32 = 0.30;
+/// Pentagram laps per second (one full one-stroke star ≈ every 4 s).
+const YEHAT_ORB_STAR_RATE: f32 = 0.25;
 
-/// Point on a 5-pointed star outline. `phase` wraps every 1.0 (one full
-/// trip around the star). The star has 10 vertices alternating between
-/// `outer` and `inner` radius; we walk the edges between them so the
-/// orb's orbit is visibly a star rather than a circle. A point of the
+/// Point along a one-stroke 5-pointed star (pentagram) of the given
+/// point-radius, the way you'd draw it without lifting the pen: visit
+/// the five outer points in every-other order (0→2→4→1→3→0). The five
+/// long crossing lines form a pentagon in the middle with the ship at
+/// its centre. `phase` wraps every 1.0 (one full lap). One point of the
 /// star faces "up" (+y).
-fn star_point(phase: f32, outer: f32, inner: f32) -> Vec2 {
+fn star_point(phase: f32, radius: f32) -> Vec2 {
     use std::f32::consts::{FRAC_PI_2, TAU};
-    let p = phase.rem_euclid(1.0) * 10.0; // 0..10 across the 10 edges
-    let seg = p.floor() as usize; // which edge (0..9)
-    let f = p - seg as f32; // 0..1 along the edge
-    let vertex = |k: usize| -> Vec2 {
-        let r = if k % 2 == 0 { outer } else { inner };
-        let a = (k as f32) * TAU / 10.0 + FRAC_PI_2; // point up
-        Vec2::new(a.cos(), a.sin()) * r
+    let point = |k: usize| -> Vec2 {
+        let a = FRAC_PI_2 + (k as f32) * TAU / 5.0;
+        Vec2::new(a.cos(), a.sin()) * radius
     };
-    vertex(seg).lerp(vertex((seg + 1) % 10), f)
+    // Draw order skips one point each step — that's what makes the
+    // crossing lines (and the central pentagon) instead of a pentagon
+    // outline.
+    const ORDER: [usize; 5] = [0, 2, 4, 1, 3];
+    let p = phase.rem_euclid(1.0) * 5.0; // 5 line segments
+    let seg = (p.floor() as usize).min(4);
+    let f = p - seg as f32;
+    point(ORDER[seg]).lerp(point(ORDER[(seg + 1) % 5]), f)
 }
 
 // -- Spathi missile storm --
@@ -2923,18 +2926,19 @@ fn tick_blast_trails(
 // Yehat — battle fleet ultimate
 // ----------------------------------------------------------------
 
-/// Three fighter sprites spawn around the Terminator at the start
-/// of `YehatSummoning`, orbit the parent at YEHAT_FIGHTER_RADIUS
-/// during the `YehatBattle` phase, and auto-fire missiles at the
-/// nearest enemy every YEHAT_FIGHTER_FIRE_INTERVAL_S seconds.
+/// One blue orb spawns at the start of `YehatSummoning` and traces a
+/// one-stroke 5-pointed star (pentagram) around the Terminator. Future
+/// steps add projectile/asteroid absorption and the homing-missile
+/// finish; for now it only orbits.
 fn tick_yehat_battle_fleet(
-    // Time<Real> so the orbit keeps spinning during the
-    // PAUSED YehatSummoning phase. Same reason as
-    // tick_ultimate_phases / tick_mycon_orbit.
+    // Time<Real> so the orbit keeps moving during the PAUSED
+    // YehatSummoning phase. Same reason as tick_ultimate_phases.
     time: Res<Time<Real>>,
     mut state: ResMut<UltimateState>,
     mut commands: Commands,
     assets: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut color_mats: ResMut<Assets<ColorMaterial>>,
     ships: Query<(&Position, &Rotation), With<Ship>>,
     other_ships: Query<(Entity, &Ship, &Position), (With<Ship>, Without<crate::ship::Invisible>)>,
     mut fighters: Query<
@@ -2953,7 +2957,9 @@ fn tick_yehat_battle_fleet(
     // 5-pointed star around the Terminator. (Absorption + missile finish
     // come in later steps; for now it just appears and orbits.)
     if state.phase == UltimatePhase::YehatSummoning && state.yehat_fighters.is_empty() {
-        let pos = ship_pos.0 + star_point(0.0, YEHAT_ORB_OUTER_R, YEHAT_ORB_INNER_R);
+        let pos = ship_pos.0 + star_point(0.0, YEHAT_ORB_RADIUS);
+        let mesh = meshes.add(Circle::new(YEHAT_ORB_SIZE * 0.5));
+        let mat = color_mats.add(ColorMaterial::from(Color::srgb(0.35, 0.65, 1.0)));
         let id = commands
             .spawn((
                 YehatFighter {
@@ -2961,7 +2967,8 @@ fn tick_yehat_battle_fleet(
                     angle_offset: 0.0,
                     fire_cooldown_s: 0.0,
                 },
-                Sprite::from_color(Color::srgb(0.35, 0.65, 1.0), Vec2::splat(YEHAT_ORB_SIZE)),
+                Mesh2d(mesh),
+                MeshMaterial2d(mat),
                 Transform::from_translation(pos.extend(0.45)),
             ))
             .id();
@@ -2983,8 +2990,7 @@ fn tick_yehat_battle_fleet(
         // moving even while time<Virtual> is paused during the summon
         // beat (same reasoning as the old circular orbit).
         fighter.angle_offset += YEHAT_ORB_STAR_RATE * dt;
-        let world =
-            ship_pos.0 + star_point(fighter.angle_offset, YEHAT_ORB_OUTER_R, YEHAT_ORB_INNER_R);
+        let world = ship_pos.0 + star_point(fighter.angle_offset, YEHAT_ORB_RADIUS);
         xf.translation.x = world.x;
         xf.translation.y = world.y;
     }
