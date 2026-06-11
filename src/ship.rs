@@ -1314,6 +1314,30 @@ pub struct AlaryTorpedo {
 #[derive(Component, Debug)]
 pub struct InertialessDrive;
 
+/// Per-ship runtime state for the Tau Gladius's managed weapons:
+/// primary-fire cooldown + held-edge tracking, and the `side` that the
+/// special's homing missile alternates between each launch.
+#[derive(Component, Debug)]
+pub struct TauglState {
+    pub weapon_cd_s: f32,
+    pub last_fire_held: bool,
+    pub special_cd_s: f32,
+    pub last_special_held: bool,
+    pub side: f32,
+}
+
+impl Default for TauglState {
+    fn default() -> Self {
+        Self {
+            weapon_cd_s: 0.0,
+            last_fire_held: false,
+            special_cd_s: 0.0,
+            last_special_held: false,
+            side: 1.0,
+        }
+    }
+}
+
 /// Per-ship rolling state for Inertial-mode steering. Bevy's
 /// `ButtonInput::just_released` is fragile when `FixedUpdate` runs at
 /// a different cadence than the main render loop — the release event
@@ -1447,6 +1471,7 @@ impl Plugin for ShipPlugin {
                 tick_chmmr_satellites,
                 replenish_asteroids.run_if(in_state(crate::AppState::InMatch)),
                 tick_alary_mirv,
+                tick_taugl_primary,
                 tick_alary_turrets,
                 tick_shofixti_glory,
             )
@@ -2044,6 +2069,9 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Kohma) {
         entity.insert(KohrAhBladeCarrier::default());
+    }
+    if matches!(class, ShipClass::Taugl) {
+        entity.insert(TauglState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -3306,8 +3334,11 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
         // the next step — these Todo placeholders are deliberately
         // temporary, not the finished port.
         ShipClass::Taugl => Some(ShipAbilities {
+            // Primary owned by `tick_taugl_primary` (the quadratic-spread
+            // laser bolt). Special still a Todo placeholder until the next
+            // step wires the cone-limited homing missile.
             primary: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "taugl-bolt" },
+                kind: AbilityKind::ManagedExternally { ident: "taugl-bolt" },
                 cooldown_s: 0.0,
             },
             special: AbilitySpec {
@@ -5326,6 +5357,80 @@ fn tick_slylandro_drift(
         // Always thrust forward, regardless of input — the probe drifts
         // continuously, and the player only chooses *which way*.
         thrust.0 = Vec2::new(0.0, derived.thrust_force);
+    }
+}
+
+/// Tau Gladius primary — `shptaugl.cpp:activate_weapon` / `TauGladiusShot`.
+/// A fast yellow laser bolt fired with a quadratic-weighted random spread
+/// (`s = u·|u|·spread`), inheriting ship velocity, range-limited (dies at
+/// Range/Velocity seconds) and dealing Damage on contact. WeaponRate is 0
+/// so the cadence is battery-limited: WeaponDrain 1 per bolt vs a 12
+/// battery, so a held trigger rips ~12 bolts then waits on recharge.
+fn tick_taugl_primary(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut rng: ResMut<crate::rng::GameRng>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut TauglState,
+        &mut Battery,
+    )>,
+) {
+    let dt = time.delta_secs();
+    let speed = 150.0 * SC2_VEL_SCALE; // [Weapon] Velocity 150
+    let range = 14.0 * SC2_RANGE_SCALE; // Range 14
+    let lifetime = range / speed; // dies at range (d > range)
+    let damage = 1; // Damage 1
+    let spread = 5.0_f32.to_radians(); // Spread 5° × ANGLE_RATIO (π/180)
+    let drain = 1; // WeaponDrain 1
+
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        if st.weapon_cd_s > 0.0 {
+            st.weapon_cd_s -= dt;
+        }
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        st.last_fire_held = held;
+        if !held || st.weapon_cd_s > 0.0 || batt.current < drain {
+            continue;
+        }
+        batt.current -= drain;
+        st.weapon_cd_s = 0.0; // WeaponRate 0 — battery is the limiter
+
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let right = Vec2::new(rot.cos, rot.sin);
+        // Muzzle: original ship-local Vector2(5, 23).
+        let muzzle = pos.0 + forward * 23.0 + right * 5.0;
+        // Quadratic-weighted spread, then rotate forward by it.
+        let u = rng.signed_unit();
+        let s = u * u.abs() * spread;
+        let (ss, cs) = s.sin_cos();
+        let dir = Vec2::new(forward.x * cs - forward.y * ss, forward.x * ss + forward.y * cs);
+        let shot_vel = lvel.0 + dir * speed; // inherits ship velocity
+        let init_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
+
+        commands.spawn((
+            Projectile { owner: entity, damage, lifetime },
+            // Bright yellow bolt (255,255,115), a short streak for now —
+            // the exact tapering-line render is a later visual pass.
+            Sprite::from_color(Color::srgb(1.0, 1.0, 0.45), Vec2::new(3.0, 18.0)),
+            Transform::from_translation(muzzle.extend(0.5)),
+            RigidBody::Dynamic,
+            Collider::circle(3.0),
+            Sensor,
+            Mass(0.2),
+            Position(muzzle),
+            Rotation::radians(init_angle),
+            LinearVelocity(shot_vel),
+            AngularVelocity::ZERO,
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ));
     }
 }
 
