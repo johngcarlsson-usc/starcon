@@ -1274,6 +1274,9 @@ fn variant_for_class(class: ShipClass) -> UltimateVariant {
         ShipClass::Meltr => UltimateVariant::Melnorme,
         // Arilou is the original fallback; keep it explicit.
         ShipClass::Arisk => UltimateVariant::Arilou,
+        // Tau Gladius (fan ship) has no canonical ultimate — use the
+        // harmless generic-flourish fallback for now.
+        ShipClass::Taugl => UltimateVariant::Arilou,
     }
 }
 

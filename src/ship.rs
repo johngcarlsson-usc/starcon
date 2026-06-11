@@ -347,6 +347,7 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("umgdr", include_str!("../assets/ships/umgdr.ini"), include_str!("../assets/ships/umgdr.txt")),
     ("meltr", include_str!("../assets/ships/meltr.ini"), include_str!("../assets/ships/meltr.txt")),
     ("alabc", include_str!("../assets/ships/alabc.ini"), include_str!("../assets/ships/alabc.txt")),
+    ("taugl", include_str!("../assets/ships/taugl.ini"), include_str!("../assets/ships/taugl.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -499,7 +500,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 26] = [
+pub const ALL_CLASSES: [ShipClass; 27] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -529,6 +530,7 @@ pub const ALL_CLASSES: [ShipClass; 26] = [
     ShipClass::Umgdr,
     ShipClass::Meltr,
     ShipClass::Alabc,
+    ShipClass::Taugl,
 ];
 
 /// How rotation responds to forces.
@@ -646,6 +648,10 @@ pub enum ShipClass {
     /// auto-firing turrets. Passive absorbance shield halves
     /// incoming damage. Ultimate: doubles in size (once).
     Alabc,
+    /// Tau Gladius (TW-Light fan ship, author "Tau"). Light fighter.
+    /// Primary: a fast yellow laser bolt with quadratic spread. Special:
+    /// a side-alternating homing missile with cone-limited tracking.
+    Taugl,
 }
 
 impl ShipClass {
@@ -678,6 +684,7 @@ impl ShipClass {
             ShipClass::Umgdr => "umgdr",
             ShipClass::Meltr => "meltr",
             ShipClass::Alabc => "alabc",
+            ShipClass::Taugl => "taugl",
         }
     }
 }
@@ -3294,6 +3301,20 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 0.0,
             },
         }),
+        // Step 1: ship flyable. Exact weapons (quadratic-spread laser
+        // bolt + cone-limited side-alternating homing missile) land in
+        // the next step — these Todo placeholders are deliberately
+        // temporary, not the finished port.
+        ShipClass::Taugl => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "taugl-bolt" },
+                cooldown_s: 0.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "taugl-missile" },
+                cooldown_s: 0.0,
+            },
+        }),
     }
 }
 
@@ -3920,7 +3941,7 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
     let collider_radius = match class {
         ShipClass::Slypr | ShipClass::Umgdr => 12.0,
         ShipClass::Shosc | ShipClass::Arisk | ShipClass::Zfpst => 14.0,
-        ShipClass::Spael | ShipClass::Pkufu | ShipClass::Thrto => 16.0,
+        ShipClass::Spael | ShipClass::Pkufu | ShipClass::Thrto | ShipClass::Taugl => 16.0,
         ShipClass::Yehte
         | ShipClass::Earcr
         | ShipClass::Mycpo
