@@ -1003,6 +1003,14 @@ pub struct Homing {
     pub turn_rate: f32,
 }
 
+/// Cone-limited tracking for a `Homing` projectile: it only steers toward
+/// the target while the target is within this half-angle (radians) of its
+/// heading; outside the cone the missile flies straight. Canonical Tau
+/// Gladius missile (`shptaugl.cpp:TauGladiusMissile::calculate`, the
+/// `proxy_angle` / TrackAngle limit). Absent = always home.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct HomingCone(pub f32);
+
 /// Circular area-of-effect damage source. Lives independently of ships
 /// and projectiles. Used for: Shofixti Glory Device burst, Kohr-Ah
 /// sawblade ring, Chenjesu DOGI mines, eventually Slylandro Probe
@@ -1472,6 +1480,7 @@ impl Plugin for ShipPlugin {
                 replenish_asteroids.run_if(in_state(crate::AppState::InMatch)),
                 tick_alary_mirv,
                 tick_taugl_primary,
+                tick_taugl_special,
                 tick_alary_turrets,
                 tick_shofixti_glory,
             )
@@ -3342,7 +3351,7 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 0.0,
             },
             special: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "taugl-missile" },
+                kind: AbilityKind::ManagedExternally { ident: "taugl-missile" },
                 cooldown_s: 0.0,
             },
         }),
@@ -5434,6 +5443,82 @@ fn tick_taugl_primary(
     }
 }
 
+/// Tau Gladius special — `shptaugl.cpp:activate_special` /
+/// `TauGladiusMissile`. Launches a homing missile from an alternating
+/// side of the hull (`13*side`, `side *= -1` each press) with
+/// cone-limited tracking: it only steers toward the target while the
+/// target is within TrackAngle (22.5°) of its heading, otherwise it
+/// flies straight (`turn_rate = 0`). SpecialDrain 6, SpecialRate 4.
+fn tick_taugl_special(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut TauglState,
+        &mut Battery,
+    )>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 90.0 * SC2_VEL_SCALE; // [Special] Velocity 90
+    let range = 44.0 * SC2_RANGE_SCALE; // Range 44
+    let lifetime = range / speed;
+    let damage = 1; // Damage 1
+    let turn_rate = sc2_turning(5.0); // TurnRate 5
+    let cone = 22.5_f32.to_radians(); // TrackAngle 22.5° (× π/180)
+    let drain = 6; // SpecialDrain 6
+    let cooldown = 4.0 / 20.0; // SpecialRate 4
+
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        if st.special_cd_s > 0.0 {
+            st.special_cd_s -= dt;
+        }
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
+        st.last_special_held = held;
+        if !held || st.special_cd_s > 0.0 || batt.current < drain {
+            continue;
+        }
+        batt.current -= drain;
+        st.special_cd_s = cooldown;
+
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let right = Vec2::new(rot.cos, rot.sin);
+        // Original ship-local launch point (13*side, 0): alternating tube.
+        let muzzle = pos.0 + right * (13.0 * st.side);
+        st.side = -st.side;
+        let mvel = lvel.0 + forward * speed;
+        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+
+        commands.spawn((
+            Projectile { owner: entity, damage, lifetime },
+            Homing { target: None, turn_rate },
+            HomingCone(cone),
+            // Placeholder missile sprite (orange dart); the exact special
+            // sprite is a later visual pass.
+            Sprite::from_color(Color::srgb(1.0, 0.7, 0.2), Vec2::new(6.0, 16.0)),
+            Transform::from_translation(muzzle.extend(0.5)),
+            (
+                RigidBody::Dynamic,
+                Collider::circle(6.0),
+                Sensor,
+                Mass(0.5),
+                Position(muzzle),
+                Rotation::radians(init_angle),
+                LinearVelocity(mvel),
+                AngularVelocity::ZERO,
+                LinearDamping(0.0),
+                AngularDamping(0.0),
+                CollisionEventsEnabled,
+            ),
+        ));
+    }
+}
+
 /// Alary Battle Cruiser MIRV launcher (`shpalabc.cpp` primary).
 ///
 /// Each fire press launches ONE slow homing torpedo from an
@@ -5882,7 +5967,7 @@ fn tick_shofixti_glory(
 /// dies (its `Ship` component disappears from the query).
 fn steer_homing_projectiles(
     time: Res<Time<Physics>>,
-    mut projectiles: Query<(&Projectile, &Position, &mut LinearVelocity, &mut Homing)>,
+    mut projectiles: Query<(&Projectile, &Position, &mut LinearVelocity, &mut Homing, Option<&HomingCone>)>,
     // `Without<Invisible>` so a cloaked Ilwrath drops missile locks
     // (canonical: isInvisible() filters target acquisition).
     ships: Query<(Entity, &Ship, &Position), (Without<Projectile>, Without<Invisible>)>,
@@ -5891,7 +5976,7 @@ fn steer_homing_projectiles(
     if dt <= 0.0 {
         return;
     }
-    for (proj, proj_pos, mut vel, mut homing) in &mut projectiles {
+    for (proj, proj_pos, mut vel, mut homing, cone) in &mut projectiles {
         // Owner's slot tells us which side is friendly (skip in target search).
         let owner_slot = ships.get(proj.owner).ok().map(|(_, s, _)| s.player_slot);
 
@@ -5937,7 +6022,10 @@ fn steer_homing_projectiles(
 
         // Signed angle from current_dir to target_dir, in (-π, π].
         let angle = current_dir.perp_dot(target_dir).atan2(current_dir.dot(target_dir));
-        let max_delta = homing.turn_rate * dt;
+        // Cone-limited tracking: if the target is outside the missile's
+        // tracking cone, don't steer this tick (fly straight).
+        let in_cone = cone.map_or(true, |c| angle.abs() <= c.0);
+        let max_delta = if in_cone { homing.turn_rate * dt } else { 0.0 };
         let delta = angle.clamp(-max_delta, max_delta);
 
         // Rotate current_dir by `delta`, keep magnitude.
