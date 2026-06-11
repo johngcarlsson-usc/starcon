@@ -466,9 +466,21 @@ fn tick_zoom_stars(
 fn handle_pinch_zoom(
     time: Res<Time<Real>>,
     touches: Res<Touches>,
+    touch_visible: Res<crate::mobile_controls::TouchButtonsVisible>,
     mut zoom_state: ResMut<ZoomState>,
     mut follow_mode: ResMut<CameraFollowMode>,
 ) {
+    // While the on-screen controls are up, the player's two fingers are
+    // the virtual stick + a fire/special button — NOT a pinch. Treating
+    // them as one used to flip the camera to Manual (it stopped following,
+    // the opponent slid off-screen) until the revert timer snapped it
+    // back. Auto-follow frames the fight during touch play anyway; a real
+    // pinch-zoom is still available once the controls are hidden (the `+`
+    // toggle).
+    if touch_visible.0 {
+        zoom_state.last_pinch_dist = None;
+        return;
+    }
     // Collect up to two active touches. If there's a third we still
     // pinch on the first two — common mobile-browser idiom and
     // tolerates accidental third-finger taps.
