@@ -681,7 +681,26 @@ fn follow_ships_with_camera(
     // 150 trips the reframe at true sep ~1425, so the ships never get more
     // than slightly-wide before the view tightens, and the snap is small.
     const HYSTERESIS_WU: f32 = 150.0;
-    let force_fresh = sticky_extent > crate::physics::ARENA_SIZE * 0.85;
+    // Window pixel size — used both to decide whether the sticky framing
+    // still fits on screen and (below) to convert the fit span to scale.
+    let Ok(window) = windows.single() else { return };
+    let win = Vec2::new(window.width().max(1.0), window.height().max(1.0));
+    // If the sticky (continuous) framing has stretched so far it can no
+    // longer fit even at max zoom-out, a ship is about to slide off the
+    // edge — reframe to the tighter wrapped images NOW instead of waiting
+    // on the hysteresis margin. This is the mobile "opponent off-screen
+    // until it clicks back" fix: a narrow viewport hits SCALE_MAX much
+    // sooner, so the stale unwrapped framing used to persist far too long.
+    // Only fires when a genuinely tighter wrapped framing actually exists.
+    let sticky_fits = {
+        let sspan = (s_max - s_min).max(Vec2::splat(200.0));
+        let spad = (sspan.max_element() * 0.35).max(150.0);
+        let sneeded = sspan + Vec2::splat(spad * 2.0);
+        (sneeded.x / win.x).max(sneeded.y / win.y) <= SCALE_MAX
+    };
+    let overflow_reframe = !sticky_fits && fresh_extent + 1.0 < sticky_extent;
+    let force_fresh =
+        sticky_extent > crate::physics::ARENA_SIZE * 0.85 || overflow_reframe;
     let use_fresh = force_fresh || fresh_extent + HYSTERESIS_WU < sticky_extent;
     // A genuine reframe (the images actually move to the other side) —
     // we snap the camera straight there rather than pan, so it can't
@@ -702,10 +721,7 @@ fn follow_ships_with_camera(
     center /= count as f32;
     let span = (max - min).max(Vec2::splat(200.0));
 
-    // Window pixel size — needed to convert "fit span into screen"
-    // to an orthographic scale.
-    let Ok(window) = windows.single() else { return };
-    let win = Vec2::new(window.width().max(1.0), window.height().max(1.0));
+    // (`win` was computed above, before the sticky-fit check.)
 
     // Pad the bounding box so the ships sit in the central zone, not
     // at the screen edges. The padding is *proportional* to the
