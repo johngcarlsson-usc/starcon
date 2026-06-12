@@ -1512,6 +1512,7 @@ impl Plugin for ShipPlugin {
                 tick_taugl_primary,
                 tick_taugl_special,
                 tick_tauar_primary,
+                tick_archon_spiral,
                 tick_alary_turrets,
                 tick_shofixti_glory,
             )
@@ -3397,8 +3398,10 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 kind: AbilityKind::ManagedExternally { ident: "tauar-freeze" },
                 cooldown_s: 0.0,
             },
+            // Special shares the charge stream (handled in
+            // tick_tauar_primary), adding the spiralling long-range pellets.
             special: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "tauar-special" },
+                kind: AbilityKind::ManagedExternally { ident: "tauar-special" },
                 cooldown_s: 0.0,
             },
         }),
@@ -5596,13 +5599,23 @@ fn tick_tauar_primary(
     use std::f32::consts::FRAC_PI_2;
     let dt = time.delta_secs();
     let charge_time = 0.5; // [Weapon] ChargeTime 0.5
-    let speed = 90.0 * SC2_VEL_SCALE; // Velocity 90
-    let range = 19.0 * SC2_RANGE_SCALE; // Range 19
+    let speed = 90.0 * SC2_VEL_SCALE; // [Weapon] Velocity 90
+    let range = 19.0 * SC2_RANGE_SCALE; // [Weapon] Range 19
+    let speed_special = 200.0 * SC2_VEL_SCALE; // [Special] Velocity 200
+    let range_special = 95.0 * SC2_RANGE_SCALE; // [Special] Range 95
+    let max_div = 0.15; // [Special] MaxDivergence
+    let range_limit = 0.15; // [Special] RangeLimiter
     let drain_per_shot = 3.0 / 5.0; // weapon_drain/special_drain = 0.6
     let fuel_sap = 1; // FuelSap 1
 
     for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
-        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        // Fire and Special share the SAME charge + pellet stream (canon
+        // `calculate_fire_weapon` keys both off the one charge counter).
+        // Special swaps in longer range + the spiralling divergence.
+        let fire = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        let spec = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
+        let held = fire || spec;
+        let use_special = spec; // special params take precedence
         st.last_fire_held = held;
         // Charge up while held + powered; bleed back down otherwise.
         if held && batt.current > 0 {
@@ -5635,9 +5648,21 @@ fn tick_tauar_primary(
         let muzzle = pos.0 + forward * 11.0 + right * (rx / 2.0);
         let (ss, cs) = ax.sin_cos();
         let dir = Vec2::new(forward.x * cs - forward.y * ss, forward.x * ss + forward.y * cs);
-        let shot_speed = speed * vmul;
+        let base_speed = if use_special { speed_special } else { speed };
+        let base_range = if use_special { range_special } else { range };
+        let shot_speed = base_speed * vmul;
+        // Special pellets get a per-pellet divergence that drives the
+        // spiral; RangeLimiter shortens the more-divergent ones.
+        let (div, eff_range) = if use_special {
+            let sign = if rng.signed_unit() >= 0.0 { 1.0 } else { -1.0 };
+            let d = max_div * rng.signed_unit().abs() * sign;
+            let lim = (1.0 - range_limit) + range_limit * (1.0 - d.abs() / max_div);
+            (d, base_range * lim)
+        } else {
+            (0.0, base_range)
+        };
         let shot_vel = lvel.0 + dir * shot_speed;
-        let shot_life = (range * rmul) / shot_speed;
+        let shot_life = (eff_range * rmul) / shot_speed;
         let init_angle = dir.y.atan2(dir.x) - FRAC_PI_2;
         let damage = if is_sap { 0 } else { 1 };
         let color = if is_sap {
@@ -5667,6 +5692,59 @@ fn tick_tauar_primary(
         if is_sap {
             ec.insert(FuelSap { amount: fuel_sap });
         }
+        if use_special {
+            ec.insert(ArchonSpiral {
+                owner: entity,
+                div,
+                old_range: 11.0,
+                speed: shot_speed,
+            });
+        }
+    }
+}
+
+/// A Tau Archon SPECIAL pellet, spiralling outward around the firer
+/// (`shptauar.cpp:TauArchonShot::calculate` with `rotation_base =
+/// creator`): each tick it's repositioned `old_range` from the firer and
+/// flung perpendicular, with `old_range` growing by `|div|·speed`, so
+/// the stream fans into a rotating defensive screen.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ArchonSpiral {
+    pub owner: Entity,
+    pub div: f32,
+    pub old_range: f32,
+    pub speed: f32,
+}
+
+/// Drive the Archon special pellets' spiral around their firer.
+fn tick_archon_spiral(
+    time: Res<Time<Physics>>,
+    ships: Query<&Position, (With<Ship>, Without<ArchonSpiral>)>,
+    mut pellets: Query<
+        (&mut Position, &mut LinearVelocity, &mut Rotation, &mut ArchonSpiral),
+        Without<Ship>,
+    >,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    for (mut pos, mut vel, mut rot, mut sp) in &mut pellets {
+        let Ok(owner_pos) = ships.get(sp.owner) else {
+            continue; // firer gone — let it fly straight on its own velocity
+        };
+        // Angle from the pellet toward the firer; reposition `old_range`
+        // out from the firer along that line, then fling perpendicular.
+        let to_firer = owner_pos.0 - pos.0;
+        if to_firer.length_squared() < 1e-3 {
+            continue;
+        }
+        let t_a = to_firer.y.atan2(to_firer.x);
+        let dir_to_firer = Vec2::new(t_a.cos(), t_a.sin());
+        pos.0 = owner_pos.0 - dir_to_firer * sp.old_range;
+        let ang = if sp.div > 0.0 { t_a + FRAC_PI_2 } else { t_a - FRAC_PI_2 };
+        let heading = Vec2::new(ang.cos(), ang.sin());
+        vel.0 = heading * sp.speed;
+        *rot = Rotation::radians(ang - FRAC_PI_2);
+        sp.old_range += sp.div.abs() * sp.speed * dt;
     }
 }
 
