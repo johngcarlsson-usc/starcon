@@ -26,7 +26,7 @@ pub struct ShipStats {
     pub accel_rate: f32,
     pub turn_rate: f32,
     pub recharge_amount: i32,
-    pub recharge_rate: i32,
+    pub recharge_rate: f32,
     pub weapon_drain: i32,
     pub weapon_rate: i32,
     pub special_drain: i32,
@@ -2005,7 +2005,7 @@ fn spawn_ship(
         RechargeTimer {
             // RechargeRate is in SC2 frames; convert to seconds for
             // FixedUpdate integration (50 ms per SC2 frame).
-            remaining_s: stats.recharge_rate as f32 * 0.050,
+            remaining_s: stats.recharge_rate * 0.050,
         },
         WeaponCooldown::default(),
         SpecialCooldown::default(),
@@ -2234,7 +2234,7 @@ fn modes_for(
             y_stats.accel_rate = 10.0;
             y_stats.turn_rate = 15.0;
             y_stats.recharge_amount = 1;
-            y_stats.recharge_rate = 6;
+            y_stats.recharge_rate = 6.0;
             y_stats.weapon_rate = 20;
             let yform_derived = ShipPhysicsDerived::from_stats(&y_stats, collider_radius);
 
@@ -3982,7 +3982,7 @@ fn tick_battery_recharge(
 ) {
     let dt = time.delta_secs();
     for (ship, mut battery, mut timer, modes) in &mut q {
-        if ship.stats.recharge_rate <= 0 || ship.stats.recharge_amount <= 0 {
+        if ship.stats.recharge_rate <= 0.0 || ship.stats.recharge_amount <= 0 {
             continue;
         }
         // A draining mode (Androsynth Blazer, canon `recharge_amount = -1`)
@@ -3996,7 +3996,7 @@ fn tick_battery_recharge(
         }
         // Period between recharge ticks in seconds: SC2 RechargeRate
         // (a frame count) × 50 ms/frame.
-        let period_s = ship.stats.recharge_rate as f32 * 0.050;
+        let period_s = ship.stats.recharge_rate * 0.050;
         timer.remaining_s -= dt;
         // Catch up if we accumulated more than one period in a slow
         // frame — won't normally fire but guards against pauses.
