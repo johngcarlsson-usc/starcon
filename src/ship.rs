@@ -1018,6 +1018,15 @@ pub struct Homing {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct HomingCone(pub f32);
 
+/// On hitting a ship, drains `amount` from its battery — the Tau Archon
+/// freeze-laser's fuel sap. Crew damage rides separately on `Projectile`
+/// (canon reduces crew damage by what it sapped; we bake that by tagging
+/// sap pellets with 0 crew damage).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct FuelSap {
+    pub amount: i32,
+}
+
 /// Circular area-of-effect damage source. Lives independently of ships
 /// and projectiles. Used for: Shofixti Glory Device burst, Kohr-Ah
 /// sawblade ring, Chenjesu DOGI mines, eventually Slylandro Probe
@@ -1353,6 +1362,20 @@ impl Default for TauglState {
     }
 }
 
+/// Tau Archon managed-weapon runtime: the primary's charge-up timer +
+/// held-edge, a fractional-battery-drain accumulator, the alternating
+/// damage-step toggle (sap pellet vs damage pellet), and the special's
+/// cooldown state.
+#[derive(Component, Debug, Default)]
+pub struct TauarState {
+    pub charge_s: f32,
+    pub last_fire_held: bool,
+    pub batt_debt: f32,
+    pub sap_step: bool,
+    pub special_cd_s: f32,
+    pub last_special_held: bool,
+}
+
 /// Per-ship rolling state for Inertial-mode steering. Bevy's
 /// `ButtonInput::just_released` is fragile when `FixedUpdate` runs at
 /// a different cadence than the main render loop — the release event
@@ -1488,6 +1511,7 @@ impl Plugin for ShipPlugin {
                 tick_alary_mirv,
                 tick_taugl_primary,
                 tick_taugl_special,
+                tick_tauar_primary,
                 tick_alary_turrets,
                 tick_shofixti_glory,
             )
@@ -2088,6 +2112,9 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Taugl) {
         entity.insert(TauglState::default());
+    }
+    if matches!(class, ShipClass::Tauar) {
+        entity.insert(TauarState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -3365,8 +3392,9 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
         // Step 1: flyable. Exact charge-up freeze laser (battery-sap) +
         // the defensive special are ported in the next steps.
         ShipClass::Tauar => Some(ShipAbilities {
+            // Primary owned by `tick_tauar_primary` (charge-up sap laser).
             primary: AbilitySpec {
-                kind: AbilityKind::Todo { ident: "tauar-freeze" },
+                kind: AbilityKind::ManagedExternally { ident: "tauar-freeze" },
                 cooldown_s: 0.0,
             },
             special: AbilitySpec {
@@ -5542,6 +5570,106 @@ fn tick_taugl_special(
     }
 }
 
+/// Tau Archon primary — `shptauar.cpp`: a charge-up freeze laser. Hold
+/// fire to spin up a 0.5 s charge; once charged it pours a rapid stream
+/// of pellets, each with random muzzle jitter / spread / velocity /
+/// range, draining ~0.6 battery per pellet. Damage-steps alternate: a
+/// "sap" pellet drains the target's battery (FuelSap) for ~no crew
+/// damage, then a "damage" pellet deals 1 crew — so it kills by draining
+/// you dry and chipping in. Releasing fire bleeds the charge back down.
+#[allow(clippy::too_many_arguments)]
+fn tick_tauar_primary(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut rng: ResMut<crate::rng::GameRng>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut TauarState,
+        &mut Battery,
+    )>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let charge_time = 0.5; // [Weapon] ChargeTime 0.5
+    let speed = 90.0 * SC2_VEL_SCALE; // Velocity 90
+    let range = 19.0 * SC2_RANGE_SCALE; // Range 19
+    let drain_per_shot = 3.0 / 5.0; // weapon_drain/special_drain = 0.6
+    let fuel_sap = 1; // FuelSap 1
+
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        st.last_fire_held = held;
+        // Charge up while held + powered; bleed back down otherwise.
+        if held && batt.current > 0 {
+            st.charge_s = (st.charge_s + dt).min(charge_time);
+        } else {
+            st.charge_s = (st.charge_s - dt).max(0.0);
+            continue;
+        }
+        if st.charge_s < charge_time || batt.current <= 0 {
+            continue;
+        }
+        // Fractional 0.6/shot drain on the integer battery.
+        st.batt_debt += drain_per_shot;
+        while st.batt_debt >= 1.0 && batt.current > 0 {
+            st.batt_debt -= 1.0;
+            batt.current -= 1;
+        }
+        // Alternate damage steps (Step1 sap, Step2 damage).
+        st.sap_step = !st.sap_step;
+        let is_sap = st.sap_step;
+
+        // Canon randomisation: muzzle jitter rx∈[-12,12], spread (rx/3)°,
+        // velocity ×[0.96,1.08], range ×[0.77,1.17].
+        let rx = rng.signed_unit() * 12.0;
+        let ax = (rx / 3.0).to_radians();
+        let vmul = 0.96 + rng.signed_unit().abs() * 0.12;
+        let rmul = 0.77 + rng.signed_unit().abs() * 0.40;
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let right = Vec2::new(rot.cos, rot.sin);
+        let muzzle = pos.0 + forward * 11.0 + right * (rx / 2.0);
+        let (ss, cs) = ax.sin_cos();
+        let dir = Vec2::new(forward.x * cs - forward.y * ss, forward.x * ss + forward.y * cs);
+        let shot_speed = speed * vmul;
+        let shot_vel = lvel.0 + dir * shot_speed;
+        let shot_life = (range * rmul) / shot_speed;
+        let init_angle = dir.y.atan2(dir.x) - FRAC_PI_2;
+        let damage = if is_sap { 0 } else { 1 };
+        let color = if is_sap {
+            Color::srgb(0.45, 0.8, 1.0) // icy sap pellet
+        } else {
+            Color::srgb(0.85, 0.92, 1.0) // pale damage pellet
+        };
+
+        let mut ec = commands.spawn((
+            Projectile { owner: entity, damage, lifetime: shot_life },
+            Sprite::from_color(color, Vec2::new(3.0, 10.0)),
+            Transform::from_translation(muzzle.extend(0.5)),
+            (
+                RigidBody::Dynamic,
+                Collider::circle(3.0),
+                Sensor,
+                Mass(0.1),
+                Position(muzzle),
+                Rotation::radians(init_angle),
+                LinearVelocity(shot_vel),
+                AngularVelocity::ZERO,
+                LinearDamping(0.0),
+                AngularDamping(0.0),
+                CollisionEventsEnabled,
+            ),
+        ));
+        if is_sap {
+            ec.insert(FuelSap { amount: fuel_sap });
+        }
+    }
+}
+
 /// Alary Battle Cruiser MIRV launcher (`shpalabc.cpp` primary).
 ///
 /// Each fire press launches ONE slow homing torpedo from an
@@ -6176,7 +6304,7 @@ fn tick_damage_zones(
 fn handle_projectile_hits(
     mut commands: Commands,
     mut reader: MessageReader<CollisionStart>,
-    projectiles: Query<&Projectile>,
+    projectiles: Query<(&Projectile, Option<&FuelSap>)>,
     proj_positions: Query<&Position, With<Projectile>>,
     limpets: Query<&Limpet>,
     shields: Query<&ShieldActive>,
@@ -6214,7 +6342,7 @@ fn handle_projectile_hits(
             continue;
         }
 
-        let proj = match projectiles.get(proj_entity) {
+        let (proj, fuel_sap) = match projectiles.get(proj_entity) {
             Ok(p) => p,
             Err(_) => continue,
         };
@@ -6380,6 +6508,13 @@ fn handle_projectile_hits(
             .map(|s| s.damage_factor)
             .unwrap_or(1.0);
         let damage = ((proj.damage as f32 * factor).round() as i32).max(0);
+
+        // Tau Archon fuel sap: drain the target's battery on hit.
+        if let Some(sap) = fuel_sap {
+            if let Ok(mut batt) = batteries.get_mut(other_entity) {
+                batt.current = (batt.current - sap.amount).max(0);
+            }
+        }
 
         if let Ok(d2b) = damage_to_batt.get(other_entity) {
             if let Ok(mut batt) = batteries.get_mut(other_entity) {
