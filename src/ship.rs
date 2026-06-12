@@ -348,6 +348,7 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("meltr", include_str!("../assets/ships/meltr.ini"), include_str!("../assets/ships/meltr.txt")),
     ("alabc", include_str!("../assets/ships/alabc.ini"), include_str!("../assets/ships/alabc.txt")),
     ("taugl", include_str!("../assets/ships/taugl.ini"), include_str!("../assets/ships/taugl.txt")),
+    ("tauar", include_str!("../assets/ships/tauar.ini"), include_str!("../assets/ships/tauar.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -500,7 +501,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 27] = [
+pub const ALL_CLASSES: [ShipClass; 28] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -531,6 +532,7 @@ pub const ALL_CLASSES: [ShipClass; 27] = [
     ShipClass::Meltr,
     ShipClass::Alabc,
     ShipClass::Taugl,
+    ShipClass::Tauar,
 ];
 
 /// How rotation responds to forces.
@@ -652,6 +654,10 @@ pub enum ShipClass {
     /// Primary: a fast yellow laser bolt with quadratic spread. Special:
     /// a side-alternating homing missile with cone-limited tracking.
     Taugl,
+    /// Tau Archon (TW-Light fan ship, author "Tau"). Mid-heavy hull.
+    /// Primary: a charge-up freeze laser that saps battery. Special:
+    /// a fast defensive shot. (Weapons ported in following steps.)
+    Tauar,
 }
 
 impl ShipClass {
@@ -685,6 +691,7 @@ impl ShipClass {
             ShipClass::Meltr => "meltr",
             ShipClass::Alabc => "alabc",
             ShipClass::Taugl => "taugl",
+            ShipClass::Tauar => "tauar",
         }
     }
 }
@@ -3355,6 +3362,18 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 0.0,
             },
         }),
+        // Step 1: flyable. Exact charge-up freeze laser (battery-sap) +
+        // the defensive special are ported in the next steps.
+        ShipClass::Tauar => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "tauar-freeze" },
+                cooldown_s: 0.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::Todo { ident: "tauar-special" },
+                cooldown_s: 0.0,
+            },
+        }),
     }
 }
 
@@ -3393,6 +3412,9 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
                 format!("ship_x{:02}_bmp.png", frame)
             }
         }
+
+        // tauar: 0-indexed `ship_s0_NN.png`, frame 0 = north.
+        ShipClass::Tauar => format!("ship_s0_{:02}.png", frame),
 
         // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
         _ => format!("ship_s{:02}.png", frame + 1),
@@ -3994,7 +4016,8 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Utwju
         | ShipClass::Mmrxf
         | ShipClass::Orzne
-        | ShipClass::Meltr => 22.0,
+        | ShipClass::Meltr
+        | ShipClass::Tauar => 22.0,
         ShipClass::Chmav | ShipClass::Kohma | ShipClass::Chebr => 28.0,
         ShipClass::Kzedr => 34.0,
         // Alary is the biggest, heaviest hull in the roster.
