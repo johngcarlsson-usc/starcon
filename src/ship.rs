@@ -1321,6 +1321,189 @@ fn tick_boss_turrets(
     }
 }
 
+// ---------------------------------------------------------------------
+// Power-ups
+//
+// Floating pickups that drift in the arena; fly a fighter into one and
+// it applies an effect. v1 ships four kinds, each reusing a mechanic the
+// engine already has, so the framework lands without new damage paths:
+//   Repair       — patch a chunk of crew back.
+//   Energy       — top the battery off.
+//   Shield       — a few seconds of `ShieldActive` (damage soak).
+//   PointDefense — a "sidekick": a few seconds of `PointDefenseActive`
+//                  (auto-shoots down incoming fire + zaps near enemies).
+// The showier ones the user asked for — strap-on bazooka, one-shot
+// nitrous, stronger-shots overcharge — layer on in later slices.
+// ---------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PowerUpKind {
+    Repair,
+    Energy,
+    Shield,
+    PointDefense,
+}
+
+impl PowerUpKind {
+    /// All kinds in spawn-roll order.
+    const ALL: [PowerUpKind; 4] = [
+        PowerUpKind::Repair,
+        PowerUpKind::Energy,
+        PowerUpKind::Shield,
+        PowerUpKind::PointDefense,
+    ];
+
+    /// Pickup body colour (also the glow the player learns to read).
+    fn color(self) -> Color {
+        match self {
+            PowerUpKind::Repair => Color::srgb(0.30, 0.95, 0.40), // green cross
+            PowerUpKind::Energy => Color::srgb(1.00, 0.85, 0.20), // yellow bolt
+            PowerUpKind::Shield => Color::srgb(0.30, 0.65, 1.00), // blue
+            PowerUpKind::PointDefense => Color::srgb(0.95, 0.45, 0.95), // magenta
+        }
+    }
+}
+
+/// A floating pickup. Static sensor body — fighters pass through it and
+/// trigger a `CollisionStart`; it never pushes anything.
+#[derive(Component, Debug)]
+pub struct PowerUp {
+    pub kind: PowerUpKind,
+}
+
+/// Paces power-up spawning in boss co-op.
+#[derive(Resource)]
+pub struct PowerUpSpawner {
+    /// Seconds until the next spawn roll.
+    pub timer: f32,
+}
+
+impl Default for PowerUpSpawner {
+    fn default() -> Self {
+        // First pickup a little after the assault begins.
+        Self { timer: 8.0 }
+    }
+}
+
+/// Spawn a fresh power-up every so often (boss co-op only, host side),
+/// capped so the arena never floods with pickups.
+fn tick_powerup_spawner(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    config: Res<MatchConfig>,
+    mut spawner: ResMut<PowerUpSpawner>,
+    mut rng: ResMut<crate::rng::GameRng>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    existing: Query<(), With<PowerUp>>,
+) {
+    if !config.boss {
+        return;
+    }
+    const MAX_ACTIVE: usize = 3;
+    const SPAWN_INTERVAL: f32 = 11.0;
+    spawner.timer -= time.delta_secs();
+    if spawner.timer > 0.0 {
+        return;
+    }
+    spawner.timer = SPAWN_INTERVAL;
+    if existing.iter().count() >= MAX_ACTIVE {
+        return;
+    }
+    let kind = PowerUpKind::ALL[rng.usize_range(0..PowerUpKind::ALL.len())];
+    // Drop it in the southern half where the fleet operates, clear of
+    // the dreadnought's hull (which fills the northern/centre arena).
+    let x = (rng.f32() - 0.5) * 1600.0;
+    let y = -1300.0 + rng.f32() * 900.0; // y ∈ [-1300, -400]
+    let pos = Vec2::new(x, y);
+    commands.spawn((
+        PowerUp { kind },
+        Mesh2d(meshes.add(Circle::new(22.0))),
+        MeshMaterial2d(materials.add(ColorMaterial::from(kind.color()))),
+        Transform::from_translation(pos.extend(0.3)),
+        RigidBody::Static,
+        Collider::circle(22.0),
+        Sensor,
+        Position(pos),
+        Rotation::radians(0.0),
+    ));
+    info!("powerup spawned: {:?} at ({:.0},{:.0})", kind, x, y);
+}
+
+/// Apply a power-up when a fighter flies into it.
+fn handle_powerup_pickup(
+    mut commands: Commands,
+    mut reader: MessageReader<CollisionStart>,
+    assets: Res<AssetServer>,
+    powerups: Query<&PowerUp>,
+    positions: Query<&Position>,
+    ships: Query<(), With<Ship>>,
+    mut crews: Query<&mut Crew>,
+    mut batteries: Query<&mut Battery>,
+) {
+    let mut gone: bevy::platform::collections::HashSet<Entity> =
+        bevy::platform::collections::HashSet::default();
+    for event in reader.read() {
+        // Identify which side is the pickup, which is the ship.
+        let (pu_entity, ship_entity) = if powerups.get(event.collider1).is_ok() {
+            (event.collider1, event.collider2)
+        } else if powerups.get(event.collider2).is_ok() {
+            (event.collider2, event.collider1)
+        } else {
+            continue;
+        };
+        if gone.contains(&pu_entity) {
+            continue;
+        }
+        if ships.get(ship_entity).is_err() {
+            continue; // pickup brushed a projectile / boss part — ignore.
+        }
+        let Ok(pu) = powerups.get(pu_entity) else {
+            continue;
+        };
+        match pu.kind {
+            PowerUpKind::Repair => {
+                if let Ok(mut crew) = crews.get_mut(ship_entity) {
+                    let heal = (crew.max / 2).max(1);
+                    crew.current = (crew.current + heal).min(crew.max);
+                    info!("powerup: repair → {}/{}", crew.current, crew.max);
+                }
+            }
+            PowerUpKind::Energy => {
+                if let Ok(mut batt) = batteries.get_mut(ship_entity) {
+                    batt.current = batt.max;
+                    info!("powerup: energy → battery full");
+                }
+            }
+            PowerUpKind::Shield => {
+                commands.entity(ship_entity).try_insert(ShieldActive {
+                    remaining: 8.0,
+                    damage_factor: 0.25,
+                });
+                info!("powerup: shield (8s)");
+            }
+            PowerUpKind::PointDefense => {
+                commands.entity(ship_entity).try_insert(PointDefenseActive {
+                    remaining: 8.0,
+                    range: 280.0,
+                    damage_per_tick: 2,
+                    cooldown_s: 0.0,
+                });
+                info!("powerup: sidekick point-defense (8s)");
+            }
+        }
+        // Pop the pickup with a small flash.
+        if let Ok(p) = positions.get(pu_entity) {
+            spawn_asteroid_explosion(&mut commands, &assets, p.0, 18.0);
+        }
+        if gone.insert(pu_entity) {
+            if let Ok(mut ec) = commands.get_entity(pu_entity) {
+                ec.try_despawn();
+            }
+        }
+    }
+}
+
 /// Owner-attached damage zone — same gameplay shape as `DamageZone`
 /// but its world position is recomputed each tick from the owner's
 /// `Position + Rotation`, so it sticks to the ship as it moves.
@@ -1625,6 +1808,7 @@ impl Plugin for ShipPlugin {
         // gameplay systems into GgrsSchedule.
         app.init_resource::<MatchConfig>()
             .init_resource::<AngularControlOverride>()
+            .init_resource::<PowerUpSpawner>()
             .add_systems(Update, (class_picker_input, cycle_angular_override));
         // Bevy 0.18's `add_systems` macro caps a single tuple at 20
         // entries. We've outgrown it; split into two FixedUpdate
@@ -1743,7 +1927,9 @@ impl Plugin for ShipPlugin {
                 tick_archon_spiral,
                 tick_alary_turrets,
                 tick_shofixti_glory,
-                tick_boss_turrets,
+                // Nested as one set so the outer tuple stays under Bevy's
+                // 20-entry `add_systems` cap.
+                (tick_boss_turrets, tick_powerup_spawner, handle_powerup_pickup),
             )
                 .run_if(crate::netcode::role_is_authoritative),
         )
@@ -2168,6 +2354,7 @@ pub fn teardown_match(
                 // wisps or a stuck halo.
                 With<crate::netcode::CinematicVisualMirror>,
                 With<crate::ultimate::GuestCinematicFade>,
+                With<PowerUp>,
             )>,
         )>,
     >,
