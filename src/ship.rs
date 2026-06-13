@@ -1129,10 +1129,35 @@ pub struct BossHealth {
     pub max: i32,
 }
 
-/// The win target: the dreadnought's exposed bridge at the prow.
+/// The win target: the dreadnought's bridge at the prow.
 /// Destroy it and the co-op team wins.
 #[derive(Component, Debug)]
 pub struct CapitalCore;
+
+/// The core's recessed-aperture rhythm. The bridge is armoured shut most
+/// of the time (shots pop harmlessly) and only cracks open for a brief
+/// `strike window` — that's when it takes damage. Players have to time
+/// their burst (and their power-ups) to the opening, which gives the
+/// kill a real apex instead of a flat HP grind.
+#[derive(Component, Debug)]
+pub struct CoreAperture {
+    /// True while the bridge is open and vulnerable.
+    pub open: bool,
+    /// Seconds left in the current phase.
+    pub timer: f32,
+    /// How long the shutters stay closed between windows.
+    pub closed_s: f32,
+    /// How long each strike window lasts.
+    pub open_s: f32,
+}
+
+impl Default for CoreAperture {
+    fn default() -> Self {
+        // Opens after the first closed spell, so the run-in up the
+        // flanks isn't instantly winnable.
+        Self { open: false, timer: 5.0, closed_s: 5.0, open_s: 3.5 }
+    }
+}
 
 /// A hull-mounted auto-cannon. Each `interval` seconds it fires a bolt
 /// at the nearest player ship within `range`.
@@ -1233,16 +1258,18 @@ pub fn spawn_capital_ship(
         ));
     }
 
-    // The exposed bridge at the prow — the win target. Sits at the very
+    // The recessed bridge at the prow — the win target. Sits at the very
     // tip of the wedge, so the fleet has to fight its way up the flanks
-    // (under turret fire) and strike the nose.
+    // (under turret fire) and strike the nose during a strike window.
     let core_pos = Vec2::new(0.0, 800.0);
     commands.spawn((
         BossPart,
         CapitalCore,
+        CoreAperture::default(),
         BossHealth { hp: 400, max: 400 },
         Mesh2d(meshes.add(Circle::new(42.0))),
-        MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(0.95, 0.35, 0.30)))),
+        // Starts closed → dim steel; `tick_core_aperture` recolours it.
+        MeshMaterial2d(materials.add(ColorMaterial::from(CORE_CLOSED_COLOR))),
         // Drawn above the hull so the glowing weak point reads.
         Transform::from_translation(core_pos.extend(0.5)),
         RigidBody::Static,
@@ -1385,6 +1412,28 @@ impl PowerUpKind {
             PowerUpKind::Overcharge => Color::srgb(1.00, 0.20, 0.25), // red
         }
     }
+
+    /// Short all-caps name shown in the pickup toast / buff chip.
+    pub fn label(self) -> &'static str {
+        match self {
+            PowerUpKind::Repair => "REPAIR",
+            PowerUpKind::Energy => "ENERGY",
+            PowerUpKind::Shield => "SHIELD",
+            PowerUpKind::PointDefense => "POINT DEFENSE",
+            PowerUpKind::Bazooka => "BAZOOKA",
+            PowerUpKind::Nitrous => "NITROUS",
+            PowerUpKind::Overcharge => "OVERCHARGE",
+        }
+    }
+}
+
+/// Fired when a fighter grabs a power-up, so the HUD can pop a toast.
+/// (Instant pickups like Repair/Energy/Nitrous still toast — the chip
+/// strip only tracks the *timed* buffs.)
+#[derive(Message)]
+pub struct PowerUpPicked {
+    pub slot: usize,
+    pub kind: PowerUpKind,
 }
 
 /// Strap-on bazooka: bolted on by a pickup, it auto-launches a fat
@@ -1491,12 +1540,13 @@ fn handle_powerup_pickup(
     assets: Res<AssetServer>,
     powerups: Query<&PowerUp>,
     positions: Query<&Position>,
-    ships: Query<(), With<Ship>>,
+    ships: Query<&Ship>,
     mut crews: Query<&mut Crew>,
     mut batteries: Query<&mut Battery>,
     rotations: Query<&Rotation>,
     deriveds: Query<&ShipPhysicsDerived>,
     mut velocities: Query<&mut LinearVelocity>,
+    mut picked: MessageWriter<PowerUpPicked>,
 ) {
     let mut gone: bevy::platform::collections::HashSet<Entity> =
         bevy::platform::collections::HashSet::default();
@@ -1512,9 +1562,10 @@ fn handle_powerup_pickup(
         if gone.contains(&pu_entity) {
             continue;
         }
-        if ships.get(ship_entity).is_err() {
+        let Ok(ship) = ships.get(ship_entity) else {
             continue; // pickup brushed a projectile / boss part — ignore.
-        }
+        };
+        let ship_slot = ship.player_slot;
         let Ok(pu) = powerups.get(pu_entity) else {
             continue;
         };
@@ -1584,6 +1635,8 @@ fn handle_powerup_pickup(
                 info!("powerup: overcharge — shots x2.5 (8s)");
             }
         }
+        // Tell the HUD what just got grabbed (drives the pickup toast).
+        picked.write(PowerUpPicked { slot: ship_slot, kind: pu.kind });
         // Pop the pickup with a small flash.
         if let Ok(p) = positions.get(pu_entity) {
             spawn_asteroid_explosion(&mut commands, &assets, p.0, 18.0);
@@ -1688,6 +1741,45 @@ fn tick_powerup_buffs(
         o.remaining -= dt;
         if o.remaining <= 0.0 {
             commands.entity(e).try_remove::<OverchargeActive>();
+        }
+    }
+}
+
+/// Core colour while the bridge is armoured shut (dim steel — reads as
+/// "no point shooting yet").
+pub(crate) const CORE_CLOSED_COLOR: Color = Color::srgb(0.26, 0.31, 0.44);
+/// Core colour at the peak of an open strike window (hot red).
+pub(crate) const CORE_OPEN_COLOR: Color = Color::srgb(1.0, 0.30, 0.26);
+
+/// Drive the core's recessed-aperture rhythm: flip between a closed
+/// (invulnerable) spell and an open strike window, and recolour /
+/// pulse the bridge so the window reads at a glance. Damage gating
+/// lives in `handle_projectile_hits` (it skips the core while closed).
+fn tick_core_aperture(
+    time: Res<Time<Physics>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut cores: Query<(&mut CoreAperture, &MeshMaterial2d<ColorMaterial>, &mut Transform)>,
+) {
+    let dt = time.delta_secs();
+    for (mut ap, mat_handle, mut xf) in &mut cores {
+        ap.timer -= dt;
+        if ap.timer <= 0.0 {
+            ap.open = !ap.open;
+            ap.timer = if ap.open { ap.open_s } else { ap.closed_s };
+        }
+        // Visual state. Open: hot red with a fast brightness pulse and a
+        // slight bulge so the bridge looks like it's flaring out of its
+        // housing. Closed: steady dim steel, sitting flush.
+        if let Some(mat) = materials.get_mut(&mat_handle.0) {
+            if ap.open {
+                let pulse = 0.6 + 0.4 * (time.elapsed_secs() * 9.0).sin().abs();
+                let b = CORE_OPEN_COLOR.to_srgba();
+                mat.color = Color::srgb(b.red * pulse, b.green * pulse, b.blue * pulse);
+                xf.scale = Vec3::splat(1.0 + 0.12 * pulse);
+            } else {
+                mat.color = CORE_CLOSED_COLOR;
+                xf.scale = Vec3::ONE;
+            }
         }
     }
 }
@@ -1997,6 +2089,7 @@ impl Plugin for ShipPlugin {
         app.init_resource::<MatchConfig>()
             .init_resource::<AngularControlOverride>()
             .init_resource::<PowerUpSpawner>()
+            .add_message::<PowerUpPicked>()
             .add_systems(Update, (class_picker_input, cycle_angular_override));
         // Bevy 0.18's `add_systems` macro caps a single tuple at 20
         // entries. We've outgrown it; split into two FixedUpdate
@@ -2123,6 +2216,7 @@ impl Plugin for ShipPlugin {
                     handle_powerup_pickup,
                     tick_bazooka,
                     tick_powerup_buffs,
+                    tick_core_aperture,
                 ),
             )
                 .run_if(crate::netcode::role_is_authoritative),
@@ -7032,7 +7126,7 @@ fn handle_projectile_hits(
     mut batteries: Query<&mut Battery>,
     mut velocities: Query<&mut LinearVelocity>,
     mut deriveds: Query<&mut ShipPhysicsDerived>,
-    mut boss_health: Query<(&mut BossHealth, Has<CapitalCore>)>,
+    mut boss_health: Query<(&mut BossHealth, Has<CapitalCore>, Option<&CoreAperture>)>,
     assets: Res<AssetServer>,
 ) {
     // Boss co-op turns OFF friendly fire between the player fighters —
@@ -7092,8 +7186,21 @@ fn handle_projectile_hits(
         // damages the boss — a boss bolt that somehow clips a part
         // passes through. The hull carries no `BossHealth`, so it's
         // an indestructible wall: shots just pop against it.
-        if let Ok((mut bh, is_core)) = boss_health.get_mut(other_entity) {
+        if let Ok((mut bh, is_core, aperture)) = boss_health.get_mut(other_entity) {
             if is_boss_proj {
+                continue;
+            }
+            // Recessed core: while the bridge is shut, shots pop off the
+            // armour for no damage — only an open strike window counts.
+            if aperture.is_some_and(|a| !a.open) {
+                if let Ok(proj_pos) = proj_positions.get(proj_entity) {
+                    spawn_asteroid_explosion(&mut commands, &assets, proj_pos.0, 10.0);
+                }
+                if gone.insert(proj_entity) {
+                    if let Ok(mut ec) = commands.get_entity(proj_entity) {
+                        ec.try_despawn();
+                    }
+                }
                 continue;
             }
             bh.hp = (bh.hp - proj.damage).max(0);

@@ -16,7 +16,7 @@ use avian2d::prelude::Position;
 use bevy::prelude::*;
 
 use crate::physics::ARENA_HALF_EXTENT;
-use crate::ship::{CapitalCore, CapitalShip, MatchConfig, PowerUp, Ship, Turret};
+use crate::ship::{CapitalCore, CapitalShip, CoreAperture, MatchConfig, PowerUp, Ship, Turret};
 
 pub struct MinimapPlugin;
 
@@ -101,7 +101,7 @@ struct Blip {
 fn update_minimap(
     config: Res<MatchConfig>,
     ships: Query<(&Position, &Ship)>,
-    cores: Query<&Position, With<CapitalCore>>,
+    cores: Query<(&Position, Option<&CoreAperture>), With<CapitalCore>>,
     turrets: Query<&Position, With<Turret>>,
     powerups: Query<(&Position, &PowerUp)>,
     hull: Query<(), With<CapitalShip>>,
@@ -151,10 +151,17 @@ fn update_minimap(
             size: 5.0,
         });
     }
-    for cpos in &cores {
+    for (cpos, aperture) in &cores {
+        // Bright red while the strike window is open, dim steel while
+        // the bridge is shut — same read as the world-space core.
+        let open = aperture.is_none_or(|a| a.open);
         wanted.push(Blip {
             pos: cpos.0,
-            color: Color::srgb(1.0, 0.35, 0.30),
+            color: if open {
+                Color::srgb(1.0, 0.35, 0.30)
+            } else {
+                Color::srgb(0.40, 0.45, 0.58)
+            },
             size: 8.0,
         });
     }

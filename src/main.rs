@@ -12,6 +12,7 @@ mod melee;
 mod menu;
 mod minimap;
 mod netplay;
+mod powerhud;
 mod physics;
 mod rng;
 mod settings_menu;
@@ -120,6 +121,7 @@ fn main() {
             melee::MeleePlugin,
             indicator::IndicatorPlugin,
             minimap::MinimapPlugin,
+            powerhud::PowerUpHudPlugin,
             audio::AudioPlugin,
             lobby::LobbyPlugin,
             netcode::NetcodePlugin,
