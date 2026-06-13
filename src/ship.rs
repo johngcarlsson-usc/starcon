@@ -1661,12 +1661,25 @@ pub fn spawn_match(
     // the wrap framing. (700 also sits right at the planet's gravity_range, so
     // ships feel no initial pull.)
     use std::f32::consts::{FRAC_PI_2, PI};
-    let spawn_table: [(Vec2, f32); 4] = [
-        (Vec2::new(-740.0, 0.0), -FRAC_PI_2), // W, facing E
-        (Vec2::new(740.0, 0.0), FRAC_PI_2),   // E, facing W
-        (Vec2::new(0.0, -740.0), 0.0),        // S, facing N
-        (Vec2::new(0.0, 740.0), PI),          // N, facing S
-    ];
+    let spawn_table: [(Vec2, f32); 4] = if config.boss {
+        // Boss co-op: the capital ship owns the centre/north of the
+        // arena (its hull base sits at y≈-700). Muster the whole
+        // player fleet to the south in a loose line, all facing north
+        // toward the dreadnought, so nobody spawns inside the hull.
+        [
+            (Vec2::new(-360.0, -1180.0), 0.0),
+            (Vec2::new(360.0, -1180.0), 0.0),
+            (Vec2::new(-720.0, -1240.0), 0.0),
+            (Vec2::new(720.0, -1240.0), 0.0),
+        ]
+    } else {
+        [
+            (Vec2::new(-740.0, 0.0), -FRAC_PI_2), // W, facing E
+            (Vec2::new(740.0, 0.0), FRAC_PI_2),   // E, facing W
+            (Vec2::new(0.0, -740.0), 0.0),        // S, facing N
+            (Vec2::new(0.0, 740.0), PI),          // N, facing S
+        ]
+    };
     for (slot, slot_cfg) in config.slots.iter().enumerate().take(4) {
         let (pos, rot) = spawn_table[slot];
         let Some(entity) = spawn_class(

@@ -574,6 +574,7 @@ fn follow_ships_with_camera(
     mut unwrap: ResMut<CameraUnwrap>,
     ships: Query<(Entity, &Position), With<Ship>>,
     windows: Query<&Window>,
+    config: Res<crate::ship::MatchConfig>,
     mut cameras: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
 ) {
     if *mode != CameraFollowMode::Auto {
@@ -731,6 +732,22 @@ fn follow_ships_with_camera(
         max = max.max(img);
     }
     center /= count as f32;
+
+    // Boss co-op: the capital ship is a fixed landmark at the origin.
+    // It isn't a `Ship` (so it's absent from the loop above), but the
+    // fight only reads if the whole dreadnought stays framed alongside
+    // the fleet. Fold the static hull's bounding box into the framing
+    // and recentre on the box midpoint so the camera holds both the
+    // boss to the north and the player fleet to the south in view.
+    if config.boss {
+        // Hull corners must track `spawn_capital_ship`.
+        const HULL_MIN: Vec2 = Vec2::new(-360.0, -700.0);
+        const HULL_MAX: Vec2 = Vec2::new(360.0, 850.0);
+        min = min.min(HULL_MIN);
+        max = max.max(HULL_MAX);
+        center = (min + max) * 0.5;
+    }
+
     let span = (max - min).max(Vec2::splat(200.0));
 
     // (`win` was computed above, before the sticky-fit check.)
