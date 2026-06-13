@@ -349,6 +349,7 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("alabc", include_str!("../assets/ships/alabc.ini"), include_str!("../assets/ships/alabc.txt")),
     ("taugl", include_str!("../assets/ships/taugl.ini"), include_str!("../assets/ships/taugl.txt")),
     ("tauar", include_str!("../assets/ships/tauar.ini"), include_str!("../assets/ships/tauar.txt")),
+    ("tauem", include_str!("../assets/ships/tauem.ini"), include_str!("../assets/ships/tauem.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -506,7 +507,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 28] = [
+pub const ALL_CLASSES: [ShipClass; 29] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -538,6 +539,7 @@ pub const ALL_CLASSES: [ShipClass; 28] = [
     ShipClass::Alabc,
     ShipClass::Taugl,
     ShipClass::Tauar,
+    ShipClass::Tauem,
 ];
 
 /// How rotation responds to forces.
@@ -663,6 +665,10 @@ pub enum ShipClass {
     /// Primary: a charge-up freeze laser that saps battery. Special:
     /// a fast defensive shot. (Weapons ported in following steps.)
     Tauar,
+    /// Tau EMP (TW-Light fan ship, author "Tau"). Small, fast hull.
+    /// Primary: a rapid alternating-muzzle bolt. Special: a full-battery
+    /// EMP wave that jams enemy controls (ported in a following step).
+    Tauem,
 }
 
 impl ShipClass {
@@ -697,6 +703,7 @@ impl ShipClass {
             ShipClass::Alabc => "alabc",
             ShipClass::Taugl => "taugl",
             ShipClass::Tauar => "tauar",
+            ShipClass::Tauem => "tauem",
         }
     }
 }
@@ -2265,6 +2272,16 @@ pub struct TauarState {
     pub last_special_held: bool,
 }
 
+/// Tau EMP managed-weapon runtime: the primary's per-shot cooldown +
+/// held-edge, and the rolling barrel `slot` (0..6) that drives the
+/// alternating muzzle offset (`shptauem.cpp:activate_weapon`).
+#[derive(Component, Debug, Default)]
+pub struct TauemState {
+    pub weapon_cd_s: f32,
+    pub last_fire_held: bool,
+    pub slot: u32,
+}
+
 /// Per-ship rolling state for Inertial-mode steering. Bevy's
 /// `ButtonInput::just_released` is fragile when `FixedUpdate` runs at
 /// a different cadence than the main render loop — the release event
@@ -2400,10 +2417,15 @@ impl Plugin for ShipPlugin {
                 tick_chmmr_satellites,
                 replenish_asteroids.run_if(in_state(crate::AppState::InMatch)),
                 tick_alary_mirv,
-                tick_taugl_primary,
-                tick_taugl_special,
-                tick_tauar_primary,
-                tick_archon_spiral,
+                // Tau managed weapons, nested as one set to keep the outer
+                // tuple under Bevy's 20-entry `add_systems` cap.
+                (
+                    tick_taugl_primary,
+                    tick_taugl_special,
+                    tick_tauar_primary,
+                    tick_tauem_primary,
+                    tick_archon_spiral,
+                ),
                 tick_alary_turrets,
                 tick_shofixti_glory,
                 // Nested as one set so the outer tuple stays under Bevy's
@@ -3038,6 +3060,9 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Tauar) {
         entity.insert(TauarState::default());
+    }
+    if matches!(class, ShipClass::Tauem) {
+        entity.insert(TauemState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -4327,6 +4352,19 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 0.0,
             },
         }),
+        // Step 1-2: flyable + exact primary (rapid alternating-muzzle
+        // bolt, owned by `tick_tauem_primary`). The EMP jam-wave special
+        // is a placeholder until its own step wires the control-jam.
+        ShipClass::Tauem => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "tauem-bolt" },
+                cooldown_s: 0.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "tauem-wave" },
+                cooldown_s: 0.0,
+            },
+        }),
     }
 }
 
@@ -4368,6 +4406,11 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
 
         // tauar: 0-indexed `ship_s0_NN.png`, frame 0 = north.
         ShipClass::Tauar => format!("ship_s0_{:02}.png", frame),
+
+        // tauem: 0-indexed `ship_s00_NN.png` (the `s00` set, `_NN`
+        // rotation), frame 0 = north. (`ship_s01_NN` is the EMP-flash
+        // alternate the original blends in; we use the base set.)
+        ShipClass::Tauem => format!("ship_s00_{:02}.png", frame),
 
         // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
         _ => format!("ship_s{:02}.png", frame + 1),
@@ -4961,7 +5004,11 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
     let collider_radius = match class {
         ShipClass::Slypr | ShipClass::Umgdr => 12.0,
         ShipClass::Shosc | ShipClass::Arisk | ShipClass::Zfpst => 14.0,
-        ShipClass::Spael | ShipClass::Pkufu | ShipClass::Thrto | ShipClass::Taugl => 16.0,
+        ShipClass::Spael
+        | ShipClass::Pkufu
+        | ShipClass::Thrto
+        | ShipClass::Taugl
+        | ShipClass::Tauem => 16.0,
         ShipClass::Yehte
         | ShipClass::Earcr
         | ShipClass::Mycpo
@@ -6408,6 +6455,82 @@ fn tick_taugl_primary(
             // Bright yellow bolt (255,255,115), a short streak for now —
             // the exact tapering-line render is a later visual pass.
             Sprite::from_color(Color::srgb(1.0, 1.0, 0.45), Vec2::new(3.0, 18.0)),
+            Transform::from_translation(muzzle.extend(0.5)),
+            RigidBody::Dynamic,
+            Collider::circle(3.0),
+            Sensor,
+            Mass(0.2),
+            Position(muzzle),
+            Rotation::radians(init_angle),
+            LinearVelocity(shot_vel),
+            AngularVelocity::ZERO,
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ));
+    }
+}
+
+/// Tau EMP primary — `shptauem.cpp:activate_weapon` / `TauEMPMissile`.
+/// A rapid forward bolt fired from a rolling 6-slot barrel: the muzzle's
+/// ship-local x steps `±8, ±10, ±13` (alternating sides as the slot
+/// cycles), local y = 10. Straight shot (no spread), inherits ship
+/// velocity, range-limited (dies at Range/Velocity seconds). WeaponRate 1
+/// (≈ one 50 ms frame) paces the cadence; WeaponDrain 1 vs a 12 battery
+/// means a held trigger rips ~12 bolts then waits on recharge.
+fn tick_tauem_primary(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut TauemState,
+        &mut Battery,
+    )>,
+) {
+    let dt = time.delta_secs();
+    let speed = 90.0 * SC2_VEL_SCALE; // [Weapon] Velocity 90
+    let range = 9.0 * SC2_RANGE_SCALE; // Range 9
+    let lifetime = range / speed; // dies at range
+    let damage = 1; // Damage 1
+    let drain = 1; // WeaponDrain 1
+    let weapon_rate_s = 0.05; // WeaponRate 1 frame (50 ms)
+
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        if st.weapon_cd_s > 0.0 {
+            st.weapon_cd_s -= dt;
+        }
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        st.last_fire_held = held;
+        if !held || st.weapon_cd_s > 0.0 || batt.current < drain {
+            continue;
+        }
+        batt.current -= drain;
+        st.weapon_cd_s = weapon_rate_s;
+
+        // Rolling barrel muzzle offset (shptauem activate_weapon): the
+        // magnitude widens with the slot, the sign alternates each shot.
+        let slot = st.slot;
+        let mag = if slot < 2 { 8.0 } else if slot < 4 { 10.0 } else { 13.0 };
+        let rx = if slot % 2 == 1 { -mag } else { mag };
+        st.slot = (slot + 1) % 6;
+
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let right = Vec2::new(rot.cos, rot.sin);
+        // Ship-local Vector2(rx, 10).
+        let muzzle = pos.0 + right * rx + forward * 10.0;
+        let shot_vel = lvel.0 + forward * speed; // straight, inherits velocity
+        let init_angle = forward.y.atan2(forward.x) - std::f32::consts::FRAC_PI_2;
+
+        commands.spawn((
+            Projectile { owner: entity, damage, lifetime },
+            // Pale electric-blue bolt; the exact sprite render is a later
+            // visual pass.
+            Sprite::from_color(Color::srgb(0.55, 0.70, 1.0), Vec2::new(3.0, 12.0)),
             Transform::from_translation(muzzle.extend(0.5)),
             RigidBody::Dynamic,
             Collider::circle(3.0),

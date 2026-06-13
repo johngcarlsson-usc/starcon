@@ -1278,6 +1278,7 @@ fn variant_for_class(class: ShipClass) -> UltimateVariant {
         // generic-flourish fallback for now.
         ShipClass::Taugl => UltimateVariant::Arilou,
         ShipClass::Tauar => UltimateVariant::Arilou,
+        ShipClass::Tauem => UltimateVariant::Arilou,
     }
 }
 

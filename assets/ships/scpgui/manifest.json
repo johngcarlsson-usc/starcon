@@ -1,0 +1,21 @@
+{
+  "sounds": [
+    "menuaccept",
+    "menudisabled",
+    "menufocus",
+    "menuspecial",
+    "titlemusic"
+  ],
+  "sprites": {
+    "logo_bmp": {
+      "file": "logo_bmp.png",
+      "h": 120,
+      "w": 120
+    },
+    "title_bmp": {
+      "file": "title_bmp.png",
+      "h": 480,
+      "w": 640
+    }
+  }
+}

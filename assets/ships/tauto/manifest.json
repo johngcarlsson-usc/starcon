@@ -1,0 +1,925 @@
+{
+  "sounds": [
+    "c:\\tw\\ships\\fire_prim",
+    "c:\\tw\\ships\\laser_rev",
+    "c:\\tw\\ships\\laser_rev3",
+    "c:\\tw\\ships\\photon1"
+  ],
+  "sprites": {
+    "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\torrentpnl": {
+      "file": "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\torrentpnl.png",
+      "h": 100,
+      "w": 64
+    },
+    "c:\\tw\\ships\\p1": {
+      "file": "c:\\tw\\ships\\p1.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\tw\\ships\\p2": {
+      "file": "c:\\tw\\ships\\p2.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\tw\\ships\\p3": {
+      "file": "c:\\tw\\ships\\p3.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\tw\\ships\\p4": {
+      "file": "c:\\tw\\ships\\p4.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\tw\\ships\\p5": {
+      "file": "c:\\tw\\ships\\p5.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\tw\\ships\\p6": {
+      "file": "c:\\tw\\ships\\p6.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_s00": {
+      "file": "ship_s00.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s01": {
+      "file": "ship_s01.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s02": {
+      "file": "ship_s02.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s03": {
+      "file": "ship_s03.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s04": {
+      "file": "ship_s04.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s05": {
+      "file": "ship_s05.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s06": {
+      "file": "ship_s06.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s07": {
+      "file": "ship_s07.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s08": {
+      "file": "ship_s08.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s09": {
+      "file": "ship_s09.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s10": {
+      "file": "ship_s10.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s11": {
+      "file": "ship_s11.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s12": {
+      "file": "ship_s12.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s13": {
+      "file": "ship_s13.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s14": {
+      "file": "ship_s14.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s15": {
+      "file": "ship_s15.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s16": {
+      "file": "ship_s16.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s17": {
+      "file": "ship_s17.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s18": {
+      "file": "ship_s18.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s19": {
+      "file": "ship_s19.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s20": {
+      "file": "ship_s20.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s21": {
+      "file": "ship_s21.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s22": {
+      "file": "ship_s22.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s23": {
+      "file": "ship_s23.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s24": {
+      "file": "ship_s24.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s25": {
+      "file": "ship_s25.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s26": {
+      "file": "ship_s26.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s27": {
+      "file": "ship_s27.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s28": {
+      "file": "ship_s28.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s29": {
+      "file": "ship_s29.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s30": {
+      "file": "ship_s30.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s31": {
+      "file": "ship_s31.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s32": {
+      "file": "ship_s32.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s33": {
+      "file": "ship_s33.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s34": {
+      "file": "ship_s34.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s35": {
+      "file": "ship_s35.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s36": {
+      "file": "ship_s36.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s37": {
+      "file": "ship_s37.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s38": {
+      "file": "ship_s38.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s39": {
+      "file": "ship_s39.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s40": {
+      "file": "ship_s40.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s41": {
+      "file": "ship_s41.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s42": {
+      "file": "ship_s42.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s43": {
+      "file": "ship_s43.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s44": {
+      "file": "ship_s44.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s45": {
+      "file": "ship_s45.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s46": {
+      "file": "ship_s46.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s47": {
+      "file": "ship_s47.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s48": {
+      "file": "ship_s48.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s49": {
+      "file": "ship_s49.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s50": {
+      "file": "ship_s50.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s51": {
+      "file": "ship_s51.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s52": {
+      "file": "ship_s52.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s53": {
+      "file": "ship_s53.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s54": {
+      "file": "ship_s54.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s55": {
+      "file": "ship_s55.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s56": {
+      "file": "ship_s56.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s57": {
+      "file": "ship_s57.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s58": {
+      "file": "ship_s58.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s59": {
+      "file": "ship_s59.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s60": {
+      "file": "ship_s60.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s61": {
+      "file": "ship_s61.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s62": {
+      "file": "ship_s62.png",
+      "h": 72,
+      "w": 72
+    },
+    "ship_s63": {
+      "file": "ship_s63.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_a00": {
+      "file": "shot_a00.png",
+      "h": 14,
+      "w": 14
+    },
+    "shot_a01": {
+      "file": "shot_a01.png",
+      "h": 14,
+      "w": 14
+    },
+    "shot_a02": {
+      "file": "shot_a02.png",
+      "h": 14,
+      "w": 14
+    },
+    "shot_a03": {
+      "file": "shot_a03.png",
+      "h": 14,
+      "w": 14
+    },
+    "shot_a04": {
+      "file": "shot_a04.png",
+      "h": 14,
+      "w": 14
+    },
+    "shot_a05": {
+      "file": "shot_a05.png",
+      "h": 14,
+      "w": 14
+    },
+    "shot_b00": {
+      "file": "shot_b00.png",
+      "h": 52,
+      "w": 52
+    },
+    "shot_b01": {
+      "file": "shot_b01.png",
+      "h": 52,
+      "w": 52
+    },
+    "shot_b02": {
+      "file": "shot_b02.png",
+      "h": 52,
+      "w": 52
+    },
+    "shot_b03": {
+      "file": "shot_b03.png",
+      "h": 52,
+      "w": 52
+    },
+    "shot_b04": {
+      "file": "shot_b04.png",
+      "h": 52,
+      "w": 52
+    },
+    "shot_b05": {
+      "file": "shot_b05.png",
+      "h": 52,
+      "w": 52
+    },
+    "shot_b06": {
+      "file": "shot_b06.png",
+      "h": 52,
+      "w": 52
+    },
+    "shot_b07": {
+      "file": "shot_b07.png",
+      "h": 52,
+      "w": 52
+    },
+    "shot_b08": {
+      "file": "shot_b08.png",
+      "h": 52,
+      "w": 52
+    },
+    "shot_b09": {
+      "file": "shot_b09.png",
+      "h": 52,
+      "w": 52
+    },
+    "shot_b10": {
+      "file": "shot_b10.png",
+      "h": 52,
+      "w": 52
+    },
+    "shot_b11": {
+      "file": "shot_b11.png",
+      "h": 52,
+      "w": 52
+    },
+    "shot_c00": {
+      "file": "shot_c00.png",
+      "h": 12,
+      "w": 12
+    },
+    "shot_c01": {
+      "file": "shot_c01.png",
+      "h": 12,
+      "w": 12
+    },
+    "shot_c02": {
+      "file": "shot_c02.png",
+      "h": 12,
+      "w": 12
+    },
+    "shot_c03": {
+      "file": "shot_c03.png",
+      "h": 12,
+      "w": 12
+    },
+    "shot_c04": {
+      "file": "shot_c04.png",
+      "h": 12,
+      "w": 12
+    },
+    "shot_c05": {
+      "file": "shot_c05.png",
+      "h": 12,
+      "w": 12
+    },
+    "shot_d00": {
+      "file": "shot_d00.png",
+      "h": 36,
+      "w": 36
+    },
+    "shot_d01": {
+      "file": "shot_d01.png",
+      "h": 36,
+      "w": 36
+    },
+    "shot_d02": {
+      "file": "shot_d02.png",
+      "h": 36,
+      "w": 36
+    },
+    "shot_d03": {
+      "file": "shot_d03.png",
+      "h": 36,
+      "w": 36
+    },
+    "shot_d04": {
+      "file": "shot_d04.png",
+      "h": 36,
+      "w": 36
+    },
+    "shot_d05": {
+      "file": "shot_d05.png",
+      "h": 36,
+      "w": 36
+    },
+    "shot_d06": {
+      "file": "shot_d06.png",
+      "h": 36,
+      "w": 36
+    },
+    "shot_d07": {
+      "file": "shot_d07.png",
+      "h": 36,
+      "w": 36
+    },
+    "shot_d08": {
+      "file": "shot_d08.png",
+      "h": 36,
+      "w": 36
+    },
+    "shot_d09": {
+      "file": "shot_d09.png",
+      "h": 36,
+      "w": 36
+    },
+    "shot_d10": {
+      "file": "shot_d10.png",
+      "h": 36,
+      "w": 36
+    },
+    "shot_d11": {
+      "file": "shot_d11.png",
+      "h": 36,
+      "w": 36
+    },
+    "shot_e0000": {
+      "file": "shot_e0000.png",
+      "h": 2,
+      "w": 2
+    },
+    "shot_e0001": {
+      "file": "shot_e0001.png",
+      "h": 2,
+      "w": 2
+    },
+    "shot_e0002": {
+      "file": "shot_e0002.png",
+      "h": 2,
+      "w": 2
+    },
+    "shot_e0003": {
+      "file": "shot_e0003.png",
+      "h": 2,
+      "w": 2
+    },
+    "shot_e0004": {
+      "file": "shot_e0004.png",
+      "h": 2,
+      "w": 2
+    },
+    "shot_e0005": {
+      "file": "shot_e0005.png",
+      "h": 2,
+      "w": 2
+    },
+    "shot_e0006": {
+      "file": "shot_e0006.png",
+      "h": 2,
+      "w": 2
+    },
+    "shot_e0007": {
+      "file": "shot_e0007.png",
+      "h": 2,
+      "w": 2
+    },
+    "shot_e0008": {
+      "file": "shot_e0008.png",
+      "h": 2,
+      "w": 2
+    },
+    "shot_e0009": {
+      "file": "shot_e0009.png",
+      "h": 2,
+      "w": 2
+    },
+    "shot_e0010": {
+      "file": "shot_e0010.png",
+      "h": 2,
+      "w": 2
+    },
+    "shot_e0011": {
+      "file": "shot_e0011.png",
+      "h": 2,
+      "w": 2
+    },
+    "shot_f00": {
+      "file": "shot_f00.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f01": {
+      "file": "shot_f01.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f02": {
+      "file": "shot_f02.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f03": {
+      "file": "shot_f03.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f04": {
+      "file": "shot_f04.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f05": {
+      "file": "shot_f05.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f06": {
+      "file": "shot_f06.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f07": {
+      "file": "shot_f07.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f08": {
+      "file": "shot_f08.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f09": {
+      "file": "shot_f09.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f10": {
+      "file": "shot_f10.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f11": {
+      "file": "shot_f11.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f12": {
+      "file": "shot_f12.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f13": {
+      "file": "shot_f13.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f14": {
+      "file": "shot_f14.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f15": {
+      "file": "shot_f15.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f16": {
+      "file": "shot_f16.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f17": {
+      "file": "shot_f17.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f18": {
+      "file": "shot_f18.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f19": {
+      "file": "shot_f19.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f20": {
+      "file": "shot_f20.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f21": {
+      "file": "shot_f21.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f22": {
+      "file": "shot_f22.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f23": {
+      "file": "shot_f23.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f24": {
+      "file": "shot_f24.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f25": {
+      "file": "shot_f25.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f26": {
+      "file": "shot_f26.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f27": {
+      "file": "shot_f27.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f28": {
+      "file": "shot_f28.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f29": {
+      "file": "shot_f29.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f30": {
+      "file": "shot_f30.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f31": {
+      "file": "shot_f31.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f32": {
+      "file": "shot_f32.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f33": {
+      "file": "shot_f33.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f34": {
+      "file": "shot_f34.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f35": {
+      "file": "shot_f35.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f36": {
+      "file": "shot_f36.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f37": {
+      "file": "shot_f37.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f38": {
+      "file": "shot_f38.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f39": {
+      "file": "shot_f39.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f40": {
+      "file": "shot_f40.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f41": {
+      "file": "shot_f41.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f42": {
+      "file": "shot_f42.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f43": {
+      "file": "shot_f43.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f44": {
+      "file": "shot_f44.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f45": {
+      "file": "shot_f45.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f46": {
+      "file": "shot_f46.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f47": {
+      "file": "shot_f47.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f48": {
+      "file": "shot_f48.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f49": {
+      "file": "shot_f49.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f50": {
+      "file": "shot_f50.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f51": {
+      "file": "shot_f51.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f52": {
+      "file": "shot_f52.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f53": {
+      "file": "shot_f53.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f54": {
+      "file": "shot_f54.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f55": {
+      "file": "shot_f55.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f56": {
+      "file": "shot_f56.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f57": {
+      "file": "shot_f57.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f58": {
+      "file": "shot_f58.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f59": {
+      "file": "shot_f59.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f60": {
+      "file": "shot_f60.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f61": {
+      "file": "shot_f61.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f62": {
+      "file": "shot_f62.png",
+      "h": 72,
+      "w": 72
+    },
+    "shot_f63": {
+      "file": "shot_f63.png",
+      "h": 72,
+      "w": 72
+    }
+  }
+}
