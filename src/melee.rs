@@ -461,7 +461,7 @@ fn confirm_player(
             SlotConfig::fleet_human(fleet)
         })
         .collect();
-    *config = MatchConfig { slots, melee: true };
+    *config = MatchConfig { slots, melee: true, boss: false };
     tb.active = false;
     info!("melee: starting match with {} fleets", config.slots.len());
     next.set(AppState::InMatch);

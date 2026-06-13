@@ -426,6 +426,11 @@ fn detect_winner(
     if *phase == MatchPhase::PostMatch {
         return;
     }
+    // Boss co-op has its own win/lose (later slice) — the human slots are
+    // allies, so the normal "last slot standing" logic doesn't apply.
+    if config.boss {
+        return;
+    }
     // Track which slots are still in play. In a melee a slot stays in
     // play while it has ships in reserve — its ship being momentarily
     // dead (mid-respawn or choosing) doesn't lose the match; only an

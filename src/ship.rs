@@ -433,6 +433,10 @@ pub struct MatchConfig {
     /// deployed one at a time with a mid-match pick on death. Off for
     /// the quick single-ship modes.
     pub melee: bool,
+    /// Co-op boss match: the human slots team up against a capital ship.
+    /// Spawns the `CapitalShip` and suppresses the normal player-vs-player
+    /// winner logic.
+    pub boss: bool,
 }
 
 impl MatchConfig {
@@ -442,6 +446,7 @@ impl MatchConfig {
         Self {
             slots: vec![SlotConfig::human(p1), SlotConfig::human(p2)],
             melee: false,
+            boss: false,
         }
     }
     pub fn slot_count(&self) -> usize {
@@ -1093,6 +1098,46 @@ pub(crate) fn spawn_damage_zone(
     ));
 }
 
+/// The co-op boss: a huge wedge "dreadnought". Step 1 is just the solid
+/// hull you fly around; the shield, recessed core, turret-lined flanks,
+/// and the win/lose loop arrive in later slices. The shape IS the level.
+#[derive(Component, Debug)]
+pub struct CapitalShip;
+
+/// Spawn the boss hull on entering a boss match. An elongated arrowhead
+/// wedge ~1550 wu long — a real battleship next to the ~30 wu fighters.
+/// Solid static body so fighters bounce off the hull; default collision
+/// layers collide with ships.
+pub fn spawn_capital_ship(
+    mut commands: Commands,
+    config: Res<MatchConfig>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    if !config.boss {
+        return;
+    }
+    // Hull-local outline, tip toward +y (north).
+    let tip = Vec2::new(0.0, 850.0);
+    let bl = Vec2::new(-360.0, -700.0);
+    let br = Vec2::new(360.0, -700.0);
+    let mesh = meshes.add(Triangle2d::new(tip, bl, br));
+    let mat = materials.add(ColorMaterial::from(Color::srgb(0.16, 0.18, 0.24)));
+    let pos = Vec2::ZERO;
+    commands.spawn((
+        CapitalShip,
+        Mesh2d(mesh),
+        MeshMaterial2d(mat),
+        // Behind the fighters.
+        Transform::from_translation(pos.extend(-1.0)),
+        RigidBody::Static,
+        Collider::triangle(tip, bl, br),
+        Position(pos),
+        Rotation::radians(0.0),
+    ));
+    info!("boss: capital ship hull spawned");
+}
+
 /// Owner-attached damage zone — same gameplay shape as `DamageZone`
 /// but its world position is recomputed each tick from the owner's
 /// `Position + Rotation`, so it sticks to the ship as it moves.
@@ -1646,14 +1691,18 @@ pub fn spawn_match(
         }
     }
 
-    spawn_planet(&mut commands, &assets, &mut rng);
-    spawn_asteroids(
-        &mut commands,
-        &assets,
-        &mut rng,
-        &mut net_id_alloc,
-        role.is_guest(),
-    );
+    // Boss co-op keeps the arena clear so the capital ship is the
+    // centrepiece — no planet gravity well, no asteroid field.
+    if !config.boss {
+        spawn_planet(&mut commands, &assets, &mut rng);
+        spawn_asteroids(
+            &mut commands,
+            &assets,
+            &mut rng,
+            &mut net_id_alloc,
+            role.is_guest(),
+        );
+    }
 
     // Canon VUX `relocate()` (`shpvuxin.cpp:176-189`): on combat
     // start, if the VUX is farther than ~500 canon px from its
@@ -1902,6 +1951,7 @@ pub fn teardown_match(
                 With<AsteroidExplosion>,
                 With<ZapFlash>,
                 With<crate::ultimate::YehatOrb>,
+                With<CapitalShip>,
             )>,
             Or<(
                 With<crate::netcode::ProjectileMirror>,
@@ -9001,9 +9051,14 @@ fn replenish_asteroids(
     asteroids: Query<(), With<Asteroid>>,
     mut rng: ResMut<crate::rng::GameRng>,
     role: Res<crate::netcode::NetRole>,
+    config: Res<MatchConfig>,
     mut alloc: ResMut<crate::netcode::NetIdAllocator>,
 ) {
     if role.is_guest() {
+        return;
+    }
+    // Boss co-op clears the arena of drifting rocks; don't refill it.
+    if config.boss {
         return;
     }
     use std::f32::consts::TAU;

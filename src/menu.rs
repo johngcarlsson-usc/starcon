@@ -44,6 +44,8 @@ enum MenuAction {
     LocalFour,
     /// Local fleet-melee: build two teams, then fight them ship-by-ship.
     MeleeLocal,
+    /// Local co-op boss: players team up against the capital ship.
+    BossLocal,
     SoloVsOneAi,
     SoloVsThreeAi,
     Online,
@@ -109,6 +111,7 @@ fn spawn_menu(mut commands: Commands, windows: Query<&Window>) {
             spawn_button(root, MenuAction::LocalThree, "Local 3-Player (hotseat)", s);
             spawn_button(root, MenuAction::LocalFour, "Local 4-Player (hotseat)", s);
             spawn_button(root, MenuAction::MeleeLocal, "Melee 2P (build fleets)", s);
+            spawn_button(root, MenuAction::BossLocal, "Boss Co-op (local)", s);
             spawn_button(root, MenuAction::SoloVsOneAi, "Solo vs 1 AI", s);
             spawn_button(root, MenuAction::SoloVsThreeAi, "Solo vs 3 AI", s);
             spawn_button(root, MenuAction::Online, "Online (2-4 players)", s);
@@ -255,6 +258,7 @@ fn handle_menu_buttons(
                     SlotConfig::human(ShipClass::Yehte),
                 ];
                 config.melee = false;
+                config.boss = false;
                 next.set(AppState::InMatch);
             }
             MenuAction::LocalFour => {
@@ -265,12 +269,25 @@ fn handle_menu_buttons(
                     SlotConfig::human(ShipClass::Chmav),
                 ];
                 config.melee = false;
+                config.boss = false;
                 next.set(AppState::InMatch);
             }
             MenuAction::MeleeLocal => {
                 // Build two local fleets, then play them as a melee.
                 team_builder.begin(2, false);
                 next.set(AppState::TeamSelect);
+            }
+            MenuAction::BossLocal => {
+                // Co-op vs the capital ship. Two local humans for now
+                // (couch co-op) — an agile striker + a bulwark; 3-player
+                // + fleets land in a later slice.
+                config.slots = vec![
+                    SlotConfig::human(ShipClass::Arisk),
+                    SlotConfig::human(ShipClass::Earcr),
+                ];
+                config.melee = false;
+                config.boss = true;
+                next.set(AppState::InMatch);
             }
             MenuAction::SoloVsOneAi => {
                 // Straight 1v1 — player vs a single AI opponent.
@@ -282,6 +299,7 @@ fn handle_menu_buttons(
                     SlotConfig::ai(ShipClass::Spael),
                 ];
                 config.melee = false;
+                config.boss = false;
                 next.set(AppState::InMatch);
             }
             MenuAction::SoloVsThreeAi => {
@@ -292,6 +310,7 @@ fn handle_menu_buttons(
                     SlotConfig::ai(ShipClass::Kohma),
                 ];
                 config.melee = false;
+                config.boss = false;
                 next.set(AppState::InMatch);
             }
             MenuAction::Online => {
