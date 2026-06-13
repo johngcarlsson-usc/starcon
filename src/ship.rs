@@ -1159,6 +1159,21 @@ impl Default for CoreAperture {
     }
 }
 
+/// A translucent glow disc parented behind the core; `tick_core_aperture`
+/// pulses its alpha so the strike window flares.
+#[derive(Component, Debug)]
+pub struct CoreHalo;
+
+/// A turret's barrel child — `tick_boss_turrets` swivels it to track the
+/// nearest fighter so the cannons visibly aim before they fire.
+#[derive(Component, Debug)]
+pub struct TurretBarrel;
+
+/// A power-up's pulsing glow-ring child (`tick_powerup_visuals` breathes
+/// its alpha). Carries its own material so each pickup glows independently.
+#[derive(Component, Debug)]
+pub struct PowerUpGlow;
+
 /// A hull-mounted auto-cannon. Each `interval` seconds it fires a bolt
 /// at the nearest player ship within `range`.
 #[derive(Component, Debug)]
@@ -1215,69 +1230,179 @@ pub fn spawn_capital_ship(
     let mesh = meshes.add(Triangle2d::new(tip, bl, br));
     let mat = materials.add(ColorMaterial::from(Color::srgb(0.16, 0.18, 0.24)));
     let pos = Vec2::ZERO;
-    commands.spawn((
-        CapitalShip,
-        BossPart,
-        Mesh2d(mesh),
-        MeshMaterial2d(mat),
-        // Behind the fighters.
-        Transform::from_translation(pos.extend(-1.0)),
-        RigidBody::Static,
-        Collider::triangle(tip, bl, br),
-        boss_part_layers(),
-        Position(pos),
-        Rotation::radians(0.0),
+    // Detailing handles, built once and shared by the child decals below.
+    let panel_mat = materials.add(ColorMaterial::from(Color::srgb(0.22, 0.25, 0.33)));
+    let stripe_mat = materials.add(ColorMaterial::from(Color::srgb(0.34, 0.40, 0.52)));
+    let spine_mat = materials.add(ColorMaterial::from(Color::srgb(0.45, 0.55, 0.72)));
+    let glow_mat = materials.add(ColorMaterial::from(Color::srgba(0.35, 0.7, 1.0, 0.5)));
+    // A slightly inset, lighter wedge so the hull reads as plated, not flat.
+    let panel_mesh = meshes.add(Triangle2d::new(
+        Vec2::new(0.0, 760.0),
+        Vec2::new(-300.0, -640.0),
+        Vec2::new(300.0, -640.0),
     ));
+    // Two long thin stripes lying along the wedge edges (left/right flanks).
+    let edge_len = (tip - bl).length();
+    let edge_angle = (tip - bl).y.atan2((tip - bl).x) - std::f32::consts::FRAC_PI_2;
+    commands
+        .spawn((
+            CapitalShip,
+            BossPart,
+            Mesh2d(mesh),
+            MeshMaterial2d(mat),
+            // Behind the fighters.
+            Transform::from_translation(pos.extend(-1.0)),
+            RigidBody::Static,
+            Collider::triangle(tip, bl, br),
+            boss_part_layers(),
+            Position(pos),
+            Rotation::radians(0.0),
+        ))
+        .with_children(|hull| {
+            // Inset plating.
+            hull.spawn((
+                Mesh2d(panel_mesh.clone()),
+                MeshMaterial2d(panel_mat.clone()),
+                Transform::from_translation(Vec3::new(0.0, 0.0, 0.05)),
+            ));
+            // Central spine running prow-to-stern.
+            hull.spawn((
+                Mesh2d(meshes.add(Rectangle::new(16.0, 1450.0))),
+                MeshMaterial2d(spine_mat.clone()),
+                Transform::from_translation(Vec3::new(0.0, 75.0, 0.07)),
+            ));
+            // Left + right flank stripes, rotated to lie on the wedge edges.
+            for sign in [-1.0_f32, 1.0] {
+                hull.spawn((
+                    Mesh2d(meshes.add(Rectangle::new(10.0, edge_len * 0.92))),
+                    MeshMaterial2d(stripe_mat.clone()),
+                    Transform {
+                        translation: Vec3::new(sign * 178.0, 65.0, 0.06),
+                        rotation: Quat::from_rotation_z(-sign * edge_angle),
+                        scale: Vec3::ONE,
+                    },
+                ));
+            }
+            // Engine glow blobs hanging off the stern (in front of the hull
+            // so they read; squashed into ellipses via scale).
+            for ex in [-180.0_f32, 0.0, 180.0] {
+                hull.spawn((
+                    Mesh2d(meshes.add(Circle::new(60.0))),
+                    MeshMaterial2d(glow_mat.clone()),
+                    Transform {
+                        translation: Vec3::new(ex, -720.0, 0.04),
+                        rotation: Quat::IDENTITY,
+                        scale: Vec3::new(0.9, 0.5, 1.0),
+                    },
+                ));
+            }
+        });
 
     // Hull-mounted auto-cannons along the flanks. They sit just inside
     // the wedge edges so the player has to run the gauntlet up the
-    // sides to reach the prow. Each is its own destructible body.
-    let turret_mat = materials.add(ColorMaterial::from(Color::srgb(0.55, 0.45, 0.20)));
+    // sides to reach the prow. Each is its own destructible body, built
+    // up from a dark base ring, a metal housing, and a swivelling barrel.
+    let ring_mat = materials.add(ColorMaterial::from(Color::srgb(0.10, 0.11, 0.15)));
+    let housing_mat = materials.add(ColorMaterial::from(Color::srgb(0.58, 0.50, 0.28)));
+    let barrel_mat = materials.add(ColorMaterial::from(Color::srgb(0.30, 0.32, 0.38)));
+    let muzzle_mat = materials.add(ColorMaterial::from(Color::srgb(0.85, 0.80, 0.55)));
+    let ring_mesh = meshes.add(Circle::new(34.0));
+    let housing_mesh = meshes.add(Circle::new(26.0));
+    let barrel_mesh = meshes.add(Rectangle::new(12.0, 46.0));
+    let muzzle_mesh = meshes.add(Circle::new(8.0));
     for tp in [
         Vec2::new(-250.0, -500.0),
         Vec2::new(250.0, -500.0),
         Vec2::new(-180.0, 0.0),
         Vec2::new(180.0, 0.0),
     ] {
-        commands.spawn((
-            BossPart,
-            BossHealth { hp: 80, max: 80 },
-            Turret {
-                cooldown_s: 0.8,
-                interval: 1.6,
-                range: 1600.0,
-            },
-            Mesh2d(meshes.add(Circle::new(28.0))),
-            MeshMaterial2d(turret_mat.clone()),
-            Transform::from_translation(tp.extend(0.0)),
-            RigidBody::Static,
-            Collider::circle(28.0),
-            boss_part_layers(),
-            Position(tp),
-            Rotation::radians(0.0),
-        ));
+        commands
+            .spawn((
+                BossPart,
+                BossHealth { hp: 80, max: 80 },
+                Turret {
+                    cooldown_s: 0.8,
+                    interval: 1.6,
+                    range: 1600.0,
+                },
+                Mesh2d(ring_mesh.clone()),
+                MeshMaterial2d(ring_mat.clone()),
+                Transform::from_translation(tp.extend(0.0)),
+                RigidBody::Static,
+                Collider::circle(28.0),
+                boss_part_layers(),
+                Position(tp),
+                Rotation::radians(0.0),
+            ))
+            .with_children(|turret| {
+                // The swivelling barrel — its own parent node so the
+                // aim system can rotate the whole barrel+muzzle group.
+                turret
+                    .spawn((
+                        TurretBarrel,
+                        Transform::from_translation(Vec3::new(0.0, 0.0, 0.02)),
+                        Visibility::default(),
+                    ))
+                    .with_children(|barrel| {
+                        barrel.spawn((
+                            Mesh2d(barrel_mesh.clone()),
+                            MeshMaterial2d(barrel_mat.clone()),
+                            // Pushed forward so it pokes out the front.
+                            Transform::from_translation(Vec3::new(0.0, 22.0, 0.0)),
+                        ));
+                        barrel.spawn((
+                            Mesh2d(muzzle_mesh.clone()),
+                            MeshMaterial2d(muzzle_mat.clone()),
+                            Transform::from_translation(Vec3::new(0.0, 44.0, 0.01)),
+                        ));
+                    });
+                // Housing cap on top of the barrel pivot.
+                turret.spawn((
+                    Mesh2d(housing_mesh.clone()),
+                    MeshMaterial2d(housing_mat.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.0, 0.03)),
+                ));
+            });
     }
 
     // The recessed bridge at the prow — the win target. Sits at the very
     // tip of the wedge, so the fleet has to fight its way up the flanks
     // (under turret fire) and strike the nose during a strike window.
     let core_pos = Vec2::new(0.0, 800.0);
-    commands.spawn((
-        BossPart,
-        CapitalCore,
-        CoreAperture::default(),
-        BossHealth { hp: 400, max: 400 },
-        Mesh2d(meshes.add(Circle::new(42.0))),
-        // Starts closed → dim steel; `tick_core_aperture` recolours it.
-        MeshMaterial2d(materials.add(ColorMaterial::from(CORE_CLOSED_COLOR))),
-        // Drawn above the hull so the glowing weak point reads.
-        Transform::from_translation(core_pos.extend(0.5)),
-        RigidBody::Static,
-        Collider::circle(42.0),
-        boss_part_layers(),
-        Position(core_pos),
-        Rotation::radians(0.0),
-    ));
+    let halo_mat = materials.add(ColorMaterial::from(Color::srgba(1.0, 0.3, 0.26, 0.0)));
+    commands
+        .spawn((
+            BossPart,
+            CapitalCore,
+            CoreAperture::default(),
+            BossHealth { hp: 400, max: 400 },
+            Mesh2d(meshes.add(Circle::new(42.0))),
+            // Starts closed → dim steel; `tick_core_aperture` recolours it.
+            MeshMaterial2d(materials.add(ColorMaterial::from(CORE_CLOSED_COLOR))),
+            // Drawn above the hull so the glowing weak point reads.
+            Transform::from_translation(core_pos.extend(0.5)),
+            RigidBody::Static,
+            Collider::circle(42.0),
+            boss_part_layers(),
+            Position(core_pos),
+            Rotation::radians(0.0),
+        ))
+        .with_children(|core| {
+            // Glow halo behind the core; alpha pulses with the strike
+            // window (driven by tick_core_aperture).
+            core.spawn((
+                CoreHalo,
+                Mesh2d(meshes.add(Circle::new(86.0))),
+                MeshMaterial2d(halo_mat),
+                Transform::from_translation(Vec3::new(0.0, 0.0, -0.05)),
+            ));
+            // A bright inner pip so the bridge has a focal point.
+            core.spawn((
+                Mesh2d(meshes.add(Circle::new(16.0))),
+                MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(1.0, 0.92, 0.85)))),
+                Transform::from_translation(Vec3::new(0.0, 0.0, 0.02)),
+            ));
+        });
 
     info!("boss: capital ship hull + 4 turrets + core spawned");
 }
@@ -1292,8 +1417,10 @@ fn tick_boss_turrets(
     mut cached: Local<Option<(Handle<Mesh>, Handle<ColorMaterial>)>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut turrets: Query<(&Position, &mut Turret)>,
+    mut turrets: Query<(Entity, &Position, &mut Turret)>,
     players: Query<&Position, With<Ship>>,
+    turret_children: Query<&Children>,
+    mut barrels: Query<&mut Transform, With<TurretBarrel>>,
 ) {
     if role.is_guest() {
         return;
@@ -1308,11 +1435,9 @@ fn tick_boss_turrets(
             )
         })
         .clone();
-    for (tpos, mut turret) in &mut turrets {
+    for (turret_entity, tpos, mut turret) in &mut turrets {
         turret.cooldown_s -= dt;
-        if turret.cooldown_s > 0.0 {
-            continue;
-        }
+
         // Nearest player ship by wrap-aware distance.
         let mut best: Option<(f32, Vec2)> = None;
         for p in &players {
@@ -1323,14 +1448,26 @@ fn tick_boss_turrets(
             }
         }
         let Some((d2, target)) = best else { continue };
-        if d2 > turret.range * turret.range {
-            continue;
-        }
-        turret.cooldown_s = turret.interval;
         let dir = (target - tpos.0).normalize_or_zero();
         if dir == Vec2::ZERO {
             continue;
         }
+
+        // Swivel the barrel to track the target every tick — the cannon
+        // visibly leads its shot, whether or not it's ready to fire.
+        let barrel_angle = dir.y.atan2(dir.x) - std::f32::consts::FRAC_PI_2;
+        if let Ok(children) = turret_children.get(turret_entity) {
+            for child in children.iter() {
+                if let Ok(mut bt) = barrels.get_mut(child) {
+                    bt.rotation = Quat::from_rotation_z(barrel_angle);
+                }
+            }
+        }
+
+        if turret.cooldown_s > 0.0 || d2 > turret.range * turret.range {
+            continue;
+        }
+        turret.cooldown_s = turret.interval;
         const BOLT_SPEED: f32 = 560.0;
         let muzzle = tpos.0 + dir * 34.0;
         commands.spawn((
@@ -1519,17 +1656,37 @@ fn tick_powerup_spawner(
     let x = (rng.f32() - 0.5) * 1600.0;
     let y = -1300.0 + rng.f32() * 900.0; // y ∈ [-1300, -400]
     let pos = Vec2::new(x, y);
-    commands.spawn((
-        PowerUp { kind },
-        Mesh2d(meshes.add(Circle::new(22.0))),
-        MeshMaterial2d(materials.add(ColorMaterial::from(kind.color()))),
-        Transform::from_translation(pos.extend(0.3)),
-        RigidBody::Static,
-        Collider::circle(22.0),
-        Sensor,
-        Position(pos),
-        Rotation::radians(0.0),
-    ));
+    let c = kind.color().to_srgba();
+    commands
+        .spawn((
+            PowerUp { kind },
+            Mesh2d(meshes.add(Circle::new(20.0))),
+            MeshMaterial2d(materials.add(ColorMaterial::from(kind.color()))),
+            Transform::from_translation(pos.extend(0.3)),
+            RigidBody::Static,
+            Collider::circle(22.0),
+            Sensor,
+            Position(pos),
+            Rotation::radians(0.0),
+        ))
+        .with_children(|pu| {
+            // Soft outer glow ring — its own material so it can pulse
+            // independently (tick_powerup_visuals breathes the alpha).
+            pu.spawn((
+                PowerUpGlow,
+                Mesh2d(meshes.add(Circle::new(36.0))),
+                MeshMaterial2d(
+                    materials.add(ColorMaterial::from(Color::srgba(c.red, c.green, c.blue, 0.4))),
+                ),
+                Transform::from_translation(Vec3::new(0.0, 0.0, -0.05)),
+            ));
+            // Bright white core pip for a little sparkle.
+            pu.spawn((
+                Mesh2d(meshes.add(Circle::new(8.0))),
+                MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(1.0, 1.0, 1.0)))),
+                Transform::from_translation(Vec3::new(0.0, 0.0, 0.02)),
+            ));
+        });
     info!("powerup spawned: {:?} at ({:.0},{:.0})", kind, x, y);
 }
 
@@ -1713,6 +1870,15 @@ fn tick_bazooka(
                 AngularDamping(0.0),
                 CollisionEventsEnabled,
             ));
+            // Muzzle flash — a quick fading puff at the launch point.
+            commands.spawn((
+                ZapFlash { remaining_s: 0.16, total_s: 0.16 },
+                Sprite::from_color(
+                    Color::srgba(1.0, 0.7, 0.3, 0.9),
+                    Vec2::splat(26.0),
+                ),
+                Transform::from_translation(muzzle.extend(0.46)),
+            ));
         }
         if bz.remaining <= 0.0 {
             commands.entity(entity).try_remove::<BazookaActive>();
@@ -1745,6 +1911,23 @@ fn tick_powerup_buffs(
     }
 }
 
+/// Breathe each floating pickup's glow ring so the drifting power-ups
+/// pulse and read as "grab me" rather than sitting as flat discs.
+fn tick_powerup_visuals(
+    time: Res<Time<Physics>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut glows: Query<(&MeshMaterial2d<ColorMaterial>, &mut Transform), With<PowerUpGlow>>,
+) {
+    let pulse = 0.5 + 0.5 * (time.elapsed_secs() * 3.0).sin();
+    for (mat_handle, mut xf) in &mut glows {
+        if let Some(mat) = materials.get_mut(&mat_handle.0) {
+            let c = mat.color.to_srgba();
+            mat.color = Color::srgba(c.red, c.green, c.blue, 0.22 + 0.32 * pulse);
+        }
+        xf.scale = Vec3::splat(0.85 + 0.25 * pulse);
+    }
+}
+
 /// Core colour while the bridge is armoured shut (dim steel — reads as
 /// "no point shooting yet").
 pub(crate) const CORE_CLOSED_COLOR: Color = Color::srgb(0.26, 0.31, 0.44);
@@ -1758,10 +1941,14 @@ pub(crate) const CORE_OPEN_COLOR: Color = Color::srgb(1.0, 0.30, 0.26);
 fn tick_core_aperture(
     time: Res<Time<Physics>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut cores: Query<(&mut CoreAperture, &MeshMaterial2d<ColorMaterial>, &mut Transform)>,
+    mut cores: Query<
+        (&mut CoreAperture, &MeshMaterial2d<ColorMaterial>, &mut Transform, &Children),
+        Without<CoreHalo>,
+    >,
+    halos: Query<&MeshMaterial2d<ColorMaterial>, With<CoreHalo>>,
 ) {
     let dt = time.delta_secs();
-    for (mut ap, mat_handle, mut xf) in &mut cores {
+    for (mut ap, mat_handle, mut xf, children) in &mut cores {
         ap.timer -= dt;
         if ap.timer <= 0.0 {
             ap.open = !ap.open;
@@ -1770,15 +1957,26 @@ fn tick_core_aperture(
         // Visual state. Open: hot red with a fast brightness pulse and a
         // slight bulge so the bridge looks like it's flaring out of its
         // housing. Closed: steady dim steel, sitting flush.
+        let pulse = 0.6 + 0.4 * (time.elapsed_secs() * 9.0).sin().abs();
         if let Some(mat) = materials.get_mut(&mat_handle.0) {
             if ap.open {
-                let pulse = 0.6 + 0.4 * (time.elapsed_secs() * 9.0).sin().abs();
                 let b = CORE_OPEN_COLOR.to_srgba();
                 mat.color = Color::srgb(b.red * pulse, b.green * pulse, b.blue * pulse);
                 xf.scale = Vec3::splat(1.0 + 0.12 * pulse);
             } else {
                 mat.color = CORE_CLOSED_COLOR;
                 xf.scale = Vec3::ONE;
+            }
+        }
+        // Pulse the halo's alpha with the window — invisible when shut,
+        // flaring while open.
+        let halo_alpha = if ap.open { 0.25 + 0.35 * pulse } else { 0.0 };
+        for child in children.iter() {
+            if let Ok(halo_handle) = halos.get(child) {
+                if let Some(hmat) = materials.get_mut(&halo_handle.0) {
+                    let c = hmat.color.to_srgba();
+                    hmat.color = Color::srgba(c.red, c.green, c.blue, halo_alpha);
+                }
             }
         }
     }
@@ -2217,6 +2415,7 @@ impl Plugin for ShipPlugin {
                     tick_bazooka,
                     tick_powerup_buffs,
                     tick_core_aperture,
+                    tick_powerup_visuals,
                 ),
             )
                 .run_if(crate::netcode::role_is_authoritative),
