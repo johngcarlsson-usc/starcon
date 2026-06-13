@@ -1280,6 +1280,7 @@ fn variant_for_class(class: ShipClass) -> UltimateVariant {
         ShipClass::Tauar => UltimateVariant::Arilou,
         ShipClass::Tauem => UltimateVariant::Arilou,
         ShipClass::Taule => UltimateVariant::Arilou,
+        ShipClass::Taumc => UltimateVariant::Arilou,
     }
 }
 

@@ -351,6 +351,7 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("tauar", include_str!("../assets/ships/tauar.ini"), include_str!("../assets/ships/tauar.txt")),
     ("tauem", include_str!("../assets/ships/tauem.ini"), include_str!("../assets/ships/tauem.txt")),
     ("taule", include_str!("../assets/ships/taule.ini"), include_str!("../assets/ships/taule.txt")),
+    ("taumc", include_str!("../assets/ships/taumc.ini"), include_str!("../assets/ships/taumc.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -508,7 +509,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 30] = [
+pub const ALL_CLASSES: [ShipClass; 31] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -542,6 +543,7 @@ pub const ALL_CLASSES: [ShipClass; 30] = [
     ShipClass::Tauar,
     ShipClass::Tauem,
     ShipClass::Taule,
+    ShipClass::Taumc,
 ];
 
 /// How rotation responds to forces.
@@ -676,6 +678,11 @@ pub enum ShipClass {
     /// when it kills crew — the food homes to the Leviathan and heals it.
     /// Special: a homing missile that disables an enemy's engine on hit.
     Taule,
+    /// Tau Missile Cruiser (TW-Light fan ship, author "Tau"). Slow heavy
+    /// hull. Primary: a lock-on homing torpedo with splash blast (must
+    /// hold aim on the target to lock). Special: a rapid burst of
+    /// auto-tracking missiles drawn from a small ammo pool.
+    Taumc,
 }
 
 impl ShipClass {
@@ -712,6 +719,7 @@ impl ShipClass {
             ShipClass::Tauar => "tauar",
             ShipClass::Tauem => "tauem",
             ShipClass::Taule => "taule",
+            ShipClass::Taumc => "taumc",
         }
     }
 }
@@ -2320,6 +2328,45 @@ impl Default for TauleState {
     }
 }
 
+/// Tau Missile Cruiser runtime: the two torpedo tubes' recharge timers +
+/// which fires next, the lock-on accumulator + held-edge for the primary,
+/// and the special's ammo pool / recharge / cadence + held-edge.
+#[derive(Component, Debug)]
+pub struct TaumcState {
+    pub tube_cd: [f32; 2],
+    pub next_tube: usize,
+    pub lock_s: f32,
+    pub last_fire_held: bool,
+    pub ammo: i32,
+    pub ammo_cd_s: f32,
+    pub fire_cd_s: f32,
+    pub current_barrel: u32,
+}
+
+impl Default for TaumcState {
+    fn default() -> Self {
+        Self {
+            tube_cd: [0.0, 0.0],
+            next_tube: 0,
+            lock_s: 0.0,
+            last_fire_held: false,
+            ammo: 4,
+            ammo_cd_s: 0.0,
+            fire_cd_s: 0.0,
+            current_barrel: 0,
+        }
+    }
+}
+
+/// A Tau MC homing torpedo: on detonation it also deals `blast` splash to
+/// enemy ships within `blast_range` (`handle_torpedo_blast`).
+#[derive(Component, Debug)]
+pub struct TauMcTorpedo {
+    pub owner_slot: usize,
+    pub blast: i32,
+    pub blast_range: f32,
+}
+
 /// A corrosive-slime ball fired by the Leviathan primary. On a ship hit
 /// it drops `LeviathanFood` pellets (handled in `handle_slimeball_hits`).
 #[derive(Component, Debug)]
@@ -2521,6 +2568,9 @@ impl Plugin for ShipPlugin {
                     // handler despawns the projectile.
                     handle_leviathan_hits.before(handle_projectile_hits),
                     tick_leviathan_food,
+                    tick_taumc_primary,
+                    tick_taumc_special,
+                    handle_torpedo_blast.before(handle_projectile_hits),
                 ),
                 tick_alary_turrets,
                 tick_shofixti_glory,
@@ -3162,6 +3212,9 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Taule) {
         entity.insert(TauleState::default());
+    }
+    if matches!(class, ShipClass::Taumc) {
+        entity.insert(TaumcState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -4476,6 +4529,18 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 0.0,
             },
         }),
+        // Missile Cruiser: lock-on splash torpedo + rapid tracking-missile
+        // burst, both owned by dedicated systems.
+        ShipClass::Taumc => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "taumc-torpedo" },
+                cooldown_s: 0.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "taumc-missiles" },
+                cooldown_s: 0.0,
+            },
+        }),
     }
 }
 
@@ -4525,6 +4590,9 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
 
         // taule: 0-indexed 4-digit `ship_s_NNNN.png`, frame 0 = north.
         ShipClass::Taule => format!("ship_s_{:04}.png", frame),
+
+        // taumc: 0-indexed `ship_sNN.png` (ship_s00 = north).
+        ShipClass::Taumc => format!("ship_s{:02}.png", frame),
 
         // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
         _ => format!("ship_s{:02}.png", frame + 1),
@@ -5139,6 +5207,8 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Tauar => 22.0,
         // Leviathan is a big bio-cruiser (Mass 19, Crew 36).
         ShipClass::Taule => 26.0,
+        // Missile Cruiser — slow, heavy (Mass 19, Crew 32).
+        ShipClass::Taumc => 24.0,
         ShipClass::Chmav | ShipClass::Kohma | ShipClass::Chebr => 28.0,
         ShipClass::Kzedr => 34.0,
         // Alary is the biggest, heaviest hull in the roster.
@@ -7071,6 +7141,261 @@ fn tick_leviathan_food(
                 vel.0 += (to / d) * pull;
             }
         }
+    }
+}
+
+/// Tau Missile Cruiser primary — `shptaumc.cpp:activate_weapon` + the
+/// lock logic in `calculate`. You must hold your nose on a hostile (an
+/// enemy ship, or a boss part in co-op) within LockAngle for LockCount
+/// ticks to acquire a lock; then a held trigger launches a slow homing
+/// torpedo from one of two tubes (each on its own recharge). The torpedo
+/// also deals splash (`handle_torpedo_blast`).
+#[allow(clippy::too_many_arguments)]
+fn tick_taumc_primary(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut TaumcState,
+    )>,
+    enemies: Query<(&Ship, &Position)>,
+    boss_parts: Query<&Position, With<BossHealth>>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 55.0 * SC2_VEL_SCALE; // [Weapon] Velocity 55
+    let range = 90.0 * SC2_RANGE_SCALE; // Range 90
+    let lifetime = range / speed;
+    let damage = 4; // Damage 4
+    let blast = 8; // BlastDamage 8
+    let blast_range = 200.0; // BlastRange 200 (already world-scaled small)
+    let turn_rate = sc2_turning(5.0); // TurnRate 5
+    let tube_recharge = 70.0 / 20.0; // [Weapon] Rate 70 frames
+    let lock_angle = 20.0_f32.to_radians(); // LockAngle 20°
+    let lock_time = 5.0 / 20.0; // LockCount 4 (+1) ticks
+
+    for (entity, ship, pos, rot, lvel, mut st) in &mut ships {
+        st.tube_cd[0] = (st.tube_cd[0] - dt).max(0.0);
+        st.tube_cd[1] = (st.tube_cd[1] - dt).max(0.0);
+
+        // Nearest hostile: enemy ship (versus) or boss part (co-op).
+        let mut best: Option<(f32, Vec2)> = None;
+        for (es, ep) in &enemies {
+            if es.player_slot == ship.player_slot {
+                continue;
+            }
+            let img = crate::physics::nearest_image(ep.0, pos.0);
+            let d2 = img.distance_squared(pos.0);
+            if best.map_or(true, |(bd, _)| d2 < bd) {
+                best = Some((d2, img));
+            }
+        }
+        for bp in &boss_parts {
+            let img = crate::physics::nearest_image(bp.0, pos.0);
+            let d2 = img.distance_squared(pos.0);
+            if best.map_or(true, |(bd, _)| d2 < bd) {
+                best = Some((d2, img));
+            }
+        }
+
+        // Accumulate / drop the lock.
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let locked_on = best.is_some_and(|(d2, tgt)| {
+            if d2 > range * range {
+                return false;
+            }
+            let to = (tgt - pos.0).normalize_or_zero();
+            let ang = forward.perp_dot(to).atan2(forward.dot(to)).abs();
+            ang <= lock_angle
+        });
+        if locked_on {
+            st.lock_s += dt;
+        } else {
+            st.lock_s = 0.0;
+        }
+
+        let fire = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        st.last_fire_held = fire;
+        if !fire || st.lock_s < lock_time {
+            continue;
+        }
+        // Pick a ready tube (prefer the scheduled one).
+        let tube = if st.tube_cd[st.next_tube] <= 0.0 {
+            st.next_tube
+        } else if st.tube_cd[1 - st.next_tube] <= 0.0 {
+            1 - st.next_tube
+        } else {
+            continue; // both reloading
+        };
+        st.tube_cd[tube] = tube_recharge;
+        st.next_tube = 1 - tube;
+
+        let right = Vec2::new(rot.cos, rot.sin);
+        let muzzle = pos.0 + right * (20.0 * (2.0 * tube as f32 - 1.0)) + forward * 25.0;
+        let mvel = lvel.0 + forward * speed;
+        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+        commands.spawn((
+            Projectile { owner: entity, damage, lifetime },
+            Homing { target: None, turn_rate },
+            TauMcTorpedo { owner_slot: ship.player_slot, blast, blast_range },
+            // Fat blue torpedo.
+            Sprite::from_color(Color::srgb(0.45, 0.6, 1.0), Vec2::new(10.0, 22.0)),
+            Transform::from_translation(muzzle.extend(0.5)),
+            (
+                RigidBody::Dynamic,
+                Collider::circle(8.0),
+                Sensor,
+                Mass(1.2),
+                Position(muzzle),
+                Rotation::radians(init_angle),
+                LinearVelocity(mvel),
+                AngularVelocity::ZERO,
+                LinearDamping(0.0),
+                AngularDamping(0.0),
+                CollisionEventsEnabled,
+            ),
+        ));
+    }
+}
+
+/// Tau Missile Cruiser special — `shptaumc.cpp:activate_special`. A rapid
+/// burst of auto-tracking missiles (TrackAngle-coned homing) drawn from a
+/// small ammo pool that slowly refills. NOTE: the original aims a manually
+/// steerable turret (special+left/right) and requires fire held; that
+/// dual-control scheme doesn't map onto our one-button-per-action model,
+/// so here the missiles simply track the nearest target and fire on the
+/// special button.
+fn tick_taumc_special(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut TaumcState,
+    )>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 90.0 * SC2_VEL_SCALE; // [Special] Velocity 90
+    let range = 20.0 * SC2_RANGE_SCALE; // Range 20
+    let lifetime = range / speed;
+    let damage = 3; // Damage 3
+    let turn_rate = sc2_turning(5.0); // TurnRate 5
+    let cone = 30.0_f32.to_radians(); // TrackAngle 30°
+    let ammo_max = 4;
+    let ammo_recharge = 20.0 / 20.0; // [Special] Rate 20 frames → 1 s/ammo
+    let fire_rate = 2.0 / 20.0; // [Ship] SpecialRate 2 frames
+
+    for (entity, ship, pos, rot, lvel, mut st) in &mut ships {
+        st.fire_cd_s = (st.fire_cd_s - dt).max(0.0);
+        if st.ammo < ammo_max {
+            st.ammo_cd_s -= dt;
+            if st.ammo_cd_s <= 0.0 {
+                st.ammo_cd_s = ammo_recharge;
+                st.ammo += 1;
+            }
+        }
+
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
+        if !held || st.fire_cd_s > 0.0 || st.ammo <= 0 {
+            continue;
+        }
+        st.ammo -= 1;
+        st.fire_cd_s = fire_rate;
+
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let right = Vec2::new(rot.cos, rot.sin);
+        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+        // Two missiles per activation, from the rolling barrel pair.
+        for k in 0..2 {
+            let off = (st.current_barrel as f32 + k as f32 * 2.0 - 1.5) * 6.0;
+            let muzzle = pos.0 + right * off + forward * 23.0;
+            let mvel = lvel.0 + forward * speed;
+            commands.spawn((
+                Projectile { owner: entity, damage, lifetime },
+                Homing { target: None, turn_rate },
+                HomingCone(cone),
+                Sprite::from_color(Color::srgb(0.6, 0.85, 1.0), Vec2::new(5.0, 13.0)),
+                Transform::from_translation(muzzle.extend(0.48)),
+                (
+                    RigidBody::Dynamic,
+                    Collider::circle(4.0),
+                    Sensor,
+                    Mass(0.3),
+                    Position(muzzle),
+                    Rotation::radians(init_angle),
+                    LinearVelocity(mvel),
+                    AngularVelocity::ZERO,
+                    LinearDamping(0.0),
+                    AngularDamping(0.0),
+                    CollisionEventsEnabled,
+                ),
+            ));
+        }
+        st.current_barrel = (st.current_barrel + 1) % 4;
+    }
+}
+
+/// Splash damage for the MC torpedo: when a `TauMcTorpedo` collides with
+/// a ship or boss part, deal its `blast` to every enemy ship within
+/// `blast_range` (shield-aware). Runs before `handle_projectile_hits`
+/// (which applies the direct hit + despawns the torpedo).
+fn handle_torpedo_blast(
+    mut commands: Commands,
+    mut reader: MessageReader<CollisionStart>,
+    assets: Res<AssetServer>,
+    torpedoes: Query<(&TauMcTorpedo, &Position)>,
+    ship_q: Query<(), With<Ship>>,
+    boss_q: Query<(), With<BossHealth>>,
+    targets: Query<(Entity, &Ship, &Position)>,
+    shields: Query<&ShieldActive>,
+    mut crews: Query<&mut Crew>,
+) {
+    let mut detonated: bevy::platform::collections::HashSet<Entity> =
+        bevy::platform::collections::HashSet::default();
+    for ev in reader.read() {
+        let (torp_e, other_e) = if torpedoes.get(ev.collider1).is_ok() {
+            (ev.collider1, ev.collider2)
+        } else if torpedoes.get(ev.collider2).is_ok() {
+            (ev.collider2, ev.collider1)
+        } else {
+            continue;
+        };
+        // Only detonate against a ship or a boss part.
+        if ship_q.get(other_e).is_err() && boss_q.get(other_e).is_err() {
+            continue;
+        }
+        if detonated.contains(&torp_e) {
+            continue;
+        }
+        let Ok((torp, tpos)) = torpedoes.get(torp_e) else { continue };
+        detonated.insert(torp_e);
+        for (te, ts, tp) in &targets {
+            if ts.player_slot == torp.owner_slot {
+                continue;
+            }
+            let d = crate::physics::min_image(tp.0 - tpos.0).length();
+            if d > torp.blast_range {
+                continue;
+            }
+            let factor = shields.get(te).map(|s| s.damage_factor).unwrap_or(1.0);
+            let dmg = ((torp.blast as f32 * factor).round() as i32).max(0);
+            if dmg > 0 {
+                if let Ok(mut crew) = crews.get_mut(te) {
+                    crew.current = (crew.current - dmg).max(0);
+                }
+            }
+        }
+        spawn_asteroid_explosion(&mut commands, &assets, tpos.0, 40.0);
     }
 }
 
