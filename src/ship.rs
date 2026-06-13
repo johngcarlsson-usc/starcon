@@ -2273,13 +2273,40 @@ pub struct TauarState {
 }
 
 /// Tau EMP managed-weapon runtime: the primary's per-shot cooldown +
-/// held-edge, and the rolling barrel `slot` (0..6) that drives the
-/// alternating muzzle offset (`shptauem.cpp:activate_weapon`).
+/// held-edge, the rolling barrel `slot` (0..6) that drives the
+/// alternating muzzle offset (`shptauem.cpp:activate_weapon`), and the
+/// special's held-edge + live EMP-wave radius (0 = no wave).
 #[derive(Component, Debug, Default)]
 pub struct TauemState {
     pub weapon_cd_s: f32,
     pub last_fire_held: bool,
     pub slot: u32,
+    pub last_special_held: bool,
+    /// Current EMP wave radius while a discharge is propagating; 0 idle.
+    pub wave_radius: f32,
+}
+
+/// A control-jam stamped on a ship by a Tau EMP wave
+/// (`shptauem.cpp:OverrideControlTauEMP`). For `remaining` seconds the
+/// `mask` bits — the buttons the victim was *holding* at the instant the
+/// wave caught it — are cleared from its input each tick, so exactly the
+/// controls that were active get frozen. `apply_control_jams` enforces it
+/// just after the per-slot inputs are gathered.
+#[derive(Component, Debug)]
+pub struct ControlJam {
+    pub mask: u8,
+    pub remaining: f32,
+}
+
+/// The expanding blue shockwave ring drawn when a Tau EMP discharges.
+/// Purely cosmetic — `tick_emp_wave_visual` grows its radius and fades it
+/// out over `duration`, then despawns it. (The jam logic lives in
+/// `tick_tauem_special`; this just makes the wave visible.)
+#[derive(Component, Debug)]
+pub struct EmpWaveVisual {
+    pub elapsed: f32,
+    pub duration: f32,
+    pub max_r: f32,
 }
 
 /// Per-ship rolling state for Inertial-mode steering. Bevy's
@@ -2305,7 +2332,19 @@ impl Plugin for ShipPlugin {
             .init_resource::<AngularControlOverride>()
             .init_resource::<PowerUpSpawner>()
             .add_message::<PowerUpPicked>()
-            .add_systems(Update, (class_picker_input, cycle_angular_override));
+            .add_systems(Update, (class_picker_input, cycle_angular_override))
+            // EMP control-jam enforcement: clear the jammed bits right
+            // after inputs are gathered and BEFORE `apply_player_input`
+            // reads them, so the victim's thrust/turn are frozen this same
+            // tick (the core of the EMP). Authoritative-only, matching the
+            // host-driven combat sim that stamps the jams.
+            .add_systems(
+                FixedUpdate,
+                apply_control_jams
+                    .after(input::gather_slot_inputs)
+                    .before(apply_player_input)
+                    .run_if(crate::netcode::role_is_authoritative),
+            );
         // Bevy 0.18's `add_systems` macro caps a single tuple at 20
         // entries. We've outgrown it; split into two FixedUpdate
         // groups (the order across groups is unconstrained, but each
@@ -2424,6 +2463,7 @@ impl Plugin for ShipPlugin {
                     tick_taugl_special,
                     tick_tauar_primary,
                     tick_tauem_primary,
+                    tick_tauem_special,
                     tick_archon_spiral,
                 ),
                 tick_alary_turrets,
@@ -2452,7 +2492,7 @@ impl Plugin for ShipPlugin {
         // identically — solo play is unchanged.
         .add_systems(
             FixedUpdate,
-            (tick_zap_flashes, tick_asteroid_explosions),
+            (tick_zap_flashes, tick_asteroid_explosions, tick_emp_wave_visual),
         )
         // Host-only: enqueue visual events for any explosion / zap
         // the authority systems just spawned, so the next snapshot
@@ -6544,6 +6584,140 @@ fn tick_tauem_primary(
             AngularDamping(0.0),
             CollisionEventsEnabled,
         ));
+    }
+}
+
+/// Tau EMP special — `shptauem.cpp:calculate_fire_special`. A full-
+/// battery discharge: when fired (battery must be FULL and no wave
+/// already running), the battery empties to 0 and an EMP ring starts at
+/// `0.75 × size` and expands at SpecialVelocity until it passes
+/// SpecialRange. Each tick the ring is live, every enemy ship inside the
+/// *current* radius that is actively holding a control gets jammed — its
+/// held buttons frozen for `a × JamTime` seconds, where
+/// `a = 1 − (dist/range)^(1/attenuation)` (closer = longer, min 0.1).
+fn tick_tauem_special(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut ring_mesh: Local<Option<Handle<Mesh>>>,
+    boss: Query<(), With<CapitalCore>>,
+    mut emps: Query<(&Ship, &Position, &mut TauemState, &mut Battery)>,
+    others: Query<(Entity, &Ship, &Position)>,
+) {
+    // EMP jams *enemies*; in boss co-op every fighter is one team, so the
+    // wave has nothing to bite — skip the scan entirely there.
+    let coop = !boss.is_empty();
+    let dt = time.delta_secs();
+    let range = 7.0 * SC2_RANGE_SCALE; // [Special] Range 7
+    let velocity = 50.0 * SC2_VEL_SCALE; // Velocity 50
+    let jam_time = 5.0; // JamTime 5.0 s
+    let attenuation = 1.0; // Attenuation 1
+    // Collect jams to apply after the ship loop (avoids overlapping the
+    // `emps` and `others` borrows; they can share entities).
+    let mut jams: Vec<(Entity, u8, f32)> = Vec::new();
+
+    for (ship, pos, mut st, mut batt) in &mut emps {
+        // Propagate an active wave and jam whatever it sweeps over.
+        if st.wave_radius > 0.1 {
+            st.wave_radius += velocity * dt;
+            if st.wave_radius > range {
+                st.wave_radius = 0.0;
+            } else if !coop {
+                let r = st.wave_radius;
+                for (oe, os, opos) in &others {
+                    if os.player_slot == ship.player_slot {
+                        continue; // self / teammate
+                    }
+                    let d = crate::physics::min_image(opos.0 - pos.0).length();
+                    if d > r {
+                        continue;
+                    }
+                    let held = slot_inputs.held[os.player_slot.min(3)].buttons;
+                    if held == 0 {
+                        continue; // only freezes controls that are active
+                    }
+                    let a = (1.0 - (d / range).powf(1.0 / attenuation)).max(0.1);
+                    jams.push((oe, held, a * jam_time));
+                }
+            }
+        }
+
+        // Fire a fresh discharge: needs a full battery and no live wave.
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
+        let just = held && !st.last_special_held;
+        st.last_special_held = held;
+        if just && st.wave_radius <= 0.0 && batt.current >= batt.max {
+            batt.current = 0;
+            st.wave_radius = 24.0; // ≈ 0.75 × hull size
+            // Cosmetic shockwave ring (unit annulus scaled each tick).
+            let mesh = ring_mesh
+                .get_or_insert_with(|| meshes.add(Annulus::new(0.86, 1.0)))
+                .clone();
+            let duration = (range - 24.0) / velocity;
+            commands.spawn((
+                EmpWaveVisual { elapsed: 0.0, duration, max_r: range },
+                Mesh2d(mesh),
+                MeshMaterial2d(
+                    materials.add(ColorMaterial::from(Color::srgba(0.4, 0.5, 1.0, 0.7))),
+                ),
+                Transform::from_translation(pos.0.extend(0.42)).with_scale(Vec3::splat(24.0)),
+            ));
+        }
+    }
+
+    for (entity, mask, secs) in jams {
+        // Refresh (don't stack) the jam; latest sweep wins.
+        commands
+            .entity(entity)
+            .try_insert(ControlJam { mask, remaining: secs });
+    }
+}
+
+/// Enforce active `ControlJam`s: clear the jammed button bits from the
+/// victim's gathered input each tick, then age the jam out. Runs right
+/// after `gather_slot_inputs` (same set) so every downstream consumer
+/// reads the masked input.
+fn apply_control_jams(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut inputs: ResMut<input::SlotInputs>,
+    mut jammed: Query<(Entity, &Ship, &mut ControlJam)>,
+) {
+    let dt = time.delta_secs();
+    for (entity, ship, mut jam) in &mut jammed {
+        let slot = ship.player_slot.min(3);
+        inputs.held[slot].buttons &= !jam.mask;
+        inputs.just_pressed[slot].buttons &= !jam.mask;
+        jam.remaining -= dt;
+        if jam.remaining <= 0.0 {
+            commands.entity(entity).try_remove::<ControlJam>();
+        }
+    }
+}
+
+/// Grow + fade the Tau EMP shockwave ring, despawning it when spent.
+fn tick_emp_wave_visual(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut rings: Query<(Entity, &mut EmpWaveVisual, &mut Transform, &MeshMaterial2d<ColorMaterial>)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut ring, mut xf, mat) in &mut rings {
+        ring.elapsed += dt;
+        let t = (ring.elapsed / ring.duration).clamp(0.0, 1.0);
+        xf.scale = Vec3::splat(24.0 + (ring.max_r - 24.0) * t);
+        if let Some(m) = materials.get_mut(&mat.0) {
+            let c = m.color.to_srgba();
+            m.color = Color::srgba(c.red, c.green, c.blue, 0.7 * (1.0 - t));
+        }
+        if ring.elapsed >= ring.duration {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
+        }
     }
 }
 
