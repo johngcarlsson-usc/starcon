@@ -350,6 +350,7 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("taugl", include_str!("../assets/ships/taugl.ini"), include_str!("../assets/ships/taugl.txt")),
     ("tauar", include_str!("../assets/ships/tauar.ini"), include_str!("../assets/ships/tauar.txt")),
     ("tauem", include_str!("../assets/ships/tauem.ini"), include_str!("../assets/ships/tauem.txt")),
+    ("taule", include_str!("../assets/ships/taule.ini"), include_str!("../assets/ships/taule.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -507,7 +508,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 29] = [
+pub const ALL_CLASSES: [ShipClass; 30] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -540,6 +541,7 @@ pub const ALL_CLASSES: [ShipClass; 29] = [
     ShipClass::Taugl,
     ShipClass::Tauar,
     ShipClass::Tauem,
+    ShipClass::Taule,
 ];
 
 /// How rotation responds to forces.
@@ -669,6 +671,11 @@ pub enum ShipClass {
     /// Primary: a rapid alternating-muzzle bolt. Special: a full-battery
     /// EMP wave that jams enemy controls (ported in a following step).
     Tauem,
+    /// Tau Leviathan (TW-Light fan ship, author "Tau"). Big bio-cruiser.
+    /// Primary: a corrosive "slime" gas that drops edible "food" pellets
+    /// when it kills crew — the food homes to the Leviathan and heals it.
+    /// Special: a homing missile that disables an enemy's engine on hit.
+    Taule,
 }
 
 impl ShipClass {
@@ -704,6 +711,7 @@ impl ShipClass {
             ShipClass::Taugl => "taugl",
             ShipClass::Tauar => "tauar",
             ShipClass::Tauem => "tauem",
+            ShipClass::Taule => "taule",
         }
     }
 }
@@ -2286,6 +2294,48 @@ pub struct TauemState {
     pub wave_radius: f32,
 }
 
+/// Tau Leviathan managed-weapon runtime: primary held-edge + per-shot
+/// cooldown, special held-edge + cooldown, the alternating missile side,
+/// and the slow passive-heal accumulator.
+#[derive(Component, Debug)]
+pub struct TauleState {
+    pub weapon_cd_s: f32,
+    pub last_fire_held: bool,
+    pub special_cd_s: f32,
+    pub last_special_held: bool,
+    pub missile_side: f32,
+    pub heal_accum_s: f32,
+}
+
+impl Default for TauleState {
+    fn default() -> Self {
+        Self {
+            weapon_cd_s: 0.0,
+            last_fire_held: false,
+            special_cd_s: 0.0,
+            last_special_held: false,
+            missile_side: 1.0,
+            heal_accum_s: 0.0,
+        }
+    }
+}
+
+/// A corrosive-slime ball fired by the Leviathan primary. On a ship hit
+/// it drops `LeviathanFood` pellets (handled in `handle_slimeball_hits`).
+#[derive(Component, Debug)]
+pub struct SlimeBall {
+    pub owner: Entity,
+}
+
+/// An edible "food" pellet dropped when a Leviathan slime kill lands. It
+/// drifts, decays, homes toward its owning Leviathan when near, and on
+/// contact heals the owner's crew + battery (`tick_leviathan_food`).
+#[derive(Component, Debug)]
+pub struct LeviathanFood {
+    pub owner: Entity,
+    pub lifetime_s: f32,
+}
+
 /// A control-jam stamped on a ship by a Tau EMP wave
 /// (`shptauem.cpp:OverrideControlTauEMP`). For `remaining` seconds the
 /// `mask` bits — the buttons the victim was *holding* at the instant the
@@ -2465,6 +2515,12 @@ impl Plugin for ShipPlugin {
                     tick_tauem_primary,
                     tick_tauem_special,
                     tick_archon_spiral,
+                    tick_taule_primary,
+                    tick_taule_special,
+                    // Must read the slime/missile hit before the generic
+                    // handler despawns the projectile.
+                    handle_leviathan_hits.before(handle_projectile_hits),
+                    tick_leviathan_food,
                 ),
                 tick_alary_turrets,
                 tick_shofixti_glory,
@@ -3103,6 +3159,9 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Tauem) {
         entity.insert(TauemState::default());
+    }
+    if matches!(class, ShipClass::Taule) {
+        entity.insert(TauleState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -4405,6 +4464,18 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 0.0,
             },
         }),
+        // Leviathan: corrosive-slime primary (drops homing food on kills)
+        // + engine-disable homing missile, both owned by dedicated systems.
+        ShipClass::Taule => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "taule-slime" },
+                cooldown_s: 0.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "taule-missile" },
+                cooldown_s: 0.0,
+            },
+        }),
     }
 }
 
@@ -4451,6 +4522,9 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
         // rotation), frame 0 = north. (`ship_s01_NN` is the EMP-flash
         // alternate the original blends in; we use the base set.)
         ShipClass::Tauem => format!("ship_s00_{:02}.png", frame),
+
+        // taule: 0-indexed 4-digit `ship_s_NNNN.png`, frame 0 = north.
+        ShipClass::Taule => format!("ship_s_{:04}.png", frame),
 
         // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
         _ => format!("ship_s{:02}.png", frame + 1),
@@ -5063,6 +5137,8 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Orzne
         | ShipClass::Meltr
         | ShipClass::Tauar => 22.0,
+        // Leviathan is a big bio-cruiser (Mass 19, Crew 36).
+        ShipClass::Taule => 26.0,
         ShipClass::Chmav | ShipClass::Kohma | ShipClass::Chebr => 28.0,
         ShipClass::Kzedr => 34.0,
         // Alary is the biggest, heaviest hull in the roster.
@@ -6716,6 +6792,283 @@ fn tick_emp_wave_visual(
         if ring.elapsed >= ring.duration {
             if let Ok(mut ec) = commands.get_entity(e) {
                 ec.try_despawn();
+            }
+        }
+    }
+}
+
+/// Tau Leviathan primary — `shptaule.cpp:activate_weapon`. A corrosive
+/// "slime" gas ball, fired forward with a ±Spread random jitter; it flies
+/// range-limited and deals Damage on contact. When it KILLS crew on a
+/// ship (`handle_leviathan_hits`), each point of crew lost drops a homing
+/// food pellet. Also runs the Leviathan's slow passive crew regen.
+fn tick_taule_primary(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut rng: ResMut<crate::rng::GameRng>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut TauleState,
+        &mut Battery,
+        &mut Crew,
+    )>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 60.0 * SC2_VEL_SCALE; // [Weapon] Velocity 60
+    let range = 12.0 * SC2_RANGE_SCALE; // Range 12
+    let lifetime = range / speed;
+    let damage = 2; // Damage 2
+    let spread = 10.0_f32.to_radians(); // Spread 10°
+    let drain = 2; // WeaponDrain 2
+    let weapon_rate_s = 0.05; // WeaponRate 1 frame
+    // Slow passive crew regen ("normal recharge rate is slow"). HealingRate
+    // 260 frames ≈ 13 s/crew in canon; we use a touch faster so it reads.
+    let heal_interval = 8.0;
+
+    for (entity, ship, pos, rot, lvel, mut st, mut batt, mut crew) in &mut ships {
+        // Passive regen.
+        st.heal_accum_s += dt;
+        if st.heal_accum_s >= heal_interval {
+            st.heal_accum_s -= heal_interval;
+            crew.current = (crew.current + 1).min(crew.max);
+        }
+
+        if st.weapon_cd_s > 0.0 {
+            st.weapon_cd_s -= dt;
+        }
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        st.last_fire_held = held;
+        if !held || st.weapon_cd_s > 0.0 || batt.current < drain {
+            continue;
+        }
+        batt.current -= drain;
+        st.weapon_cd_s = weapon_rate_s;
+
+        let base = Vec2::new(-rot.sin, rot.cos);
+        // Random spread around the forward heading.
+        let s = rng.signed_unit() * spread;
+        let (ss, cs) = s.sin_cos();
+        let dir = Vec2::new(base.x * cs - base.y * ss, base.x * ss + base.y * cs);
+        let muzzle = pos.0 + base * 30.0;
+        let shot_vel = lvel.0 + dir * speed;
+        let init_angle = dir.y.atan2(dir.x) - FRAC_PI_2;
+
+        commands.spawn((
+            Projectile { owner: entity, damage, lifetime },
+            SlimeBall { owner: entity },
+            // Sickly green glob.
+            Sprite::from_color(Color::srgb(0.55, 0.85, 0.25), Vec2::new(11.0, 11.0)),
+            Transform::from_translation(muzzle.extend(0.45)),
+            RigidBody::Dynamic,
+            Collider::circle(6.0),
+            Sensor,
+            Mass(0.4),
+            Position(muzzle),
+            Rotation::radians(init_angle),
+            LinearVelocity(shot_vel),
+            AngularVelocity::ZERO,
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ));
+    }
+}
+
+/// Tau Leviathan special — `shptaule.cpp:activate_special`. A homing
+/// missile launched from an alternating side. On hitting a ship it
+/// disables the victim's engine (left/right/thrust) for a short while
+/// (`OverrideControlLeviathan`, applied in `handle_leviathan_hits` via
+/// `ControlJam`). SpecialDrain 4, SpecialRate 12.
+fn tick_taule_special(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut TauleState,
+        &mut Battery,
+    )>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 80.0 * SC2_VEL_SCALE; // [Special] Velocity 80
+    let range = 45.0 * SC2_RANGE_SCALE; // Range 45
+    let lifetime = range / speed;
+    let damage = 1; // Damage 1
+    let turn_rate = sc2_turning(10.0); // TurnRate 10
+    let drain = 4; // SpecialDrain 4
+    let cooldown = 12.0 / 20.0; // SpecialRate 12
+
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        if st.special_cd_s > 0.0 {
+            st.special_cd_s -= dt;
+        }
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
+        let just = held && !st.last_special_held;
+        st.last_special_held = held;
+        if !just || st.special_cd_s > 0.0 || batt.current < drain {
+            continue;
+        }
+        batt.current -= drain;
+        st.special_cd_s = cooldown;
+
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let right = Vec2::new(rot.cos, rot.sin);
+        let muzzle = pos.0 + right * (22.0 * st.missile_side) + forward * 5.0;
+        st.missile_side = -st.missile_side;
+        let mvel = lvel.0 + forward * speed;
+        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+
+        commands.spawn((
+            Projectile { owner: entity, damage, lifetime },
+            Homing { target: None, turn_rate },
+            LeviathanMissile,
+            // Biomechanical dart — purple.
+            Sprite::from_color(Color::srgb(0.7, 0.4, 0.9), Vec2::new(7.0, 17.0)),
+            Transform::from_translation(muzzle.extend(0.5)),
+            (
+                RigidBody::Dynamic,
+                Collider::circle(6.0),
+                Sensor,
+                Mass(0.5),
+                Position(muzzle),
+                Rotation::radians(init_angle),
+                LinearVelocity(mvel),
+                AngularVelocity::ZERO,
+                LinearDamping(0.0),
+                AngularDamping(0.0),
+                CollisionEventsEnabled,
+            ),
+        ));
+    }
+}
+
+/// Marker for the Leviathan's engine-disable homing missile.
+#[derive(Component, Debug)]
+pub struct LeviathanMissile;
+
+/// Leviathan on-hit effects, read off the collision stream BEFORE
+/// `handle_projectile_hits` despawns the projectile:
+///   - SlimeBall vs ship → drop `damage` food pellets at the victim.
+///   - LeviathanMissile vs ship → stamp an engine `ControlJam`
+///     (left/right/thrust frozen) on the victim.
+#[allow(clippy::too_many_arguments)]
+fn handle_leviathan_hits(
+    mut commands: Commands,
+    mut reader: MessageReader<CollisionStart>,
+    mut rng: ResMut<crate::rng::GameRng>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut food_assets: Local<Option<(Handle<Mesh>, Handle<ColorMaterial>)>>,
+    slimeballs: Query<&SlimeBall>,
+    missiles: Query<(), With<LeviathanMissile>>,
+    projectiles: Query<&Projectile>,
+    ships: Query<&Ship>,
+    positions: Query<&Position>,
+) {
+    let food_life = 15.0; // [Extra] Lifetime 15
+    let food_speed = 7.0 * SC2_VEL_SCALE; // [Extra] Velocity 7
+    for ev in reader.read() {
+        // Identify projectile side vs the other side.
+        let (proj_e, other_e) = if projectiles.get(ev.collider1).is_ok() {
+            (ev.collider1, ev.collider2)
+        } else if projectiles.get(ev.collider2).is_ok() {
+            (ev.collider2, ev.collider1)
+        } else {
+            continue;
+        };
+        // Only care when the other side is a ship.
+        if ships.get(other_e).is_err() {
+            continue;
+        }
+        if let Ok(sb) = slimeballs.get(proj_e) {
+            let n = projectiles.get(proj_e).map(|p| p.damage).unwrap_or(1).max(0);
+            let Ok(vpos) = positions.get(other_e) else { continue };
+            let (mesh, mat) = food_assets
+                .get_or_insert_with(|| {
+                    (
+                        meshes.add(Circle::new(6.0)),
+                        materials.add(ColorMaterial::from(Color::srgb(0.6, 1.0, 0.45))),
+                    )
+                })
+                .clone();
+            for _ in 0..n {
+                let a = rng.f32() * std::f32::consts::TAU;
+                let v = food_speed * (1.0 - 0.9 * rng.f32());
+                let vel = Vec2::new(a.cos(), a.sin()) * v;
+                commands.spawn((
+                    LeviathanFood { owner: sb.owner, lifetime_s: food_life },
+                    Mesh2d(mesh.clone()),
+                    MeshMaterial2d(mat.clone()),
+                    Transform::from_translation(vpos.0.extend(0.2)),
+                    RigidBody::Kinematic,
+                    Collider::circle(6.0),
+                    Sensor,
+                    Position(vpos.0),
+                    Rotation::radians(0.0),
+                    LinearVelocity(vel),
+                ));
+            }
+        } else if missiles.get(proj_e).is_ok() {
+            commands.entity(other_e).try_insert(ControlJam {
+                mask: input::INPUT_LEFT | input::INPUT_RIGHT | input::INPUT_THRUST,
+                remaining: 1.5,
+            });
+        }
+    }
+}
+
+/// Drift, decay, home, and harvest Leviathan food pellets. Each pellet
+/// eases toward its owning Leviathan when within range, decays its
+/// drift, ages out after its lifetime, and on contact tops up the
+/// owner's crew + battery (`Food2Batt`), then despawns.
+fn tick_leviathan_food(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut food: Query<(Entity, &mut LeviathanFood, &Position, &mut LinearVelocity)>,
+    owners: Query<&Position, With<Ship>>,
+    mut heal: Query<(&mut Crew, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let pull = 2.0 * SC2_VEL_SCALE; // gentle homing accel toward the owner
+    let pickup_r = 30.0;
+    let home_r = 220.0;
+    let food2batt = 2; // [Ship] Food2Batt 2
+    for (e, mut f, pos, mut vel) in &mut food {
+        f.lifetime_s -= dt;
+        if f.lifetime_s <= 0.0 {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.try_despawn();
+            }
+            continue;
+        }
+        // Decay drift, then home toward the owner if it still exists.
+        vel.0 *= (1.0 - 0.5 * dt).max(0.0);
+        if let Ok(opos) = owners.get(f.owner) {
+            let to = crate::physics::min_image(opos.0 - pos.0);
+            let d = to.length();
+            if d <= pickup_r {
+                if let Ok((mut crew, mut batt)) = heal.get_mut(f.owner) {
+                    crew.current = (crew.current + 1).min(crew.max);
+                    batt.current = (batt.current + food2batt).min(batt.max);
+                }
+                if let Ok(mut ec) = commands.get_entity(e) {
+                    ec.try_despawn();
+                }
+                continue;
+            }
+            if d <= home_r && d > 0.1 {
+                vel.0 += (to / d) * pull;
             }
         }
     }
