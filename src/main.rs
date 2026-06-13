@@ -10,6 +10,7 @@ mod input;
 mod keyconfig;
 mod melee;
 mod menu;
+mod minimap;
 mod netplay;
 mod physics;
 mod rng;
@@ -118,6 +119,7 @@ fn main() {
             keyconfig::KeyConfigPlugin,
             melee::MeleePlugin,
             indicator::IndicatorPlugin,
+            minimap::MinimapPlugin,
             audio::AudioPlugin,
             lobby::LobbyPlugin,
             netcode::NetcodePlugin,

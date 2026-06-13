@@ -1372,8 +1372,9 @@ impl PowerUpKind {
         PowerUpKind::Overcharge,
     ];
 
-    /// Pickup body colour (also the glow the player learns to read).
-    fn color(self) -> Color {
+    /// Pickup body colour (also the glow the player learns to read,
+    /// and the minimap blip tint).
+    pub fn color(self) -> Color {
         match self {
             PowerUpKind::Repair => Color::srgb(0.30, 0.95, 0.40), // green cross
             PowerUpKind::Energy => Color::srgb(1.00, 0.85, 0.20), // yellow bolt
