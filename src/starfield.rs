@@ -574,6 +574,7 @@ fn follow_ships_with_camera(
     mut unwrap: ResMut<CameraUnwrap>,
     ships: Query<(Entity, &Position), With<Ship>>,
     windows: Query<&Window>,
+    config: Res<crate::ship::MatchConfig>,
     mut cameras: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
 ) {
     if *mode != CameraFollowMode::Auto {
@@ -735,8 +736,12 @@ fn follow_ships_with_camera(
     // the framing — forcing the entire hull on screen zoomed the view
     // out too far. The hull is huge and sits right by the fleet, so a
     // slab of it is in frame at normal follow-zoom anyway, and more
-    // slides into view as the fighters push toward the prow.
-    let span = (max - min).max(Vec2::splat(200.0));
+    // slides into view as the fighters push toward the prow. But the
+    // tight fighter-only fit sat a touch too close for the boss arena,
+    // so we hold the framing back to a minimum span — enough to read
+    // the incoming turret fire and the hull looming north.
+    let span_floor = if config.boss { 1700.0 } else { 200.0 };
+    let span = (max - min).max(Vec2::splat(span_floor));
 
     // (`win` was computed above, before the sticky-fit check.)
 
