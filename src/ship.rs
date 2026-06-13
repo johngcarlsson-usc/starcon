@@ -988,6 +988,16 @@ fn projectile_on_add(
     } else {
         None
     };
+    // Overcharge: if the firing ship is currently overcharged, scale this
+    // shot's damage up before it ever flies. Centralising it here means
+    // every weapon — bolts, missiles, shards, the lot — inherits the boost
+    // without touching each ship's fire system.
+    let overcharge = owner.and_then(|e| world.get::<OverchargeActive>(e).map(|o| o.factor));
+    if let Some(factor) = overcharge {
+        if let Some(mut proj) = world.get_mut::<Projectile>(ctx.entity) {
+            proj.damage = ((proj.damage as f32 * factor).round() as i32).max(proj.damage);
+        }
+    }
     let mut commands = world.commands();
     let mut ec = commands.entity(ctx.entity);
     if need_layers {
@@ -1342,15 +1352,24 @@ pub enum PowerUpKind {
     Energy,
     Shield,
     PointDefense,
+    /// Strap-on bazooka: a few seconds of auto-firing heavy rockets.
+    Bazooka,
+    /// One-shot nitrous: an instant forward dash with a brief speed-cap lift.
+    Nitrous,
+    /// Overcharge: a window where your own shots hit much harder.
+    Overcharge,
 }
 
 impl PowerUpKind {
     /// All kinds in spawn-roll order.
-    const ALL: [PowerUpKind; 4] = [
+    const ALL: [PowerUpKind; 7] = [
         PowerUpKind::Repair,
         PowerUpKind::Energy,
         PowerUpKind::Shield,
         PowerUpKind::PointDefense,
+        PowerUpKind::Bazooka,
+        PowerUpKind::Nitrous,
+        PowerUpKind::Overcharge,
     ];
 
     /// Pickup body colour (also the glow the player learns to read).
@@ -1360,8 +1379,42 @@ impl PowerUpKind {
             PowerUpKind::Energy => Color::srgb(1.00, 0.85, 0.20), // yellow bolt
             PowerUpKind::Shield => Color::srgb(0.30, 0.65, 1.00), // blue
             PowerUpKind::PointDefense => Color::srgb(0.95, 0.45, 0.95), // magenta
+            PowerUpKind::Bazooka => Color::srgb(1.00, 0.45, 0.12), // orange
+            PowerUpKind::Nitrous => Color::srgb(0.55, 1.00, 0.95), // cyan
+            PowerUpKind::Overcharge => Color::srgb(1.00, 0.20, 0.25), // red
         }
     }
+}
+
+/// Strap-on bazooka: bolted on by a pickup, it auto-launches a fat
+/// forward rocket every `interval` seconds for `remaining` seconds.
+/// The rockets are ordinary player-owned `Projectile`s, so they ride
+/// the existing `handle_projectile_hits` damage path (boss parts and
+/// enemies both) with no new mechanic.
+#[derive(Component, Debug)]
+pub struct BazookaActive {
+    pub remaining: f32,
+    pub cooldown_s: f32,
+    pub interval: f32,
+}
+
+/// One-shot nitrous: the kick is applied instantly at pickup; this
+/// marker just keeps the speed cap lifted (read by `cap_velocity`,
+/// like a gravity whip) so the dash isn't clamped before it coasts
+/// back down. Expires after `remaining` seconds.
+#[derive(Component, Debug)]
+pub struct NitrousActive {
+    pub remaining: f32,
+}
+
+/// Overcharge: while present on a ship, its outgoing projectiles get
+/// their `damage` scaled by `factor`. Applied centrally in
+/// `projectile_on_add`, so every ship class benefits with no
+/// per-weapon plumbing.
+#[derive(Component, Debug)]
+pub struct OverchargeActive {
+    pub remaining: f32,
+    pub factor: f32,
 }
 
 /// A floating pickup. Static sensor body — fighters pass through it and
@@ -1440,6 +1493,9 @@ fn handle_powerup_pickup(
     ships: Query<(), With<Ship>>,
     mut crews: Query<&mut Crew>,
     mut batteries: Query<&mut Battery>,
+    rotations: Query<&Rotation>,
+    deriveds: Query<&ShipPhysicsDerived>,
+    mut velocities: Query<&mut LinearVelocity>,
 ) {
     let mut gone: bevy::platform::collections::HashSet<Entity> =
         bevy::platform::collections::HashSet::default();
@@ -1491,6 +1547,41 @@ fn handle_powerup_pickup(
                 });
                 info!("powerup: sidekick point-defense (8s)");
             }
+            PowerUpKind::Bazooka => {
+                commands.entity(ship_entity).try_insert(BazookaActive {
+                    remaining: 8.0,
+                    // First rocket goes the instant you grab it.
+                    cooldown_s: 0.0,
+                    interval: 0.7,
+                });
+                info!("powerup: strap-on bazooka (8s)");
+            }
+            PowerUpKind::Nitrous => {
+                // One-shot dash: shove the ship hard along its facing
+                // right now. `NitrousActive` keeps the cap lifted (see
+                // cap_velocity) so the burst survives a moment before it
+                // coasts back down.
+                commands
+                    .entity(ship_entity)
+                    .try_insert(NitrousActive { remaining: 1.4 });
+                if let (Ok(rot), Ok(derived), Ok(mut vel)) = (
+                    rotations.get(ship_entity),
+                    deriveds.get(ship_entity),
+                    velocities.get_mut(ship_entity),
+                ) {
+                    // Ship forward = local +y rotated by the hull's heading.
+                    let forward = Vec2::new(-rot.sin, rot.cos);
+                    let kick = (derived.speed_max.max(120.0)) * NITROUS_CAP_MULT;
+                    vel.0 = forward * kick;
+                }
+                info!("powerup: nitrous dash");
+            }
+            PowerUpKind::Overcharge => {
+                commands
+                    .entity(ship_entity)
+                    .try_insert(OverchargeActive { remaining: 8.0, factor: 2.5 });
+                info!("powerup: overcharge — shots x2.5 (8s)");
+            }
         }
         // Pop the pickup with a small flash.
         if let Ok(p) = positions.get(pu_entity) {
@@ -1500,6 +1591,102 @@ fn handle_powerup_pickup(
             if let Ok(mut ec) = commands.get_entity(pu_entity) {
                 ec.try_despawn();
             }
+        }
+    }
+}
+
+/// How far above `speed_max` a nitrous dash is allowed to ride.
+const NITROUS_CAP_MULT: f32 = 2.6;
+
+/// Drive every active strap-on bazooka: each `interval`, launch a fat
+/// forward rocket from the ship's nose. The rockets are plain
+/// player-owned `Projectile`s (high damage, short life), so they hit the
+/// boss core, turrets, and any enemy through the normal damage path.
+fn tick_bazooka(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    // The cached handle pair is built once, on the first frame a bazooka
+    // is live, so we don't churn a new mesh/material per rocket.
+    mut rocket_assets: Local<Option<(Handle<Mesh>, Handle<ColorMaterial>)>>,
+    mut firers: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut BazookaActive,
+    )>,
+) {
+    let dt = time.delta_secs();
+    const ROCKET_SPEED: f32 = 620.0;
+    const ROCKET_DAMAGE: i32 = 22;
+    for (entity, ship, pos, rot, vel, mut bz) in &mut firers {
+        bz.remaining -= dt;
+        bz.cooldown_s -= dt;
+        if bz.cooldown_s <= 0.0 {
+            bz.cooldown_s = bz.interval;
+            let (mesh, mat) = rocket_assets
+                .get_or_insert_with(|| {
+                    (
+                        meshes.add(Circle::new(11.0)),
+                        materials.add(ColorMaterial::from(Color::srgb(1.0, 0.55, 0.18))),
+                    )
+                })
+                .clone();
+            let forward = Vec2::new(-rot.sin, rot.cos);
+            let muzzle = pos.0 + forward * 42.0;
+            let rocket_vel = vel.0 + forward * ROCKET_SPEED;
+            let angle = forward.y.atan2(forward.x) - std::f32::consts::FRAC_PI_2;
+            // owner = the firing ship, so projectile_on_add stamps the
+            // right per-slot layers (friendly fighters pass through) and
+            // an overcharge boost would even ride along.
+            commands.spawn((
+                Projectile { owner: entity, damage: ROCKET_DAMAGE, lifetime: 2.6 },
+                Mesh2d(mesh),
+                MeshMaterial2d(mat),
+                Transform::from_translation(muzzle.extend(0.45)),
+                RigidBody::Dynamic,
+                Collider::circle(10.0),
+                Sensor,
+                Mass(1.0),
+                Position(muzzle),
+                Rotation::radians(angle),
+                LinearVelocity(rocket_vel),
+                AngularVelocity::ZERO,
+                LinearDamping(0.0),
+                AngularDamping(0.0),
+                CollisionEventsEnabled,
+            ));
+        }
+        if bz.remaining <= 0.0 {
+            commands.entity(entity).try_remove::<BazookaActive>();
+            info!("P{} bazooka spent", ship.player_slot + 1);
+        }
+    }
+}
+
+/// Count down the nitrous and overcharge windows and strip the marker
+/// when each runs out. (Nitrous's kick already happened at pickup; this
+/// just lets the speed cap drop back to normal afterwards.)
+fn tick_powerup_buffs(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut nitrous: Query<(Entity, &mut NitrousActive)>,
+    mut overcharge: Query<(Entity, &mut OverchargeActive)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut n) in &mut nitrous {
+        n.remaining -= dt;
+        if n.remaining <= 0.0 {
+            commands.entity(e).try_remove::<NitrousActive>();
+        }
+    }
+    for (e, mut o) in &mut overcharge {
+        o.remaining -= dt;
+        if o.remaining <= 0.0 {
+            commands.entity(e).try_remove::<OverchargeActive>();
         }
     }
 }
@@ -1929,7 +2116,13 @@ impl Plugin for ShipPlugin {
                 tick_shofixti_glory,
                 // Nested as one set so the outer tuple stays under Bevy's
                 // 20-entry `add_systems` cap.
-                (tick_boss_turrets, tick_powerup_spawner, handle_powerup_pickup),
+                (
+                    tick_boss_turrets,
+                    tick_powerup_spawner,
+                    handle_powerup_pickup,
+                    tick_bazooka,
+                    tick_powerup_buffs,
+                ),
             )
                 .run_if(crate::netcode::role_is_authoritative),
         )
@@ -4357,9 +4550,10 @@ fn cap_velocity(
         &mut LinearVelocity,
         Option<&crate::ultimate::HyperActive>,
         Option<&crate::ultimate::PostUltimateCoasting>,
+        Option<&NitrousActive>,
     )>,
 ) {
-    for (entity, pos, derived, mut vel, hyper, coasting) in &mut q {
+    for (entity, pos, derived, mut vel, hyper, coasting, nitrous) in &mut q {
         // Skip ships mid-ultimate — the lightspeed jump deliberately
         // exceeds speed_max for the duration of the cinematic.
         if hyper.is_some() {
@@ -4388,7 +4582,11 @@ fn cap_velocity(
             }
             continue;
         }
-        let cap = derived.speed_max * whip;
+        // Nitrous dash: lift the cap while the burst is live so the kick
+        // (added at pickup) isn't clamped away. Once the marker expires the
+        // ship coasts back under speed_max on the next tick.
+        let nitro = if nitrous.is_some() { NITROUS_CAP_MULT } else { 1.0 };
+        let cap = derived.speed_max * whip * nitro;
         if speed > cap && cap > 0.0 {
             vel.0 = vel.0 / speed * cap;
         }
