@@ -1098,11 +1098,67 @@ pub(crate) fn spawn_damage_zone(
     ));
 }
 
-/// The co-op boss: a huge wedge "dreadnought". Step 1 is just the solid
-/// hull you fly around; the shield, recessed core, turret-lined flanks,
-/// and the win/lose loop arrive in later slices. The shape IS the level.
+/// The co-op boss: a huge wedge "dreadnought". The hull is an
+/// indestructible wall; the fight is decided at the exposed bridge
+/// (`CapitalCore`) at the prow, reached by running the turret-lined
+/// flanks. The shield + recessed-core "apex" arrives in a later slice.
+/// The shape IS the level.
 #[derive(Component, Debug)]
 pub struct CapitalShip;
+
+/// Shared marker for every piece of the boss (hull, turrets, core) so a
+/// rematch tears them all down in one sweep.
+#[derive(Component, Debug)]
+pub struct BossPart;
+
+/// Hit points for a damageable boss piece. The hull has none (it's an
+/// indestructible wall); turrets and the core carry their own pools.
+#[derive(Component, Debug)]
+pub struct BossHealth {
+    pub hp: i32,
+    pub max: i32,
+}
+
+/// The win target: the dreadnought's exposed bridge at the prow.
+/// Destroy it and the co-op team wins.
+#[derive(Component, Debug)]
+pub struct CapitalCore;
+
+/// A hull-mounted auto-cannon. Each `interval` seconds it fires a bolt
+/// at the nearest player ship within `range`.
+#[derive(Component, Debug)]
+pub struct Turret {
+    pub cooldown_s: f32,
+    pub interval: f32,
+    pub range: f32,
+}
+
+/// Marker for a bolt fired BY the boss (turret), so the damage path
+/// knows it must never scratch the boss itself.
+#[derive(Component, Debug)]
+pub struct BossProjectile;
+
+/// Collision membership bit for boss parts (hull/turrets/core).
+pub(crate) const BOSS_LAYER_BIT: u32 = 1 << 10;
+/// Collision membership bit for boss-fired bolts.
+pub(crate) const BOSS_PROJ_LAYER_BIT: u32 = 1 << 11;
+
+/// Boss parts collide with everything EXCEPT boss bolts and each other,
+/// so player fire and ship-bumps land but the boss can't self-damage.
+pub(crate) fn boss_part_layers() -> CollisionLayers {
+    CollisionLayers::from_bits(
+        BOSS_LAYER_BIT,
+        0xffff_ffffu32 & !BOSS_PROJ_LAYER_BIT & !BOSS_LAYER_BIT,
+    )
+}
+
+/// Boss bolts collide with ships but never with boss parts or each other.
+pub(crate) fn boss_projectile_layers() -> CollisionLayers {
+    CollisionLayers::from_bits(
+        BOSS_PROJ_LAYER_BIT,
+        0xffff_ffffu32 & !BOSS_PROJ_LAYER_BIT & !BOSS_LAYER_BIT,
+    )
+}
 
 /// Spawn the boss hull on entering a boss match. An elongated arrowhead
 /// wedge ~1550 wu long — a real battleship next to the ~30 wu fighters.
@@ -1126,16 +1182,143 @@ pub fn spawn_capital_ship(
     let pos = Vec2::ZERO;
     commands.spawn((
         CapitalShip,
+        BossPart,
         Mesh2d(mesh),
         MeshMaterial2d(mat),
         // Behind the fighters.
         Transform::from_translation(pos.extend(-1.0)),
         RigidBody::Static,
         Collider::triangle(tip, bl, br),
+        boss_part_layers(),
         Position(pos),
         Rotation::radians(0.0),
     ));
-    info!("boss: capital ship hull spawned");
+
+    // Hull-mounted auto-cannons along the flanks. They sit just inside
+    // the wedge edges so the player has to run the gauntlet up the
+    // sides to reach the prow. Each is its own destructible body.
+    let turret_mat = materials.add(ColorMaterial::from(Color::srgb(0.55, 0.45, 0.20)));
+    for tp in [
+        Vec2::new(-250.0, -500.0),
+        Vec2::new(250.0, -500.0),
+        Vec2::new(-180.0, 0.0),
+        Vec2::new(180.0, 0.0),
+    ] {
+        commands.spawn((
+            BossPart,
+            BossHealth { hp: 80, max: 80 },
+            Turret {
+                cooldown_s: 0.8,
+                interval: 1.6,
+                range: 1600.0,
+            },
+            Mesh2d(meshes.add(Circle::new(28.0))),
+            MeshMaterial2d(turret_mat.clone()),
+            Transform::from_translation(tp.extend(0.0)),
+            RigidBody::Static,
+            Collider::circle(28.0),
+            boss_part_layers(),
+            Position(tp),
+            Rotation::radians(0.0),
+        ));
+    }
+
+    // The exposed bridge at the prow — the win target. Sits at the very
+    // tip of the wedge, so the fleet has to fight its way up the flanks
+    // (under turret fire) and strike the nose.
+    let core_pos = Vec2::new(0.0, 800.0);
+    commands.spawn((
+        BossPart,
+        CapitalCore,
+        BossHealth { hp: 400, max: 400 },
+        Mesh2d(meshes.add(Circle::new(42.0))),
+        MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(0.95, 0.35, 0.30)))),
+        // Drawn above the hull so the glowing weak point reads.
+        Transform::from_translation(core_pos.extend(0.5)),
+        RigidBody::Static,
+        Collider::circle(42.0),
+        boss_part_layers(),
+        Position(core_pos),
+        Rotation::radians(0.0),
+    ));
+
+    info!("boss: capital ship hull + 4 turrets + core spawned");
+}
+
+/// Boss auto-cannons: each `interval` seconds, every turret fires a bolt
+/// at the nearest player ship within range. Host-authoritative — the
+/// guest mirrors the resulting bolts through the projectile stream.
+fn tick_boss_turrets(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    role: Res<crate::netcode::NetRole>,
+    mut cached: Local<Option<(Handle<Mesh>, Handle<ColorMaterial>)>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut turrets: Query<(&Position, &mut Turret)>,
+    players: Query<&Position, With<Ship>>,
+) {
+    if role.is_guest() {
+        return;
+    }
+    let dt = time.delta_secs();
+    // Cache one bolt mesh + material so we don't leak an asset per shot.
+    let (bolt_mesh, bolt_mat) = cached
+        .get_or_insert_with(|| {
+            (
+                meshes.add(Circle::new(7.0)),
+                materials.add(ColorMaterial::from(Color::srgb(1.0, 0.55, 0.2))),
+            )
+        })
+        .clone();
+    for (tpos, mut turret) in &mut turrets {
+        turret.cooldown_s -= dt;
+        if turret.cooldown_s > 0.0 {
+            continue;
+        }
+        // Nearest player ship by wrap-aware distance.
+        let mut best: Option<(f32, Vec2)> = None;
+        for p in &players {
+            let img = crate::physics::nearest_image(p.0, tpos.0);
+            let d2 = img.distance_squared(tpos.0);
+            if best.map_or(true, |(bd, _)| d2 < bd) {
+                best = Some((d2, img));
+            }
+        }
+        let Some((d2, target)) = best else { continue };
+        if d2 > turret.range * turret.range {
+            continue;
+        }
+        turret.cooldown_s = turret.interval;
+        let dir = (target - tpos.0).normalize_or_zero();
+        if dir == Vec2::ZERO {
+            continue;
+        }
+        const BOLT_SPEED: f32 = 560.0;
+        let muzzle = tpos.0 + dir * 34.0;
+        commands.spawn((
+            Projectile {
+                owner: Entity::PLACEHOLDER,
+                damage: 8,
+                lifetime: 4.0,
+            },
+            BossProjectile,
+            Mesh2d(bolt_mesh.clone()),
+            MeshMaterial2d(bolt_mat.clone()),
+            Transform::from_translation(muzzle.extend(0.4)),
+            RigidBody::Dynamic,
+            Collider::circle(7.0),
+            Sensor,
+            // Pre-stamp layers so `projectile_on_add` leaves them alone.
+            boss_projectile_layers(),
+            Position(muzzle),
+            Rotation::radians(0.0),
+            LinearVelocity(dir * BOLT_SPEED),
+            AngularVelocity::ZERO,
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+        ));
+    }
 }
 
 /// Owner-attached damage zone — same gameplay shape as `DamageZone`
@@ -1560,6 +1743,7 @@ impl Plugin for ShipPlugin {
                 tick_archon_spiral,
                 tick_alary_turrets,
                 tick_shofixti_glory,
+                tick_boss_turrets,
             )
                 .run_if(crate::netcode::role_is_authoritative),
         )
@@ -1964,7 +2148,8 @@ pub fn teardown_match(
                 With<AsteroidExplosion>,
                 With<ZapFlash>,
                 With<crate::ultimate::YehatOrb>,
-                With<CapitalShip>,
+                // Covers the hull, turrets, and core (all are `BossPart`).
+                With<BossPart>,
             )>,
             Or<(
                 With<crate::netcode::ProjectileMirror>,
@@ -6445,23 +6630,28 @@ fn tick_damage_zones(
 fn handle_projectile_hits(
     mut commands: Commands,
     mut reader: MessageReader<CollisionStart>,
-    projectiles: Query<(&Projectile, Option<&FuelSap>)>,
+    projectiles: Query<(&Projectile, Option<&FuelSap>, Has<BossProjectile>)>,
     proj_positions: Query<&Position, With<Projectile>>,
-    limpets: Query<&Limpet>,
+    // `limpets` + `torpedoes` are bundled into one tuple param to stay
+    // under Bevy's 16-system-param ceiling now that the boss-health
+    // query has joined. (Alary MIRV torpedoes deal no contact damage and
+    // never despawn on touch — they only split on proximity.)
+    (limpets, torpedoes): (Query<&Limpet>, Query<&AlaryTorpedo>),
     shields: Query<&ShieldActive>,
     damage_to_batt: Query<&DamageToBattery>,
     asteroids_q: Query<&Position, With<Asteroid>>,
     ships: Query<&Ship>,
-    // Alary MIRV torpedoes deal no contact damage and never despawn
-    // on touch — they only split on proximity (`tick_alary_mirv`).
-    torpedoes: Query<&AlaryTorpedo>,
     mut satellites: Query<(&mut ChmmrSatellite, &Position)>,
     mut crews: Query<&mut Crew>,
     mut batteries: Query<&mut Battery>,
     mut velocities: Query<&mut LinearVelocity>,
     mut deriveds: Query<&mut ShipPhysicsDerived>,
+    mut boss_health: Query<(&mut BossHealth, Has<CapitalCore>)>,
     assets: Res<AssetServer>,
 ) {
+    // Boss co-op turns OFF friendly fire between the player fighters —
+    // they're a co-op team. Detected by the presence of any boss part.
+    let coop_mode = !boss_health.is_empty();
     // Entities already despawned during THIS event pass. A fast-firing
     // ship (Ilwrath) can land two shots on the same target in one frame,
     // producing two CollisionStart events for the same entities; without
@@ -6483,7 +6673,7 @@ fn handle_projectile_hits(
             continue;
         }
 
-        let (proj, fuel_sap) = match projectiles.get(proj_entity) {
+        let (proj, fuel_sap, is_boss_proj) = match projectiles.get(proj_entity) {
             Ok(p) => p,
             Err(_) => continue,
         };
@@ -6501,13 +6691,50 @@ fn handle_projectile_hits(
         // are ships and they share the same `player_slot`, the
         // shot passes through. Without this, Pkunk clones (which
         // share their summoner's slot) would shred each other
-        // and the main ship with their own bullets.
+        // and the main ship with their own bullets. In boss co-op
+        // ALL the player fighters are one team, so any ship-on-ship
+        // hit passes through.
         if let (Ok(firer_ship), Ok(target_ship)) =
             (ships.get(proj.owner), ships.get(other_entity))
         {
-            if firer_ship.player_slot == target_ship.player_slot {
+            if coop_mode || firer_ship.player_slot == target_ship.player_slot {
                 continue;
             }
+        }
+
+        // Boss part (hull / turret / core) hit. Only PLAYER fire
+        // damages the boss — a boss bolt that somehow clips a part
+        // passes through. The hull carries no `BossHealth`, so it's
+        // an indestructible wall: shots just pop against it.
+        if let Ok((mut bh, is_core)) = boss_health.get_mut(other_entity) {
+            if is_boss_proj {
+                continue;
+            }
+            bh.hp = (bh.hp - proj.damage).max(0);
+            if let Ok(proj_pos) = proj_positions.get(proj_entity) {
+                spawn_asteroid_explosion(&mut commands, &assets, proj_pos.0, 16.0);
+            }
+            if gone.insert(proj_entity) {
+                if let Ok(mut ec) = commands.get_entity(proj_entity) {
+                    ec.try_despawn();
+                }
+            }
+            if bh.hp <= 0 {
+                if let Ok(part_pos) = proj_positions.get(proj_entity) {
+                    spawn_asteroid_explosion(&mut commands, &assets, part_pos.0, 48.0);
+                }
+                if gone.insert(other_entity) {
+                    if let Ok(mut ec) = commands.get_entity(other_entity) {
+                        ec.try_despawn();
+                    }
+                }
+                if is_core {
+                    info!("boss: CORE DESTROYED — co-op victory");
+                } else {
+                    info!("boss: turret destroyed");
+                }
+            }
+            continue;
         }
 
         // Projectile-vs-projectile: pass through silently. Without

@@ -53,6 +53,9 @@ pub enum MatchPhase {
 pub struct MatchOutcome {
     pub winner: Option<usize>,
     pub wins: [u32; 4],
+    /// Boss co-op result: `Some(true)` = fighters destroyed the core,
+    /// `Some(false)` = the whole fleet was wiped out. `None` while live.
+    pub boss_victory: Option<bool>,
 }
 
 pub struct HudPlugin;
@@ -89,7 +92,7 @@ impl Plugin for HudPlugin {
             // also break the post-match Ready toggle).
             .add_systems(
                 FixedUpdate,
-                (destroy_zero_crew_ships, detect_winner)
+                (destroy_zero_crew_ships, detect_winner, detect_boss_outcome)
                     .chain()
                     .run_if(in_state(crate::AppState::InMatch)),
             )
@@ -426,8 +429,9 @@ fn detect_winner(
     if *phase == MatchPhase::PostMatch {
         return;
     }
-    // Boss co-op has its own win/lose (later slice) — the human slots are
-    // allies, so the normal "last slot standing" logic doesn't apply.
+    // Boss co-op has its own win/lose (`detect_boss_outcome`) — the human
+    // slots are allies, so the normal "last slot standing" logic doesn't
+    // apply.
     if config.boss {
         return;
     }
@@ -471,6 +475,29 @@ fn detect_winner(
     *phase = MatchPhase::PostMatch;
 }
 
+/// Boss co-op win/lose. Win when the dreadnought's core is gone; lose
+/// when every player fighter has been destroyed. Runs only in boss mode.
+fn detect_boss_outcome(
+    config: Res<crate::ship::MatchConfig>,
+    cores: Query<(), With<crate::ship::CapitalCore>>,
+    ships: Query<(), With<crate::ship::Ship>>,
+    mut outcome: ResMut<MatchOutcome>,
+    mut phase: ResMut<MatchPhase>,
+) {
+    if !config.boss || *phase == MatchPhase::PostMatch {
+        return;
+    }
+    if cores.is_empty() {
+        outcome.boss_victory = Some(true);
+        *phase = MatchPhase::PostMatch;
+        info!("BOSS CO-OP: VICTORY — core destroyed");
+    } else if ships.is_empty() {
+        outcome.boss_victory = Some(false);
+        *phase = MatchPhase::PostMatch;
+        info!("BOSS CO-OP: DEFEAT — fleet wiped out");
+    }
+}
+
 fn update_status_banner(
     phase: Res<MatchPhase>,
     outcome: Res<MatchOutcome>,
@@ -492,6 +519,12 @@ fn update_status_banner(
             // post-match banner still shows the winner + score.
             MatchPhase::Live => String::new(),
             MatchPhase::PostMatch => {
+                // Boss co-op: VICTORY / DEFEAT instead of a per-slot score.
+                if let Some(won) = outcome.boss_victory {
+                    let head = if won { "VICTORY!" } else { "DEFEAT" };
+                    text.0 = format!("{head}\n[R] retry");
+                    continue;
+                }
                 let head = match outcome.winner {
                     Some(w) => format!("P{} WINS  ({})", w + 1, score_str),
                     None => format!("DRAW  ({})", score_str),

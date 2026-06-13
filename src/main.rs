@@ -164,6 +164,7 @@ fn resume_from_reset(
     mut outcome: ResMut<hud::MatchOutcome>,
 ) {
     outcome.winner = None;
+    outcome.boss_victory = None;
     *phase = hud::MatchPhase::Live;
     next.set(AppState::InMatch);
 }
