@@ -365,6 +365,8 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("lyrwa", include_str!("../assets/ships/lyrwa.ini"), include_str!("../assets/ships/lyrwa.txt")),
     ("vezba", include_str!("../assets/ships/vezba.ini"), include_str!("../assets/ships/vezba.txt")),
     ("koapa", include_str!("../assets/ships/koapa.ini"), include_str!("../assets/ships/koapa.txt")),
+    ("sclfr", include_str!("../assets/ships/sclfr.ini"), include_str!("../assets/ships/sclfr.txt")),
+    ("ulzin", include_str!("../assets/ships/ulzin.ini"), include_str!("../assets/ships/ulzin.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -522,7 +524,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 44] = [
+pub const ALL_CLASSES: [ShipClass; 46] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -570,6 +572,8 @@ pub const ALL_CLASSES: [ShipClass; 44] = [
     ShipClass::Lyrwa,
     ShipClass::Vezba,
     ShipClass::Koapa,
+    ShipClass::Sclfr,
+    ShipClass::Ulzin,
 ];
 
 /// How rotation responds to forces.
@@ -756,6 +760,12 @@ pub enum ShipClass {
     /// Koanua Patrol Ship (Varith). Primary: a backward delayed-thrust
     /// missile. Special: an ionic turbocharger (speed burst).
     Koapa,
+    /// Sclore Frigate (Varith). Primary: rapid twin short-range bolts.
+    /// Special: a rear-firing energy field (backward bolt stream).
+    Sclfr,
+    /// Ulzrak Interceptor (Varith). Primary: a fast forward missile.
+    /// Special: zoom drive — a ramming speed dash.
+    Ulzin,
 }
 
 impl ShipClass {
@@ -806,6 +816,8 @@ impl ShipClass {
             ShipClass::Lyrwa => "lyrwa",
             ShipClass::Vezba => "vezba",
             ShipClass::Koapa => "koapa",
+            ShipClass::Sclfr => "sclfr",
+            ShipClass::Ulzin => "ulzin",
         }
     }
 }
@@ -2504,6 +2516,10 @@ pub struct LyrwaState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 pub struct VezbaState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 #[derive(Component, Debug, Default)]
 pub struct KoapaState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
+#[derive(Component, Debug, Default)]
+pub struct SclfrState { pub weapon_cd_s: f32, pub special_cd_s: f32, pub side: f32 }
+#[derive(Component, Debug, Default)]
+pub struct UlzinState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 
 /// A scramble stamped on a ship by an Iceci Confusion dart
 /// (`OverrideControlIceci`). For `remaining` seconds the victim's five
@@ -2780,6 +2796,10 @@ impl Plugin for ShipPlugin {
                 tick_vezba_special,
                 tick_koapa_primary,
                 tick_koapa_special,
+                tick_sclfr_primary,
+                tick_sclfr_special,
+                tick_ulzin_primary,
+                tick_ulzin_special,
             )
                 .run_if(crate::netcode::role_is_authoritative),
         );
@@ -3503,6 +3523,12 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Koapa) {
         entity.insert(KoapaState::default());
+    }
+    if matches!(class, ShipClass::Sclfr) {
+        entity.insert(SclfrState::default());
+    }
+    if matches!(class, ShipClass::Ulzin) {
+        entity.insert(UlzinState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -4941,6 +4967,14 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "koapa-missile" }, cooldown_s: 0.0 },
             special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "koapa-turbo" }, cooldown_s: 0.0 },
         }),
+        ShipClass::Sclfr => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "sclfr-twin" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "sclfr-rear" }, cooldown_s: 0.0 },
+        }),
+        ShipClass::Ulzin => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "ulzin-missile" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "ulzin-zoom" }, cooldown_s: 0.0 },
+        }),
     }
 }
 
@@ -5012,7 +5046,9 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
         | ShipClass::Glacr
         | ShipClass::Lyrwa
         | ShipClass::Vezba
-        | ShipClass::Koapa => "ship_base.png".to_string(),
+        | ShipClass::Koapa
+        | ShipClass::Sclfr
+        | ShipClass::Ulzin => "ship_base.png".to_string(),
 
         // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
         _ => format!("ship_s{:02}.png", frame + 1),
@@ -5063,6 +5099,8 @@ pub fn single_sprite_ship(class: ShipClass) -> bool {
             | ShipClass::Lyrwa
             | ShipClass::Vezba
             | ShipClass::Koapa
+            | ShipClass::Sclfr
+            | ShipClass::Ulzin
     )
 }
 
@@ -5639,7 +5677,8 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Neodr
         | ShipClass::Iceco => 14.0,
         ShipClass::Vioge | ShipClass::Neccr | ShipClass::Yurpa | ShipClass::Glacr | ShipClass::Vezba => 22.0,
-        ShipClass::Koapa => 16.0,
+        ShipClass::Koapa | ShipClass::Ulzin => 16.0,
+        ShipClass::Sclfr => 20.0,
         ShipClass::Lyrwa => 32.0,
         ShipClass::Hubde => 24.0,
         ShipClass::Uxjba => 30.0,
@@ -9155,6 +9194,77 @@ fn tick_koapa_special(
         if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 4 { continue; }
         batt.current = 1; st.special_cd_s = 240.0 / 20.0;
         commands.entity(e).try_insert(NitrousActive { remaining: 2.5 });
+        let fwd = Vec2::new(-rot.sin, rot.cos);
+        vel.0 = fwd * (derived.speed_max.max(120.0) * NITROUS_CAP_MULT);
+    }
+}
+
+/// Sclore primary — rapid twin short-range bolts from alternating points.
+fn tick_sclfr_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut rng: ResMut<crate::rng::GameRng>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut SclfrState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 90.0 * SC2_VEL_SCALE; let life = (10.0 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 1 { continue; }
+        batt.current -= 1; st.weapon_cd_s = 0.5 / 20.0;
+        if st.side == 0.0 { st.side = 1.0; }
+        let fwd = Vec2::new(-rot.sin, rot.cos); let right = Vec2::new(rot.cos, rot.sin);
+        let defl = rng.signed_unit() * 4.0_f32.to_radians();
+        spawn_bolt(&mut commands, e, pos.0 + right * (st.side * 14.0) + fwd * 12.0, fwd, defl, lvel.0, speed, 1, life, Vec2::new(3.0, 12.0), Color::srgb(1.0, 0.9, 0.7));
+        st.side = -st.side;
+    }
+}
+
+/// Sclore special — a rear-firing energy field (fast backward bolt fan).
+fn tick_sclfr_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut SclfrState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 180.0 * SC2_VEL_SCALE; let life = (21.5 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 6 { continue; }
+        batt.current -= 6; st.special_cd_s = 5.0 / 20.0;
+        let back = -Vec2::new(-rot.sin, rot.cos);
+        for a in [-8.0_f32, 0.0, 8.0] {
+            spawn_bolt(&mut commands, e, pos.0 + back * 16.0, back, a.to_radians(), lvel.0, speed, 2, life, Vec2::new(4.0, 12.0), Color::srgb(0.9, 0.5, 1.0));
+        }
+    }
+}
+
+/// Ulzrak primary — a fast forward missile (Damage 1). WeaponRate 1.6.
+fn tick_ulzin_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut UlzinState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 85.0 * SC2_VEL_SCALE; let life = (8.5 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 1 { continue; }
+        batt.current -= 1; st.weapon_cd_s = 1.6 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos);
+        spawn_bolt(&mut commands, e, pos.0 + fwd * 16.0, fwd, 0.0, lvel.0, speed, 1, life, Vec2::new(4.0, 12.0), Color::srgb(0.8, 1.0, 0.7));
+    }
+}
+
+/// Ulzrak special — zoom drive: a ramming speed dash (nitrous cap-lift +
+/// hard forward kick). SpecialRate 20, SpecialDrain 4.
+fn tick_ulzin_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Rotation, &mut LinearVelocity, &mut UlzinState, &mut Battery, &ShipPhysicsDerived)>,
+) {
+    let dt = time.delta_secs();
+    for (e, ship, rot, mut vel, mut st, mut batt, derived) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 4 { continue; }
+        batt.current -= 4; st.special_cd_s = 20.0 / 20.0;
+        commands.entity(e).try_insert(NitrousActive { remaining: 1.6 });
         let fwd = Vec2::new(-rot.sin, rot.cos);
         vel.0 = fwd * (derived.speed_max.max(120.0) * NITROUS_CAP_MULT);
     }
