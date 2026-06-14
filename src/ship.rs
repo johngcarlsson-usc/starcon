@@ -359,6 +359,9 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("uxjba", include_str!("../assets/ships/uxjba.ini"), include_str!("../assets/ships/uxjba.txt")),
     ("vioge", include_str!("../assets/ships/vioge.ini"), include_str!("../assets/ships/vioge.txt")),
     ("hubde", include_str!("../assets/ships/hubde.ini"), include_str!("../assets/ships/hubde.txt")),
+    ("neccr", include_str!("../assets/ships/neccr.ini"), include_str!("../assets/ships/neccr.txt")),
+    ("yurpa", include_str!("../assets/ships/yurpa.ini"), include_str!("../assets/ships/yurpa.txt")),
+    ("glacr", include_str!("../assets/ships/glacr.ini"), include_str!("../assets/ships/glacr.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -516,7 +519,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 38] = [
+pub const ALL_CLASSES: [ShipClass; 41] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -558,6 +561,9 @@ pub const ALL_CLASSES: [ShipClass; 38] = [
     ShipClass::Uxjba,
     ShipClass::Vioge,
     ShipClass::Hubde,
+    ShipClass::Neccr,
+    ShipClass::Yurpa,
+    ShipClass::Glacr,
 ];
 
 /// How rotation responds to forces.
@@ -726,6 +732,15 @@ pub enum ShipClass {
     /// Hellenian-Uberrace Devastator (GeomanNL). Primary: a heavy long-range
     /// gun that slows the ship when fired. Special: a ring of mortar bursts.
     Hubde,
+    /// Nechanzi Cruiser (Varith). Primary: twin forward missiles. Special:
+    /// a phalanx of unguided missiles fired in a forward spread.
+    Neccr,
+    /// Yuryul Patriot (Varith). Primary: a powerful unguided missile.
+    /// Special: two ion-stream cones from the flanks.
+    Yurpa,
+    /// Glavria Cruiser (Varith). Primary: a five-torpedo forward spread.
+    /// Special: a single backward torpedo.
+    Glacr,
 }
 
 impl ShipClass {
@@ -770,6 +785,9 @@ impl ShipClass {
             ShipClass::Uxjba => "uxjba",
             ShipClass::Vioge => "vioge",
             ShipClass::Hubde => "hubde",
+            ShipClass::Neccr => "neccr",
+            ShipClass::Yurpa => "yurpa",
+            ShipClass::Glacr => "glacr",
         }
     }
 }
@@ -2456,6 +2474,12 @@ pub struct HubdeState {
     pub weapon_cd_s: f32,
     pub special_cd_s: f32,
 }
+#[derive(Component, Debug, Default)]
+pub struct NeccrState { pub weapon_cd_s: f32, pub special_cd_s: f32, pub last_special_held: bool }
+#[derive(Component, Debug, Default)]
+pub struct YurpaState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
+#[derive(Component, Debug, Default)]
+pub struct GlacrState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 
 /// A scramble stamped on a ship by an Iceci Confusion dart
 /// (`OverrideControlIceci`). For `remaining` seconds the victim's five
@@ -2713,6 +2737,19 @@ impl Plugin for ShipPlugin {
                 tick_vioge_special,
                 tick_hubde_primary,
                 tick_hubde_special,
+            )
+                .run_if(crate::netcode::role_is_authoritative),
+        );
+        // Varith fan-ship weapons (host-authoritative).
+        app.add_systems(
+            FixedUpdate,
+            (
+                tick_neccr_primary,
+                tick_neccr_special,
+                tick_yurpa_primary,
+                tick_yurpa_special,
+                tick_glacr_primary,
+                tick_glacr_special,
             )
                 .run_if(crate::netcode::role_is_authoritative),
         );
@@ -3418,6 +3455,15 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Hubde) {
         entity.insert(HubdeState::default());
+    }
+    if matches!(class, ShipClass::Neccr) {
+        entity.insert(NeccrState::default());
+    }
+    if matches!(class, ShipClass::Yurpa) {
+        entity.insert(YurpaState::default());
+    }
+    if matches!(class, ShipClass::Glacr) {
+        entity.insert(GlacrState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -4832,6 +4878,18 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 0.0,
             },
         }),
+        ShipClass::Neccr => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "neccr-twin" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "neccr-phalanx" }, cooldown_s: 0.0 },
+        }),
+        ShipClass::Yurpa => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "yurpa-missile" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "yurpa-cones" }, cooldown_s: 0.0 },
+        }),
+        ShipClass::Glacr => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "glacr-spread" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "glacr-back" }, cooldown_s: 0.0 },
+        }),
     }
 }
 
@@ -4897,7 +4955,10 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
         | ShipClass::Leimu
         | ShipClass::Uxjba
         | ShipClass::Vioge
-        | ShipClass::Hubde => "ship_base.png".to_string(),
+        | ShipClass::Hubde
+        | ShipClass::Neccr
+        | ShipClass::Yurpa
+        | ShipClass::Glacr => "ship_base.png".to_string(),
 
         // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
         _ => format!("ship_s{:02}.png", frame + 1),
@@ -4942,6 +5003,9 @@ pub fn single_sprite_ship(class: ShipClass) -> bool {
             | ShipClass::Uxjba
             | ShipClass::Vioge
             | ShipClass::Hubde
+            | ShipClass::Neccr
+            | ShipClass::Yurpa
+            | ShipClass::Glacr
     )
 }
 
@@ -5517,7 +5581,7 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Zfpst
         | ShipClass::Neodr
         | ShipClass::Iceco => 14.0,
-        ShipClass::Vioge => 22.0,
+        ShipClass::Vioge | ShipClass::Neccr | ShipClass::Yurpa | ShipClass::Glacr => 22.0,
         ShipClass::Hubde => 24.0,
         ShipClass::Uxjba => 30.0,
         ShipClass::Spael
@@ -8804,6 +8868,136 @@ fn tick_hubde_special(
                 AngularVelocity::ZERO, LinearDamping(0.0), AngularDamping(0.0), CollisionEventsEnabled,
             ));
         }
+    }
+}
+
+/// Spawn one plain (unguided) bolt in direction `base` rotated by `off`.
+#[allow(clippy::too_many_arguments)]
+fn spawn_bolt(
+    commands: &mut Commands, owner: Entity, muzzle: Vec2, base: Vec2, off: f32,
+    ship_vel: Vec2, speed: f32, damage: i32, lifetime: f32, size: Vec2, color: Color,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let (s, c) = off.sin_cos();
+    let dir = Vec2::new(base.x * c - base.y * s, base.x * s + base.y * c);
+    let init_angle = dir.y.atan2(dir.x) - FRAC_PI_2;
+    commands.spawn((
+        Projectile { owner, damage, lifetime },
+        Sprite::from_color(color, size),
+        Transform::from_translation(muzzle.extend(0.5)),
+        RigidBody::Dynamic, Collider::circle(size.x.max(3.0) * 0.5), Sensor, Mass(0.3),
+        Position(muzzle), Rotation::radians(init_angle),
+        LinearVelocity(ship_vel + dir * speed),
+        AngularVelocity::ZERO, LinearDamping(0.0), AngularDamping(0.0), CollisionEventsEnabled,
+    ));
+}
+
+/// Nechanzi primary — twin forward missiles (Damage 2). WeaponRate 8.
+fn tick_neccr_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut NeccrState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 90.0 * SC2_VEL_SCALE; let range = 20.0 * SC2_RANGE_SCALE; let life = range / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 4 { continue; }
+        batt.current -= 4; st.weapon_cd_s = 8.0 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos); let right = Vec2::new(rot.cos, rot.sin);
+        for sgn in [-1.0_f32, 1.0] {
+            spawn_bolt(&mut commands, e, pos.0 + right * (sgn * 16.0) + fwd * 12.0, fwd, 0.0, lvel.0, speed, 2, life, Vec2::new(5.0, 13.0), Color::srgb(0.7, 1.0, 0.8));
+        }
+    }
+}
+
+/// Nechanzi special — a phalanx of four unguided missiles in a forward
+/// spread. SpecialRate 10, SpecialDrain 10.
+fn tick_neccr_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut NeccrState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 110.0 * SC2_VEL_SCALE; let life = (24.0 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
+        let just = held && !st.last_special_held; st.last_special_held = held;
+        if !just || st.special_cd_s > 0.0 || batt.current < 10 { continue; }
+        batt.current -= 10; st.special_cd_s = 10.0 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos);
+        for a in [-15.0_f32, -5.0, 5.0, 15.0] {
+            spawn_bolt(&mut commands, e, pos.0 + fwd * 18.0, fwd, a.to_radians(), lvel.0, speed, 2, life, Vec2::new(4.0, 12.0), Color::srgb(0.9, 0.95, 0.6));
+        }
+    }
+}
+
+/// Yuryul primary — one powerful unguided missile (Damage 4). WeaponRate 2.75.
+fn tick_yurpa_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut YurpaState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 140.0 * SC2_VEL_SCALE; let life = (24.0 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 4 { continue; }
+        batt.current -= 4; st.weapon_cd_s = 2.75 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos);
+        spawn_bolt(&mut commands, e, pos.0 + fwd * 18.0, fwd, 0.0, lvel.0, speed, 4, life, Vec2::new(7.0, 18.0), Color::srgb(1.0, 0.85, 0.4));
+    }
+}
+
+/// Yuryul special — two ion-stream cones from the flanks (±30°). SpecialRate 18.
+fn tick_yurpa_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut YurpaState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 200.0 * SC2_VEL_SCALE; let life = (10.0 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 12 { continue; }
+        batt.current -= 12; st.special_cd_s = 18.0 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos); let right = Vec2::new(rot.cos, rot.sin);
+        for cone in [-30.0_f32, 30.0] {
+            for spread in [-6.0_f32, 0.0, 6.0] {
+                spawn_bolt(&mut commands, e, pos.0 + right * (cone.signum() * 14.0) + fwd * 8.0, fwd, (cone + spread).to_radians(), lvel.0, speed, 2, life, Vec2::splat(4.0), Color::srgb(0.5, 0.9, 1.0));
+            }
+        }
+    }
+}
+
+/// Glavria primary — a five-torpedo forward spread (Damage 2). WeaponRate 10.
+fn tick_glacr_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut GlacrState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 50.0 * SC2_VEL_SCALE; let life = (60.0 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 18 { continue; }
+        batt.current -= 18; st.weapon_cd_s = 10.0 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos);
+        for a in [-16.0_f32, -8.0, 0.0, 8.0, 16.0] {
+            spawn_bolt(&mut commands, e, pos.0 + fwd * 18.0, fwd, a.to_radians(), lvel.0, speed, 2, life, Vec2::new(6.0, 14.0), Color::srgb(0.6, 0.8, 1.0));
+        }
+    }
+}
+
+/// Glavria special — a single backward torpedo. SpecialRate 1, SpecialDrain 4.
+fn tick_glacr_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut GlacrState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 60.0 * SC2_VEL_SCALE; let life = (40.0 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 4 { continue; }
+        batt.current -= 4; st.special_cd_s = 1.0 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos); let back = -fwd;
+        spawn_bolt(&mut commands, e, pos.0 + back * 18.0, back, 0.0, lvel.0, speed, 1, life, Vec2::new(6.0, 14.0), Color::srgb(0.5, 0.7, 1.0));
     }
 }
 
