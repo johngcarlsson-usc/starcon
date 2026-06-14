@@ -1,0 +1,53 @@
+{
+  "sounds": [
+    "c:\\djgpp\\saber\\colt1",
+    "c:\\djgpp\\saber\\silence"
+  ],
+  "sprites": {
+    "c:\\djgpp\\title\\killoff": {
+      "file": "c:\\djgpp\\title\\killoff.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpiceco\\shpiceco": {
+      "file": "c:\\rob\\prog\\graphics\\shpiceco\\shpiceco.png",
+      "h": 20,
+      "w": 20
+    },
+    "d:\\games\\timewarp\\ic": {
+      "file": "d:\\games\\timewarp\\ic.png",
+      "h": 30,
+      "w": 55
+    },
+    "d:\\games\\timewarp\\icf": {
+      "file": "d:\\games\\timewarp\\icf.png",
+      "h": 30,
+      "w": 55
+    },
+    "d:\\games\\timewarp\\icl": {
+      "file": "d:\\games\\timewarp\\icl.png",
+      "h": 30,
+      "w": 55
+    },
+    "d:\\games\\timewarp\\icr": {
+      "file": "d:\\games\\timewarp\\icr.png",
+      "h": 30,
+      "w": 55
+    },
+    "d:\\games\\timewarp\\ics": {
+      "file": "d:\\games\\timewarp\\ics.png",
+      "h": 30,
+      "w": 55
+    },
+    "d:\\games\\timewarp\\ict": {
+      "file": "d:\\games\\timewarp\\ict.png",
+      "h": 30,
+      "w": 55
+    },
+    "d:\\games\\timewarp\\shpiceco2": {
+      "file": "d:\\games\\timewarp\\shpiceco2.png",
+      "h": 100,
+      "w": 64
+    }
+  }
+}

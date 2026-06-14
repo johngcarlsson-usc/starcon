@@ -1,0 +1,33 @@
+{
+  "sounds": [
+    "c:\\djgpp\\saber\\colt1",
+    "c:\\djgpp\\saber\\silence"
+  ],
+  "sprites": {
+    "c:\\djgpp\\title\\killoff": {
+      "file": "c:\\djgpp\\title\\killoff.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\program files\\moray for windows\\povscn\\kterbi": {
+      "file": "c:\\program files\\moray for windows\\povscn\\kterbi.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpneodr\\ashot": {
+      "file": "c:\\rob\\prog\\graphics\\shpneodr\\ashot.png",
+      "h": 10,
+      "w": 10
+    },
+    "c:\\rob\\prog\\graphics\\shpneodr\\shppanel": {
+      "file": "c:\\rob\\prog\\graphics\\shpneodr\\shppanel.png",
+      "h": 100,
+      "w": 64
+    },
+    "d:\\temp\\tw_ship_edit\\neo_drain": {
+      "file": "d:\\temp\\tw_ship_edit\\neo_drain.png",
+      "h": 90,
+      "w": 90
+    }
+  }
+}

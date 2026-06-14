@@ -353,6 +353,9 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("taule", include_str!("../assets/ships/taule.ini"), include_str!("../assets/ships/taule.txt")),
     ("taumc", include_str!("../assets/ships/taumc.ini"), include_str!("../assets/ships/taumc.txt")),
     ("taust", include_str!("../assets/ships/taust.ini"), include_str!("../assets/ships/taust.txt")),
+    ("neodr", include_str!("../assets/ships/neodr.ini"), include_str!("../assets/ships/neodr.txt")),
+    ("iceco", include_str!("../assets/ships/iceco.ini"), include_str!("../assets/ships/iceco.txt")),
+    ("leimu", include_str!("../assets/ships/leimu.ini"), include_str!("../assets/ships/leimu.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -510,7 +513,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 32] = [
+pub const ALL_CLASSES: [ShipClass; 35] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -546,6 +549,9 @@ pub const ALL_CLASSES: [ShipClass; 32] = [
     ShipClass::Taule,
     ShipClass::Taumc,
     ShipClass::Taust,
+    ShipClass::Neodr,
+    ShipClass::Iceco,
+    ShipClass::Leimu,
 ];
 
 /// How rotation responds to forces.
@@ -691,6 +697,19 @@ pub enum ShipClass {
     /// spin it with their engine thrust, then pop when their fuel runs out.
     /// Firing recoils the ship backward.
     Taust,
+    /// Neo Drain (TW-Light fan ship, author GeomanNL). Tiny Utwig-killer.
+    /// Primary: a short forward missile. Special: a battery-drain laser
+    /// (sap) — using it doubles the missile's own energy cost.
+    Neodr,
+    /// Iceci Confusion (TW-Light fan ship, author GeomanNL). Weak in a
+    /// straight fight. Primary: a lightly-homing pellet. Special: two side
+    /// darts that SCRAMBLE the victim's controls (a random key permutation)
+    /// for a few seconds.
+    Iceco,
+    /// Lei Mule (TW-Light fan ship, author GeomanNL). Primary: twin forward
+    /// shots; Special: a quad backward "REAL" volley. All its shots block
+    /// incoming weapons (they shoot down enemy fire).
+    Leimu,
 }
 
 impl ShipClass {
@@ -729,6 +748,9 @@ impl ShipClass {
             ShipClass::Taule => "taule",
             ShipClass::Taumc => "taumc",
             ShipClass::Taust => "taust",
+            ShipClass::Neodr => "neodr",
+            ShipClass::Iceco => "iceco",
+            ShipClass::Leimu => "leimu",
         }
     }
 }
@@ -2372,6 +2394,55 @@ impl Default for TaumcState {
     }
 }
 
+/// Neo Drain runtime: primary/special cooldowns + the "special recently
+/// used" window that doubles the missile's energy cost (canon quirk).
+#[derive(Component, Debug, Default)]
+pub struct NeodrState {
+    pub weapon_cd_s: f32,
+    pub special_cd_s: f32,
+    /// Seconds left in which the drain laser counts as "in use" — while
+    /// positive the primary's battery drain is doubled.
+    pub special_active_s: f32,
+}
+
+/// Iceci Confusion runtime: primary/special cooldowns + special held-edge.
+#[derive(Component, Debug, Default)]
+pub struct IcecoState {
+    pub weapon_cd_s: f32,
+    pub special_cd_s: f32,
+    pub last_special_held: bool,
+}
+
+/// Lei Mule runtime: primary/special cooldowns.
+#[derive(Component, Debug, Default)]
+pub struct LeimuState {
+    pub weapon_cd_s: f32,
+    pub special_cd_s: f32,
+}
+
+/// A scramble stamped on a ship by an Iceci Confusion dart
+/// (`OverrideControlIceci`). For `remaining` seconds the victim's five
+/// control bits (left/right/thrust/fire/special) are remapped through the
+/// random permutation `order` — pressing one control does another.
+/// Enforced in `apply_control_scrambles`.
+#[derive(Component, Debug)]
+pub struct ControlScramble {
+    /// Permutation of 0..5 over the control-bit indices (0=left … 4=special).
+    pub order: [u8; 5],
+    pub remaining: f32,
+}
+
+/// Marker for an Iceci Confusion dart (scrambles controls on a ship hit,
+/// handled in `handle_iceco_darts`).
+#[derive(Component, Debug)]
+pub struct ConfusionDart;
+
+/// Marker for a Lei Mule "REAL" shot: besides its normal damage it blocks
+/// incoming weapons — on contact with an enemy projectile both pop
+/// (`handle_blocking_shots`).
+#[derive(Component, Debug)]
+pub struct BlockingShot;
+
 /// Tau T-Storm runtime: the rolling 6-slot muzzle index and the two
 /// modes' per-shot cooldown / held-edge.
 #[derive(Component, Debug, Default)]
@@ -2484,7 +2555,7 @@ impl Plugin for ShipPlugin {
             // host-driven combat sim that stamps the jams.
             .add_systems(
                 FixedUpdate,
-                apply_control_jams
+                (apply_control_jams, apply_control_scrambles)
                     .after(input::gather_slot_inputs)
                     .before(apply_player_input)
                     .run_if(crate::netcode::role_is_authoritative),
@@ -2582,6 +2653,23 @@ impl Plugin for ShipPlugin {
                 tick_taumc_turret.after(apply_player_input),
                 tick_slylandro_drift.after(apply_player_input),
                 tick_orz_marines_boarded,
+            )
+                .run_if(crate::netcode::role_is_authoritative),
+        );
+        // GeomanNL fan-ship weapons (host-authoritative). The two hit
+        // handlers run before `handle_projectile_hits` so they can read the
+        // projectile before the generic handler despawns it.
+        app.add_systems(
+            FixedUpdate,
+            (
+                tick_neodr_primary,
+                tick_neodr_special,
+                tick_iceco_primary,
+                tick_iceco_special,
+                handle_iceco_darts.before(handle_projectile_hits),
+                tick_leimu_primary,
+                tick_leimu_special,
+                handle_blocking_shots.before(handle_projectile_hits),
             )
                 .run_if(crate::netcode::role_is_authoritative),
         );
@@ -3269,6 +3357,15 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Taust) {
         entity.insert(TauStormState::default());
+    }
+    if matches!(class, ShipClass::Neodr) {
+        entity.insert(NeodrState::default());
+    }
+    if matches!(class, ShipClass::Iceco) {
+        entity.insert(IcecoState::default());
+    }
+    if matches!(class, ShipClass::Leimu) {
+        entity.insert(LeimuState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -4620,6 +4717,39 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 0.0,
             },
         }),
+        // Neo Drain: forward missile + battery-drain laser.
+        ShipClass::Neodr => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "neodr-missile" },
+                cooldown_s: 0.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "neodr-drain" },
+                cooldown_s: 0.0,
+            },
+        }),
+        // Iceci Confusion: homing pellet + control-scramble darts.
+        ShipClass::Iceco => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "iceco-pellet" },
+                cooldown_s: 0.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "iceco-dart" },
+                cooldown_s: 0.0,
+            },
+        }),
+        // Lei Mule: twin forward + quad backward weapon-blocking shots.
+        ShipClass::Leimu => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "leimu-front" },
+                cooldown_s: 0.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "leimu-back" },
+                cooldown_s: 0.0,
+            },
+        }),
     }
 }
 
@@ -4676,6 +4806,12 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
         // taust: 0-indexed `ship_s_NN.png`, frame 0 = north.
         ShipClass::Taust => format!("ship_s_{:02}.png", frame),
 
+        // GeomanNL ships ship a SINGLE hull sprite (the original rotates
+        // it at runtime) rather than 64 pre-baked frames — see
+        // `single_sprite_ship`. We staged it as `ship_base.png`; one frame
+        // is enough because `swap_rotation_frame` rotates it continuously.
+        ShipClass::Neodr | ShipClass::Iceco | ShipClass::Leimu => "ship_base.png".to_string(),
+
         // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
         _ => format!("ship_s{:02}.png", frame + 1),
     }
@@ -4692,12 +4828,26 @@ fn load_rotation_frames(
     // `std::fs::exists`, which doesn't work in the browser sandbox.
     // AssetServer.load() is fire-and-forget on both native and WASM:
     // missing files just don't render.
+    // Single-sprite ships (several TW fan ships) carry one hull image that
+    // the original engine rotates live. We load just that frame;
+    // `swap_rotation_frame` sees n == 1 and rotates the sprite via the
+    // Transform residual, reproducing the runtime rotation.
+    if single_sprite_ship(class) {
+        let name = rotation_frame_filename(class, 0);
+        return vec![assets.load(format!("ships/{code}/sprites/{name}"))];
+    }
     let mut frames = Vec::with_capacity(64);
     for i in 0..64 {
         let name = rotation_frame_filename(class, i);
         frames.push(assets.load(format!("ships/{code}/sprites/{name}")));
     }
     frames
+}
+
+/// TW fan ships that ship a single hull sprite (rotated at runtime) rather
+/// than 64 pre-baked rotation frames.
+pub fn single_sprite_ship(class: ShipClass) -> bool {
+    matches!(class, ShipClass::Neodr | ShipClass::Iceco | ShipClass::Leimu)
 }
 
 /// Read keyboard for this peer's slot and command the ship's motion.
@@ -5267,7 +5417,11 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
     // for experimentation.
     let collider_radius = match class {
         ShipClass::Slypr | ShipClass::Umgdr => 12.0,
-        ShipClass::Shosc | ShipClass::Arisk | ShipClass::Zfpst => 14.0,
+        ShipClass::Shosc
+        | ShipClass::Arisk
+        | ShipClass::Zfpst
+        | ShipClass::Neodr
+        | ShipClass::Iceco => 14.0,
         ShipClass::Spael
         | ShipClass::Pkufu
         | ShipClass::Thrto
@@ -5287,7 +5441,8 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Mmrxf
         | ShipClass::Orzne
         | ShipClass::Meltr
-        | ShipClass::Tauar => 22.0,
+        | ShipClass::Tauar
+        | ShipClass::Leimu => 22.0,
         // Leviathan is a big bio-cruiser (Mass 19, Crew 36).
         ShipClass::Taule => 26.0,
         // Missile Cruiser — slow, heavy (Mass 19, Crew 32).
@@ -7838,6 +7993,485 @@ fn tick_storm_missiles(
         mvel.0 = nv;
         // Orient sprite to heading.
         *mrot = Rotation::radians(mvel.0.y.atan2(mvel.0.x) - FRAC_PI_2);
+    }
+}
+
+// ---------------------------------------------------------------------
+// GeomanNL fan ships (top TW-Light contributor): Neo Drain, Iceci
+// Confusion, Lei Mule. Ported from the reference shp*.cpp + .ini.
+// ---------------------------------------------------------------------
+
+/// Neo Drain primary — `shpneodr.cpp:activate_weapon`. A plain forward
+/// missile (no homing). WeaponRate 4 paces it; WeaponDrain 1, but DOUBLES
+/// while the drain laser is in use (the canon quirk, tracked via
+/// `NeodrState::special_active_s`).
+fn tick_neodr_primary(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut NeodrState,
+        &mut Battery,
+    )>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 78.0 * SC2_VEL_SCALE;
+    let range = 14.0 * SC2_RANGE_SCALE;
+    let lifetime = range / speed;
+    let damage = 1;
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        st.special_active_s = (st.special_active_s - dt).max(0.0);
+        let drain = if st.special_active_s > 0.0 { 2 } else { 1 };
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        if !held || st.weapon_cd_s > 0.0 || batt.current < drain {
+            continue;
+        }
+        batt.current -= drain;
+        st.weapon_cd_s = 4.0 / 20.0;
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let right = Vec2::new(rot.cos, rot.sin);
+        let muzzle = pos.0 + forward * 18.0 + right * 6.0;
+        let mvel = lvel.0 + forward * speed;
+        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+        commands.spawn((
+            Projectile { owner: entity, damage, lifetime },
+            Sprite::from_color(Color::srgb(0.7, 1.0, 0.6), Vec2::new(4.0, 11.0)),
+            Transform::from_translation(muzzle.extend(0.5)),
+            RigidBody::Dynamic,
+            Collider::circle(3.0),
+            Sensor,
+            Mass(0.2),
+            Position(muzzle),
+            Rotation::radians(init_angle),
+            LinearVelocity(mvel),
+            AngularVelocity::ZERO,
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ));
+    }
+}
+
+/// Neo Drain special — `shpneodr.cpp` `LaserDrain`. A short-range battery
+/// sap, modelled as a rapid stream of `FuelSap` pellets (no crew damage —
+/// they drain the target's battery). Costs no battery itself, but flags
+/// `special_active_s` so the primary's drain doubles. SpecialRate 1.
+fn tick_neodr_special(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut NeodrState,
+    )>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let range = 15.0 * SC2_RANGE_SCALE;
+    let speed = 220.0 * SC2_VEL_SCALE; // fast = laser-like
+    let lifetime = range / speed;
+    let sap = 2; // [Special] Damage 2 → battery drained per pellet
+    for (entity, ship, pos, rot, lvel, mut st) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
+        if !held || st.special_cd_s > 0.0 {
+            continue;
+        }
+        st.special_cd_s = 1.0 / 20.0; // SpecialRate 1 frame
+        st.special_active_s = 0.15; // keep the primary's drain doubled
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let muzzle = pos.0 + forward * 20.0;
+        let mvel = lvel.0 + forward * speed;
+        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+        commands.spawn((
+            Projectile { owner: entity, damage: 0, lifetime },
+            FuelSap { amount: sap },
+            Sprite::from_color(Color::srgb(0.4, 1.0, 0.9), Vec2::new(3.0, 14.0)),
+            Transform::from_translation(muzzle.extend(0.5)),
+            RigidBody::Dynamic,
+            Collider::circle(3.0),
+            Sensor,
+            Mass(0.1),
+            Position(muzzle),
+            Rotation::radians(init_angle),
+            LinearVelocity(mvel),
+            AngularVelocity::ZERO,
+            LinearDamping(0.0),
+            AngularDamping(0.0),
+            CollisionEventsEnabled,
+        ));
+    }
+}
+
+/// Iceci Confusion primary — `shpiceco.cpp:activate_weapon`. A lightly-
+/// homing pellet (TurnRate 3). WeaponRate 5, WeaponDrain 6.
+fn tick_iceco_primary(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut IcecoState,
+        &mut Battery,
+    )>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 70.0 * SC2_VEL_SCALE;
+    let range = 13.0 * SC2_RANGE_SCALE;
+    let lifetime = range / speed;
+    let damage = 2;
+    let turn_rate = sc2_turning(3.0);
+    let drain = 6;
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        if !held || st.weapon_cd_s > 0.0 || batt.current < drain {
+            continue;
+        }
+        batt.current -= drain;
+        st.weapon_cd_s = 5.0 / 20.0;
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let muzzle = pos.0 + forward * 16.0;
+        let mvel = lvel.0 + forward * speed;
+        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+        commands.spawn((
+            Projectile { owner: entity, damage, lifetime },
+            Homing { target: None, turn_rate },
+            Sprite::from_color(Color::srgb(0.6, 0.9, 1.0), Vec2::new(5.0, 9.0)),
+            Transform::from_translation(muzzle.extend(0.5)),
+            (
+                RigidBody::Dynamic,
+                Collider::circle(4.0),
+                Sensor,
+                Mass(0.3),
+                Position(muzzle),
+                Rotation::radians(init_angle),
+                LinearVelocity(mvel),
+                AngularVelocity::ZERO,
+                LinearDamping(0.0),
+                AngularDamping(0.0),
+                CollisionEventsEnabled,
+            ),
+        ));
+    }
+}
+
+/// Iceci Confusion special — `shpiceco.cpp:activate_special`. Two darts
+/// fired at ±60° from the sides; on a ship hit they scramble the victim's
+/// controls (`handle_iceco_darts`). SpecialRate 20, SpecialDrain 5.
+fn tick_iceco_special(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut IcecoState,
+        &mut Battery,
+    )>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 90.0 * SC2_VEL_SCALE;
+    let range = 16.0 * SC2_RANGE_SCALE;
+    let lifetime = range / speed;
+    let turn_rate = sc2_turning(1.0);
+    let drain = 5;
+    let da = 60.0_f32.to_radians();
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
+        let just = held && !st.last_special_held;
+        st.last_special_held = held;
+        if !just || st.special_cd_s > 0.0 || batt.current < drain {
+            continue;
+        }
+        batt.current -= drain;
+        st.special_cd_s = 20.0 / 20.0;
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let muzzle = pos.0 + forward * 16.0;
+        for sgn in [1.0_f32, -1.0] {
+            let a = sgn * da;
+            let (s, c) = a.sin_cos();
+            let dir = Vec2::new(forward.x * c - forward.y * s, forward.x * s + forward.y * c);
+            let mvel = lvel.0 + dir * speed;
+            let init_angle = dir.y.atan2(dir.x) - FRAC_PI_2;
+            commands.spawn((
+                Projectile { owner: entity, damage: 0, lifetime },
+                Homing { target: None, turn_rate },
+                ConfusionDart,
+                Sprite::from_color(Color::srgb(0.9, 0.6, 1.0), Vec2::new(5.0, 12.0)),
+                Transform::from_translation(muzzle.extend(0.5)),
+                (
+                    RigidBody::Dynamic,
+                    Collider::circle(4.0),
+                    Sensor,
+                    Mass(0.2),
+                    Position(muzzle),
+                    Rotation::radians(init_angle),
+                    LinearVelocity(mvel),
+                    AngularVelocity::ZERO,
+                    LinearDamping(0.0),
+                    AngularDamping(0.0),
+                    CollisionEventsEnabled,
+                ),
+            ));
+        }
+    }
+}
+
+/// On a ConfusionDart→ship hit, stamp a `ControlScramble` with a fresh
+/// random permutation of the five control keys (`OverrideControlIceci`).
+/// Runs before `handle_projectile_hits` (which despawns the dart).
+fn handle_iceco_darts(
+    mut commands: Commands,
+    mut reader: MessageReader<CollisionStart>,
+    mut rng: ResMut<crate::rng::GameRng>,
+    darts: Query<(), With<ConfusionDart>>,
+    projectiles: Query<(), With<Projectile>>,
+    ships: Query<(), With<Ship>>,
+) {
+    let confusion_life = 5.0; // [Confusion] LifeTime 5.0
+    for ev in reader.read() {
+        let (dart_e, other_e) = if darts.get(ev.collider1).is_ok() {
+            (ev.collider1, ev.collider2)
+        } else if darts.get(ev.collider2).is_ok() {
+            (ev.collider2, ev.collider1)
+        } else {
+            continue;
+        };
+        let _ = dart_e;
+        if ships.get(other_e).is_err() || projectiles.get(other_e).is_ok() {
+            continue;
+        }
+        // Fisher-Yates permutation of [0,1,2,3,4] (matches the original).
+        let mut avail = [0u8, 1, 2, 3, 4];
+        let mut order = [0u8; 5];
+        for i in 0..5 {
+            let k = rng.usize_range(0..(5 - i));
+            order[i] = avail[k];
+            avail[k] = avail[5 - i - 1];
+        }
+        commands
+            .entity(other_e)
+            .try_insert(ControlScramble { order, remaining: confusion_life });
+    }
+}
+
+/// Enforce control scrambles: remap the victim's five control bits through
+/// its permutation each tick, then age it out. Same slot as the EMP jam —
+/// after the input gather, before `apply_player_input`.
+fn apply_control_scrambles(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut inputs: ResMut<input::SlotInputs>,
+    mut scrambled: Query<(Entity, &Ship, &mut ControlScramble)>,
+) {
+    let dt = time.delta_secs();
+    for (entity, ship, mut sc) in &mut scrambled {
+        let slot = ship.player_slot.min(3);
+        let remap = |b: u8| -> u8 {
+            let mut nb = b & !0x1F; // keep non-control bits (ultimate, etc.)
+            for i in 0..5usize {
+                if b & (1 << i) != 0 {
+                    nb |= 1 << sc.order[i];
+                }
+            }
+            nb
+        };
+        inputs.held[slot].buttons = remap(inputs.held[slot].buttons);
+        inputs.just_pressed[slot].buttons = remap(inputs.just_pressed[slot].buttons);
+        sc.remaining -= dt;
+        if sc.remaining <= 0.0 {
+            commands.entity(entity).try_remove::<ControlScramble>();
+        }
+    }
+}
+
+/// Lei Mule primary — `shpleimu.cpp:engage_forward`. Twin forward shots
+/// angled slightly out; both block incoming weapons. WeaponRate 6,
+/// WeaponDrain 4, Damage 6.
+fn tick_leimu_primary(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut LeimuState,
+        &mut Battery,
+    )>,
+) {
+    let dt = time.delta_secs();
+    let speed = 70.0 * SC2_VEL_SCALE;
+    let range = 10.0 * SC2_RANGE_SCALE;
+    let lifetime = range / speed;
+    let damage = 6;
+    let drain = 4;
+    let spread = (0.025 * std::f32::consts::PI) as f32;
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        if !held || st.weapon_cd_s > 0.0 || batt.current < drain {
+            continue;
+        }
+        batt.current -= drain;
+        st.weapon_cd_s = 6.0 / 20.0;
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let right = Vec2::new(rot.cos, rot.sin);
+        for sgn in [-1.0_f32, 1.0] {
+            spawn_leimu_shot(
+                &mut commands, entity, pos.0 + right * (sgn * 14.0) + forward * 12.0,
+                forward, sgn * spread, lvel.0, speed, damage, lifetime,
+                Color::srgb(1.0, 0.85, 0.3),
+            );
+        }
+    }
+}
+
+/// Lei Mule special — `shpleimu.cpp:engage_backward`. A quad BACKWARD
+/// volley of weapon-blocking "REAL" shots (low damage). SpecialRate 4,
+/// SpecialDrain 2, Damage 1.
+fn tick_leimu_special(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        Entity,
+        &Ship,
+        &Position,
+        &Rotation,
+        &LinearVelocity,
+        &mut LeimuState,
+        &mut Battery,
+    )>,
+) {
+    let dt = time.delta_secs();
+    let speed = 80.0 * SC2_VEL_SCALE;
+    let range = 15.0 * SC2_RANGE_SCALE;
+    let lifetime = range / speed;
+    let damage = 1;
+    let drain = 2;
+    let spread = (0.025 * std::f32::consts::PI) as f32;
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
+        if !held || st.special_cd_s > 0.0 || batt.current < drain {
+            continue;
+        }
+        batt.current -= drain;
+        st.special_cd_s = 4.0 / 20.0;
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let back = -forward;
+        let right = Vec2::new(rot.cos, rot.sin);
+        // Four backward shots from a spread of side offsets.
+        for i in [-2.0_f32, -1.0, 1.0, 2.0] {
+            spawn_leimu_shot(
+                &mut commands, entity, pos.0 + right * (i * 12.0) - forward * 12.0,
+                back, -i * 0.5 * spread, lvel.0, speed, damage, lifetime,
+                Color::srgb(0.6, 0.9, 1.0),
+            );
+        }
+    }
+}
+
+/// Spawn one Lei Mule weapon-blocking shot in direction `base` rotated by
+/// `offset`.
+#[allow(clippy::too_many_arguments)]
+fn spawn_leimu_shot(
+    commands: &mut Commands,
+    owner: Entity,
+    muzzle: Vec2,
+    base: Vec2,
+    offset: f32,
+    ship_vel: Vec2,
+    speed: f32,
+    damage: i32,
+    lifetime: f32,
+    color: Color,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let (s, c) = offset.sin_cos();
+    let dir = Vec2::new(base.x * c - base.y * s, base.x * s + base.y * c);
+    let vel = ship_vel + dir * speed;
+    let init_angle = dir.y.atan2(dir.x) - FRAC_PI_2;
+    commands.spawn((
+        Projectile { owner, damage, lifetime },
+        BlockingShot,
+        Sprite::from_color(color, Vec2::new(4.0, 12.0)),
+        Transform::from_translation(muzzle.extend(0.5)),
+        RigidBody::Dynamic,
+        Collider::circle(4.0),
+        Sensor,
+        Mass(0.3),
+        Position(muzzle),
+        Rotation::radians(init_angle),
+        LinearVelocity(vel),
+        AngularVelocity::ZERO,
+        LinearDamping(0.0),
+        AngularDamping(0.0),
+        CollisionEventsEnabled,
+    ));
+}
+
+/// Lei Mule's shots shoot down incoming fire: when a `BlockingShot` meets
+/// an enemy projectile, both pop. Runs before `handle_projectile_hits`.
+fn handle_blocking_shots(
+    mut commands: Commands,
+    mut reader: MessageReader<CollisionStart>,
+    blocking: Query<(), With<BlockingShot>>,
+    projectiles: Query<&Projectile>,
+    ships: Query<&Ship>,
+) {
+    let mut gone: bevy::platform::collections::HashSet<Entity> =
+        bevy::platform::collections::HashSet::default();
+    for ev in reader.read() {
+        let (block_e, other_e) = if blocking.get(ev.collider1).is_ok() {
+            (ev.collider1, ev.collider2)
+        } else if blocking.get(ev.collider2).is_ok() {
+            (ev.collider2, ev.collider1)
+        } else {
+            continue;
+        };
+        // The other side must be an ENEMY projectile (and not itself a
+        // blocking shot we'd want to pass).
+        let (Ok(blk), Ok(other)) = (projectiles.get(block_e), projectiles.get(other_e)) else {
+            continue;
+        };
+        let blk_slot = ships.get(blk.owner).map(|s| s.player_slot);
+        let other_slot = ships.get(other.owner).map(|s| s.player_slot);
+        if blk_slot == other_slot {
+            continue; // friendly / same firer
+        }
+        for e in [block_e, other_e] {
+            if gone.insert(e) {
+                if let Ok(mut ec) = commands.get_entity(e) {
+                    ec.try_despawn();
+                }
+            }
+        }
     }
 }
 

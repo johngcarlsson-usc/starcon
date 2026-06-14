@@ -1,0 +1,38 @@
+{
+  "sounds": [
+    "c:\\djgpp\\saber\\colt1",
+    "c:\\djgpp\\saber\\silence"
+  ],
+  "sprites": {
+    "c:\\djgpp\\title\\killoff": {
+      "file": "c:\\djgpp\\title\\killoff.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\program files\\moray for windows\\povscn\\kterbi": {
+      "file": "c:\\program files\\moray for windows\\povscn\\kterbi.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpleimu\\shppanel": {
+      "file": "c:\\rob\\prog\\graphics\\shpleimu\\shppanel.png",
+      "h": 100,
+      "w": 64
+    },
+    "d:\\temp\\tw_ship_edit\\leimule": {
+      "file": "d:\\temp\\tw_ship_edit\\leimule.png",
+      "h": 100,
+      "w": 100
+    },
+    "d:\\temp\\tw_ship_edit\\leimule_s1": {
+      "file": "d:\\temp\\tw_ship_edit\\leimule_s1.png",
+      "h": 20,
+      "w": 20
+    },
+    "d:\\temp\\tw_ship_edit\\leimule_shot2": {
+      "file": "d:\\temp\\tw_ship_edit\\leimule_shot2.png",
+      "h": 15,
+      "w": 15
+    }
+  }
+}
