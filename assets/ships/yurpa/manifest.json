@@ -1,0 +1,129 @@
+{
+  "sounds": [
+    "c:\\art\\timewarp\\yurpa\\mycon_a",
+    "wave_a01",
+    "wave_b02"
+  ],
+  "sprites": {
+    "c:\\art\\timewarp\\yurpa\\yurpa_hud": {
+      "file": "c:\\art\\timewarp\\yurpa\\yurpa_hud.png",
+      "h": 100,
+      "w": 64
+    },
+    "c:\\art\\timewarp\\yurpa\\yurpa_new": {
+      "file": "c:\\art\\timewarp\\yurpa\\yurpa_new.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\cvs\\timewarp\\ships\\plasma1": {
+      "file": "c:\\cvs\\timewarp\\ships\\plasma1.png",
+      "h": 100,
+      "w": 100
+    },
+    "c:\\starcontroltimewarp\\myimages\\dyzun\\dyzundrone01": {
+      "file": "c:\\starcontroltimewarp\\myimages\\dyzun\\dyzundrone01.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\dyzun\\dyzundrone03": {
+      "file": "c:\\starcontroltimewarp\\myimages\\dyzun\\dyzundrone03.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\yuryul\\yuryulmissile": {
+      "file": "c:\\starcontroltimewarp\\myimages\\yuryul\\yuryulmissile.png",
+      "h": 36,
+      "w": 36
+    },
+    "c:\\starcontroltimewarp\\myimages\\yuryul\\yuryulram": {
+      "file": "c:\\starcontroltimewarp\\myimages\\yuryul\\yuryulram.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\yuryul\\yuryulthrust01": {
+      "file": "c:\\starcontroltimewarp\\myimages\\yuryul\\yuryulthrust01.png",
+      "h": 32,
+      "w": 32
+    },
+    "ship_p01": {
+      "file": "ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p02": {
+      "file": "ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p03": {
+      "file": "ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p04": {
+      "file": "ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p05": {
+      "file": "ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p06": {
+      "file": "ship_p06.png",
+      "h": 30,
+      "w": 55
+    },
+    "shot_b01_bmp": {
+      "file": "shot_b01_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b02_bmp": {
+      "file": "shot_b02_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b03_bmp": {
+      "file": "shot_b03_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b04_bmp": {
+      "file": "shot_b04_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b05_bmp": {
+      "file": "shot_b05_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b06_bmp": {
+      "file": "shot_b06_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b07_bmp": {
+      "file": "shot_b07_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b08_bmp": {
+      "file": "shot_b08_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b09_bmp": {
+      "file": "shot_b09_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b10_bmp": {
+      "file": "shot_b10_bmp.png",
+      "h": 80,
+      "w": 80
+    }
+  }
+}

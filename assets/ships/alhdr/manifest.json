@@ -1,0 +1,224 @@
+{
+  "sounds": [
+    "c:\\rob\\prog\\graphics\\ship designs\\tweaks\\synthesiser17",
+    "c:\\soundfiles\\lifstyl1\\botrockt",
+    "wave_b02"
+  ],
+  "sprites": {
+    "c:\\cvs\\timewarp\\ships\\kllaser": {
+      "file": "c:\\cvs\\timewarp\\ships\\kllaser.png",
+      "h": 20,
+      "w": 20
+    },
+    "c:\\cvs\\timewarp\\ships\\new_alho2": {
+      "file": "c:\\cvs\\timewarp\\ships\\new_alho2.png",
+      "h": 100,
+      "w": 100
+    },
+    "c:\\rob\\prog\\graphics\\ship designs\\tweaks\\alhordian\\panel": {
+      "file": "c:\\rob\\prog\\graphics\\ship designs\\tweaks\\alhordian\\panel.png",
+      "h": 100,
+      "w": 64
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo00": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo00.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo01": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo01.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo02": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo02.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo03": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo03.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo04": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo04.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo05": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo05.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo06": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo06.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo07": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo07.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo08": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo08.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo09": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo09.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo10": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo10.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo11": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo11.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo12": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo12.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo13": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo13.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo14": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo14.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo15": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo15.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo16": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo16.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo17": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo17.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo18": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo18.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo19": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo19.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo20": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo20.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo21": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo21.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo22": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo22.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo23": {
+      "file": "c:\\starcontroltimewarp\\myimages\\klisru\\klisrutorpedo23.png",
+      "h": 48,
+      "w": 48
+    },
+    "ship_p01": {
+      "file": "ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p02": {
+      "file": "ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p03": {
+      "file": "ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p04": {
+      "file": "ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p05": {
+      "file": "ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p06": {
+      "file": "ship_p06.png",
+      "h": 30,
+      "w": 55
+    },
+    "shot_b01_bmp": {
+      "file": "shot_b01_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b02_bmp": {
+      "file": "shot_b02_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b03_bmp": {
+      "file": "shot_b03_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b04_bmp": {
+      "file": "shot_b04_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b05_bmp": {
+      "file": "shot_b05_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b06_bmp": {
+      "file": "shot_b06_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b07_bmp": {
+      "file": "shot_b07_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b08_bmp": {
+      "file": "shot_b08_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b09_bmp": {
+      "file": "shot_b09_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b10_bmp": {
+      "file": "shot_b10_bmp.png",
+      "h": 80,
+      "w": 80
+    }
+  }
+}

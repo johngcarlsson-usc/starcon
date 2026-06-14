@@ -1,0 +1,89 @@
+{
+  "sounds": [
+    "c:\\soundfiles\\instrmnt4\\string_break2",
+    "c:\\soundfiles\\instrmnt\\synth4",
+    "c:\\soundfiles\\meanrabbit_beta_button_sampler\\button119"
+  ],
+  "sprites": {
+    "c:\\starcontroltimewarp\\myimages\\sclore\\sclorefrigate": {
+      "file": "c:\\starcontroltimewarp\\myimages\\sclore\\sclorefrigate.png",
+      "h": 60,
+      "w": 60
+    },
+    "c:\\starcontroltimewarp\\myimages\\sclore\\scloreshot": {
+      "file": "c:\\starcontroltimewarp\\myimages\\sclore\\scloreshot.png",
+      "h": 20,
+      "w": 20
+    },
+    "c:\\starcontroltimewarp\\myimages\\sclore\\scloressd": {
+      "file": "c:\\starcontroltimewarp\\myimages\\sclore\\scloressd.png",
+      "h": 100,
+      "w": 64
+    },
+    "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting1": {
+      "file": "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting1.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting2": {
+      "file": "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting2.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting3": {
+      "file": "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting3.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting4": {
+      "file": "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting4.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting5": {
+      "file": "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting5.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting6": {
+      "file": "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting6.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting7": {
+      "file": "c:\\starcontroltimewarp\\myimages\\sclore\\scloresting7.png",
+      "h": 32,
+      "w": 32
+    },
+    "ship_p01": {
+      "file": "ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p02": {
+      "file": "ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p03": {
+      "file": "ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p04": {
+      "file": "ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p05": {
+      "file": "ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p06": {
+      "file": "ship_p06.png",
+      "h": 30,
+      "w": 55
+    }
+  }
+}

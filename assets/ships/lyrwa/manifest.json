@@ -1,0 +1,188 @@
+{
+  "sounds": [
+    "wave_a01",
+    "wave_b01"
+  ],
+  "sprites": {
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e01": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e01.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e03": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e03.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e05": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e05.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e07": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e07.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e09": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e09.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e11": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e11.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e13": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e13.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e15": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e15.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e17": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e17.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e19": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e19.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e21": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e21.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e23": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e23.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e25": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e25.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e27": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e27.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e29": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e29.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e31": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\e31.png",
+      "h": 200,
+      "w": 200
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\lyrmristubolt": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\lyrmristubolt.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\lyrmristubolt2": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\lyrmristubolt2.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\lyrmristu\\lyrmritsudw_ssd": {
+      "file": "c:\\starcontroltimewarp\\myimages\\lyrmristu\\lyrmritsudw_ssd.png",
+      "h": 100,
+      "w": 64
+    },
+    "d:\\temp\\tw_ship_edit\\lyrmristudw01": {
+      "file": "d:\\temp\\tw_ship_edit\\lyrmristudw01.png",
+      "h": 84,
+      "w": 84
+    },
+    "ship_p01": {
+      "file": "ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p02": {
+      "file": "ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p03": {
+      "file": "ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p04": {
+      "file": "ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p05": {
+      "file": "ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p06": {
+      "file": "ship_p06.png",
+      "h": 30,
+      "w": 55
+    },
+    "shot_b01_bmp": {
+      "file": "shot_b01_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b02_bmp": {
+      "file": "shot_b02_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b03_bmp": {
+      "file": "shot_b03_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b04_bmp": {
+      "file": "shot_b04_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b05_bmp": {
+      "file": "shot_b05_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b06_bmp": {
+      "file": "shot_b06_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b07_bmp": {
+      "file": "shot_b07_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b08_bmp": {
+      "file": "shot_b08_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b09_bmp": {
+      "file": "shot_b09_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b10_bmp": {
+      "file": "shot_b10_bmp.png",
+      "h": 80,
+      "w": 80
+    }
+  }
+}

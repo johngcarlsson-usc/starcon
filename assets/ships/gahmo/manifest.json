@@ -1,0 +1,256 @@
+{
+  "sounds": [
+    "c:\\soundfiles\\effects1\\ballbat",
+    "c:\\soundfiles\\effects1\\cloak",
+    "c:\\soundfiles\\effects2\\energy",
+    "c:\\soundfiles\\effects2\\laser",
+    "c:\\soundfiles\\instrmnt3\\synthesiser7"
+  ],
+  "sprites": {
+    "c:\\art\\timewarp\\gahmo\\gahmo": {
+      "file": "c:\\art\\timewarp\\gahmo\\gahmo.png",
+      "h": 130,
+      "w": 130
+    },
+    "c:\\art\\timewarp\\gahmo\\gahmo_hud2": {
+      "file": "c:\\art\\timewarp\\gahmo\\gahmo_hud2.png",
+      "h": 100,
+      "w": 64
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\gahmurtractorhit01": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\gahmurtractorhit01.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\gahmurtractorhit02": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\gahmurtractorhit02.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\gahmurtractorhit03": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\gahmurtractorhit03.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\gahmurtractorhit04": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\gahmurtractorhit04.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\gahmurtractorhit05": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\gahmurtractorhit05.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\gahmurtractorhit06": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\gahmurtractorhit06.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp01": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp01.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp010": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp010.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp011": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp011.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp012": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp012.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp013": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp013.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp014": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp014.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp015": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp015.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp02": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp02.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp03": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp03.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp04": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp04.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp05": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp05.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp06": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp06.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp07": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp07.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp08": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp08.png",
+      "h": 50,
+      "w": 50
+    },
+    "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp09": {
+      "file": "c:\\starcontroltimewarp\\myimages\\gahmur\\romteritorp09.png",
+      "h": 50,
+      "w": 50
+    },
+    "g:\\gahmur-monitor\\ship_p02": {
+      "file": "g:\\gahmur-monitor\\ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "g:\\gahmur-monitor\\ship_p03": {
+      "file": "g:\\gahmur-monitor\\ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "g:\\gahmur-monitor\\ship_p04": {
+      "file": "g:\\gahmur-monitor\\ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "g:\\gahmur-monitor\\ship_p05": {
+      "file": "g:\\gahmur-monitor\\ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "g:\\gahmur-monitor\\ship_p06": {
+      "file": "g:\\gahmur-monitor\\ship_p06.png",
+      "h": 30,
+      "w": 55
+    },
+    "i:\\documents and settings\\darryl\\my documents\\my pictures\\sc time warp\\gahmur_monitor\\psp\\gahmur-monitor\\ship_p01": {
+      "file": "i:\\documents and settings\\darryl\\my documents\\my pictures\\sc time warp\\gahmur_monitor\\psp\\gahmur-monitor\\ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "shot_b01": {
+      "file": "shot_b01.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b02": {
+      "file": "shot_b02.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b03": {
+      "file": "shot_b03.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b04": {
+      "file": "shot_b04.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b05": {
+      "file": "shot_b05.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b06": {
+      "file": "shot_b06.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b07": {
+      "file": "shot_b07.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b08": {
+      "file": "shot_b08.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b09": {
+      "file": "shot_b09.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b10": {
+      "file": "shot_b10.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b11": {
+      "file": "shot_b11.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b12": {
+      "file": "shot_b12.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b13": {
+      "file": "shot_b13.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b14": {
+      "file": "shot_b14.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b15": {
+      "file": "shot_b15.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b16": {
+      "file": "shot_b16.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b17": {
+      "file": "shot_b17.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b18": {
+      "file": "shot_b18.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b19": {
+      "file": "shot_b19.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b20": {
+      "file": "shot_b20.png",
+      "h": 80,
+      "w": 80
+    }
+  }
+}

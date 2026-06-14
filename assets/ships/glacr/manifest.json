@@ -1,0 +1,182 @@
+{
+  "sounds": [
+    "c:\\soundfiles\\photon_torp"
+  ],
+  "sprites": {
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon01": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon01.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon02": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon02.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon03": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon03.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon04": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon04.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon05": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon05.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon06": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon06.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon07": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon07.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon08": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon08.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon09": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon09.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon10": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon10.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon11": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon11.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon12": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon12.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon13": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon13.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon14": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon14.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon15": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon15.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\phedar\\photon16": {
+      "file": "c:\\starcontroltimewarp\\myimages\\phedar\\photon16.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\starcontroltimewarp\\myimages\\zyn\\zyndrone01": {
+      "file": "c:\\starcontroltimewarp\\myimages\\zyn\\zyndrone01.png",
+      "h": 20,
+      "w": 20
+    },
+    "d:\\games\\timewarp\\glavria1": {
+      "file": "d:\\games\\timewarp\\glavria1.png",
+      "h": 64,
+      "w": 64
+    },
+    "d:\\games\\timewarp\\glavriapnl": {
+      "file": "d:\\games\\timewarp\\glavriapnl.png",
+      "h": 100,
+      "w": 64
+    },
+    "ship_p01": {
+      "file": "ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p02": {
+      "file": "ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p03": {
+      "file": "ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p04": {
+      "file": "ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p05": {
+      "file": "ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p06": {
+      "file": "ship_p06.png",
+      "h": 30,
+      "w": 55
+    },
+    "shot_b01_bmp": {
+      "file": "shot_b01_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b02_bmp": {
+      "file": "shot_b02_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b03_bmp": {
+      "file": "shot_b03_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b04_bmp": {
+      "file": "shot_b04_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b05_bmp": {
+      "file": "shot_b05_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b06_bmp": {
+      "file": "shot_b06_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b07_bmp": {
+      "file": "shot_b07_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b08_bmp": {
+      "file": "shot_b08_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b09_bmp": {
+      "file": "shot_b09_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b10_bmp": {
+      "file": "shot_b10_bmp.png",
+      "h": 80,
+      "w": 80
+    }
+  }
+}

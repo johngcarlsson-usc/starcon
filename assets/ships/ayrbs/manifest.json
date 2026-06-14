@@ -1,0 +1,108 @@
+{
+  "sounds": [
+    "c:\\djgpp\\saber\\colt1",
+    "c:\\djgpp\\saber\\silence"
+  ],
+  "sprites": {
+    "c:\\djgpp\\title\\killoff": {
+      "file": "c:\\djgpp\\title\\killoff.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\program files\\moray for windows\\povscn\\kterbi": {
+      "file": "c:\\program files\\moray for windows\\povscn\\kterbi.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\gun01": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\gun01.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\p01": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\p01.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\p02": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\p02.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\p03": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\p03.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\p04": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\p04.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\p05": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\p05.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\p06": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\p06.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\p07": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\p07.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\q01": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\q01.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\q02": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\q02.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\q03": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\q03.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\q04": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\q04.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\q05": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\q05.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\q06": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\q06.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\q07": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\q07.png",
+      "h": 75,
+      "w": 75
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\ship00": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\ship00.png",
+      "h": 1,
+      "w": 1
+    },
+    "c:\\rob\\prog\\graphics\\shpbigshp\\shot01": {
+      "file": "c:\\rob\\prog\\graphics\\shpbigshp\\shot01.png",
+      "h": 10,
+      "w": 10
+    },
+    "c:\\rob\\prog\\graphics\\shpleimu\\shppanel": {
+      "file": "c:\\rob\\prog\\graphics\\shpleimu\\shppanel.png",
+      "h": 100,
+      "w": 64
+    }
+  }
+}

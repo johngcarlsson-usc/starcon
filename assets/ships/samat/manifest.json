@@ -1,0 +1,113 @@
+{
+  "sounds": [
+    "c:\\djgpp\\saber\\colt1",
+    "c:\\djgpp\\saber\\silence"
+  ],
+  "sprites": {
+    "c:\\djgpp\\title\\killoff": {
+      "file": "c:\\djgpp\\title\\killoff.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\program files\\moray for windows\\povscn\\kterbi": {
+      "file": "c:\\program files\\moray for windows\\povscn\\kterbi.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpsamat\\p_sama": {
+      "file": "c:\\rob\\prog\\graphics\\shpsamat\\p_sama.png",
+      "h": 100,
+      "w": 64
+    },
+    "c:\\rob\\prog\\graphics\\shpsamat\\sa-matra-x2p5": {
+      "file": "c:\\rob\\prog\\graphics\\shpsamat\\sa-matra-x2p5.png",
+      "h": 275,
+      "w": 615
+    },
+    "shot_a_01": {
+      "file": "shot_a_01.png",
+      "h": 35,
+      "w": 35
+    },
+    "shot_a_02": {
+      "file": "shot_a_02.png",
+      "h": 35,
+      "w": 35
+    },
+    "shot_a_03": {
+      "file": "shot_a_03.png",
+      "h": 35,
+      "w": 35
+    },
+    "shot_b_01": {
+      "file": "shot_b_01.png",
+      "h": 165,
+      "w": 165
+    },
+    "shot_b_02": {
+      "file": "shot_b_02.png",
+      "h": 165,
+      "w": 165
+    },
+    "shot_b_03": {
+      "file": "shot_b_03.png",
+      "h": 165,
+      "w": 165
+    },
+    "shot_b_04": {
+      "file": "shot_b_04.png",
+      "h": 165,
+      "w": 165
+    },
+    "shot_b_05": {
+      "file": "shot_b_05.png",
+      "h": 125,
+      "w": 125
+    },
+    "shot_b_06": {
+      "file": "shot_b_06.png",
+      "h": 95,
+      "w": 95
+    },
+    "shot_b_07": {
+      "file": "shot_b_07.png",
+      "h": 65,
+      "w": 65
+    },
+    "shot_b_08": {
+      "file": "shot_b_08.png",
+      "h": 45,
+      "w": 45
+    },
+    "shot_s_01": {
+      "file": "shot_s_01.png",
+      "h": 30,
+      "w": 30
+    },
+    "shot_s_02": {
+      "file": "shot_s_02.png",
+      "h": 25,
+      "w": 25
+    },
+    "shot_s_03": {
+      "file": "shot_s_03.png",
+      "h": 20,
+      "w": 20
+    },
+    "shot_s_04": {
+      "file": "shot_s_04.png",
+      "h": 15,
+      "w": 15
+    },
+    "shot_s_05": {
+      "file": "shot_s_05.png",
+      "h": 10,
+      "w": 10
+    },
+    "shot_s_06": {
+      "file": "shot_s_06.png",
+      "h": 5,
+      "w": 5
+    }
+  }
+}

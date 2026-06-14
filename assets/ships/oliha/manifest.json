@@ -1,0 +1,43 @@
+{
+  "sounds": [
+    "c:\\djgpp\\saber\\colt1",
+    "c:\\djgpp\\saber\\silence"
+  ],
+  "sprites": {
+    "c:\\djgpp\\title\\killoff": {
+      "file": "c:\\djgpp\\title\\killoff.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\program files\\moray for windows\\povscn\\kterbi": {
+      "file": "c:\\program files\\moray for windows\\povscn\\kterbi.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpoliwa\\p_oli": {
+      "file": "c:\\rob\\prog\\graphics\\shpoliwa\\p_oli.png",
+      "h": 100,
+      "w": 64
+    },
+    "c:\\rob\\prog\\graphics\\shpoliwa\\ship01": {
+      "file": "c:\\rob\\prog\\graphics\\shpoliwa\\ship01.png",
+      "h": 80,
+      "w": 80
+    },
+    "c:\\rob\\prog\\graphics\\shpoliwa\\ship02": {
+      "file": "c:\\rob\\prog\\graphics\\shpoliwa\\ship02.png",
+      "h": 80,
+      "w": 80
+    },
+    "c:\\rob\\prog\\graphics\\shpoliwa\\shot01": {
+      "file": "c:\\rob\\prog\\graphics\\shpoliwa\\shot01.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\rob\\prog\\graphics\\shpoliwa\\shot02": {
+      "file": "c:\\rob\\prog\\graphics\\shpoliwa\\shot02.png",
+      "h": 15,
+      "w": 15
+    }
+  }
+}

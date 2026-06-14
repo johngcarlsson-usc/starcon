@@ -1,0 +1,68 @@
+{
+  "sounds": [
+    "c:\\djgpp\\saber\\colt1",
+    "c:\\djgpp\\saber\\silence"
+  ],
+  "sprites": {
+    "c:\\djgpp\\title\\killoff": {
+      "file": "c:\\djgpp\\title\\killoff.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpquasi\\shota": {
+      "file": "c:\\rob\\prog\\graphics\\shpquasi\\shota.png",
+      "h": 20,
+      "w": 20
+    },
+    "d:\\games\\timewarp\\gamesship02": {
+      "file": "d:\\games\\timewarp\\gamesship02.png",
+      "h": 50,
+      "w": 50
+    },
+    "d:\\games\\timewarp\\p_quai": {
+      "file": "d:\\games\\timewarp\\p_quai.png",
+      "h": 100,
+      "w": 64
+    },
+    "d:\\games\\timewarp\\qs": {
+      "file": "d:\\games\\timewarp\\qs.png",
+      "h": 30,
+      "w": 55
+    },
+    "d:\\games\\timewarp\\qsf": {
+      "file": "d:\\games\\timewarp\\qsf.png",
+      "h": 30,
+      "w": 55
+    },
+    "d:\\games\\timewarp\\qsl": {
+      "file": "d:\\games\\timewarp\\qsl.png",
+      "h": 30,
+      "w": 55
+    },
+    "d:\\games\\timewarp\\qsr": {
+      "file": "d:\\games\\timewarp\\qsr.png",
+      "h": 30,
+      "w": 55
+    },
+    "d:\\games\\timewarp\\qss": {
+      "file": "d:\\games\\timewarp\\qss.png",
+      "h": 30,
+      "w": 55
+    },
+    "d:\\games\\timewarp\\qst": {
+      "file": "d:\\games\\timewarp\\qst.png",
+      "h": 30,
+      "w": 55
+    },
+    "d:\\games\\timewarp\\ship01": {
+      "file": "d:\\games\\timewarp\\ship01.png",
+      "h": 50,
+      "w": 50
+    },
+    "d:\\games\\timewarp\\shotb": {
+      "file": "d:\\games\\timewarp\\shotb.png",
+      "h": 50,
+      "w": 50
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "sounds": [
+    "c:\\djgpp\\allegro\\tools\\wave_b02",
+    "c:\\djgpp\\saber\\colt1",
+    "c:\\djgpp\\saber\\silence",
+    "c:\\djgpp\\saber\\zerzoom!"
+  ],
+  "sprites": {
+    "c:\\djgpp\\title\\killoff": {
+      "file": "c:\\djgpp\\title\\killoff.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpbatde\\gravship": {
+      "file": "c:\\rob\\prog\\graphics\\shpbatde\\gravship.png",
+      "h": 16,
+      "w": 16
+    },
+    "c:\\rob\\prog\\graphics\\shpbatde\\ship panels\\alien_batde_firemain": {
+      "file": "c:\\rob\\prog\\graphics\\shpbatde\\ship panels\\alien_batde_firemain.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpbatde\\ship panels\\alien_batde_firespecial": {
+      "file": "c:\\rob\\prog\\graphics\\shpbatde\\ship panels\\alien_batde_firespecial.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpbatde\\ship panels\\alien_batde_relaxed": {
+      "file": "c:\\rob\\prog\\graphics\\shpbatde\\ship panels\\alien_batde_relaxed.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpbatde\\ship panels\\alien_batde_thrust": {
+      "file": "c:\\rob\\prog\\graphics\\shpbatde\\ship panels\\alien_batde_thrust.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpbatde\\ship panels\\alien_batde_turnleft": {
+      "file": "c:\\rob\\prog\\graphics\\shpbatde\\ship panels\\alien_batde_turnleft.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpbatde\\ship panels\\alien_batde_turnright": {
+      "file": "c:\\rob\\prog\\graphics\\shpbatde\\ship panels\\alien_batde_turnright.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpbatde\\shppanel": {
+      "file": "c:\\rob\\prog\\graphics\\shpbatde\\shppanel.png",
+      "h": 100,
+      "w": 64
+    }
+  }
+}

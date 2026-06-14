@@ -1,0 +1,28 @@
+{
+  "sounds": [
+    "c:\\djgpp\\saber\\silence",
+    "c:\\rob\\prog\\graphics\\shpducla\\sound02c"
+  ],
+  "sprites": {
+    "c:\\djgpp\\title\\killoff": {
+      "file": "c:\\djgpp\\title\\killoff.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\program files\\moray for windows\\povscn\\kterbi": {
+      "file": "c:\\program files\\moray for windows\\povscn\\kterbi.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpducla\\shpducla": {
+      "file": "c:\\rob\\prog\\graphics\\shpducla\\shpducla.png",
+      "h": 24,
+      "w": 24
+    },
+    "c:\\rob\\prog\\graphics\\shpducla\\shppanel": {
+      "file": "c:\\rob\\prog\\graphics\\shpducla\\shppanel.png",
+      "h": 100,
+      "w": 64
+    }
+  }
+}

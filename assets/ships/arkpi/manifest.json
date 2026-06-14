@@ -1,0 +1,113 @@
+{
+  "sounds": [
+    "c:\\soundfiles\\lifstyl1\\golfswng",
+    "wave_b01"
+  ],
+  "sprites": {
+    "c:\\starcontroltimewarp\\myimages\\arkanoid\\arkanoidpincer": {
+      "file": "c:\\starcontroltimewarp\\myimages\\arkanoid\\arkanoidpincer.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\arkanoid\\arkanoidpincer2": {
+      "file": "c:\\starcontroltimewarp\\myimages\\arkanoid\\arkanoidpincer2.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\arkanoid\\arkanoidpincer_ssd": {
+      "file": "c:\\starcontroltimewarp\\myimages\\arkanoid\\arkanoidpincer_ssd.png",
+      "h": 100,
+      "w": 64
+    },
+    "c:\\starcontroltimewarp\\myimages\\zyn\\zyndrone01": {
+      "file": "c:\\starcontroltimewarp\\myimages\\zyn\\zyndrone01.png",
+      "h": 20,
+      "w": 20
+    },
+    "d:\\temp\\tw_ship_edit\\arkanoidship": {
+      "file": "d:\\temp\\tw_ship_edit\\arkanoidship.png",
+      "h": 96,
+      "w": 96
+    },
+    "ship_p01": {
+      "file": "ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p02": {
+      "file": "ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p03": {
+      "file": "ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p04": {
+      "file": "ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p05": {
+      "file": "ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p06": {
+      "file": "ship_p06.png",
+      "h": 30,
+      "w": 55
+    },
+    "shot_b01_bmp": {
+      "file": "shot_b01_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b02_bmp": {
+      "file": "shot_b02_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b03_bmp": {
+      "file": "shot_b03_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b04_bmp": {
+      "file": "shot_b04_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b05_bmp": {
+      "file": "shot_b05_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b06_bmp": {
+      "file": "shot_b06_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b07_bmp": {
+      "file": "shot_b07_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b08_bmp": {
+      "file": "shot_b08_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b09_bmp": {
+      "file": "shot_b09_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b10_bmp": {
+      "file": "shot_b10_bmp.png",
+      "h": 80,
+      "w": 80
+    }
+  }
+}

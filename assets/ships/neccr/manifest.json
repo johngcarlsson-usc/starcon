@@ -1,0 +1,129 @@
+{
+  "sounds": [
+    "c:\\soundfiles\\effects1\\doink",
+    "wave_a01",
+    "wave_b02"
+  ],
+  "sprites": {
+    "c:\\starcontroltimewarp\\myimages\\nechanzi\\copy of nechanzimissile5": {
+      "file": "c:\\starcontroltimewarp\\myimages\\nechanzi\\copy of nechanzimissile5.png",
+      "h": 80,
+      "w": 80
+    },
+    "c:\\starcontroltimewarp\\myimages\\nechanzi\\copy of nechanzimissile5b": {
+      "file": "c:\\starcontroltimewarp\\myimages\\nechanzi\\copy of nechanzimissile5b.png",
+      "h": 80,
+      "w": 80
+    },
+    "c:\\starcontroltimewarp\\myimages\\nechanzi\\nechanzimissile4": {
+      "file": "c:\\starcontroltimewarp\\myimages\\nechanzi\\nechanzimissile4.png",
+      "h": 80,
+      "w": 80
+    },
+    "c:\\starcontroltimewarp\\myimages\\nechanzi\\nechanzimissile4b": {
+      "file": "c:\\starcontroltimewarp\\myimages\\nechanzi\\nechanzimissile4b.png",
+      "h": 80,
+      "w": 80
+    },
+    "c:\\starcontroltimewarp\\myimages\\nechanzi\\zappedopponent": {
+      "file": "c:\\starcontroltimewarp\\myimages\\nechanzi\\zappedopponent.png",
+      "h": 80,
+      "w": 80
+    },
+    "d:\\games\\timewarp\\nechanzi2": {
+      "file": "d:\\games\\timewarp\\nechanzi2.png",
+      "h": 80,
+      "w": 80
+    },
+    "d:\\games\\timewarp\\nechanzipnl": {
+      "file": "d:\\games\\timewarp\\nechanzipnl.png",
+      "h": 100,
+      "w": 64
+    },
+    "d:\\games\\timewarp\\nechanzisht3": {
+      "file": "d:\\games\\timewarp\\nechanzisht3.png",
+      "h": 24,
+      "w": 24
+    },
+    "ship_p01": {
+      "file": "ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p02": {
+      "file": "ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p03": {
+      "file": "ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p04": {
+      "file": "ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p05": {
+      "file": "ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p06": {
+      "file": "ship_p06.png",
+      "h": 30,
+      "w": 55
+    },
+    "shot_b01_bmp": {
+      "file": "shot_b01_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b02_bmp": {
+      "file": "shot_b02_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b03_bmp": {
+      "file": "shot_b03_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b04_bmp": {
+      "file": "shot_b04_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b05_bmp": {
+      "file": "shot_b05_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b06_bmp": {
+      "file": "shot_b06_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b07_bmp": {
+      "file": "shot_b07_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b08_bmp": {
+      "file": "shot_b08_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b09_bmp": {
+      "file": "shot_b09_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b10_bmp": {
+      "file": "shot_b10_bmp.png",
+      "h": 80,
+      "w": 80
+    }
+  }
+}

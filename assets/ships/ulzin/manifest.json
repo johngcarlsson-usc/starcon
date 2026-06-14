@@ -1,0 +1,169 @@
+{
+  "sounds": [
+    "c:\\soundfiles\\effects2\\penalty",
+    "c:\\soundfiles\\instrmnt\\bassdrum",
+    "c:\\soundfiles\\meanrabbit_beta_button_sampler\\button12"
+  ],
+  "sprites": {
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrak01": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrak01.png",
+      "h": 52,
+      "w": 52
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrak02": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrak02.png",
+      "h": 52,
+      "w": 52
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrak03": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrak03.png",
+      "h": 52,
+      "w": 52
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrak04": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrak04.png",
+      "h": 52,
+      "w": 52
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrak_ssd": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrak_ssd.png",
+      "h": 100,
+      "w": 64
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakbolt": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakbolt.png",
+      "h": 28,
+      "w": 28
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp1": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp1.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp10": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp10.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp2": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp2.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp3": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp3.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp4": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp4.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp5": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp5.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp6": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp6.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp7": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp7.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp8": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp8.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp9": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakboltexp9.png",
+      "h": 32,
+      "w": 32
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp1": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp1.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp10": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp10.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp2": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp2.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp3": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp3.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp4": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp4.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp5": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp5.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp6": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp6.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp7": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp7.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp8": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp8.png",
+      "h": 48,
+      "w": 48
+    },
+    "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp9": {
+      "file": "c:\\starcontroltimewarp\\myimages\\ulzrak\\ulzrakexp9.png",
+      "h": 48,
+      "w": 48
+    },
+    "ship_p01": {
+      "file": "ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p02": {
+      "file": "ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p03": {
+      "file": "ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p04": {
+      "file": "ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p05": {
+      "file": "ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p06": {
+      "file": "ship_p06.png",
+      "h": 30,
+      "w": 55
+    }
+  }
+}

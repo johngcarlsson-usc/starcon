@@ -1,0 +1,60 @@
+{
+  "sounds": [
+    "c:\\djgpp\\allegro\\tools\\wave_b02",
+    "c:\\djgpp\\saber\\colt1",
+    "c:\\djgpp\\saber\\silence",
+    "c:\\djgpp\\saber\\zerzoom!"
+  ],
+  "sprites": {
+    "c:\\djgpp\\title\\killoff": {
+      "file": "c:\\djgpp\\title\\killoff.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpgrav\\gravship": {
+      "file": "c:\\rob\\prog\\graphics\\shpgrav\\gravship.png",
+      "h": 128,
+      "w": 128
+    },
+    "c:\\rob\\prog\\graphics\\shpkolfl\\cptn_left": {
+      "file": "c:\\rob\\prog\\graphics\\shpkolfl\\cptn_left.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpkolfl\\cptn_relaxed": {
+      "file": "c:\\rob\\prog\\graphics\\shpkolfl\\cptn_relaxed.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpkolfl\\cptn_right": {
+      "file": "c:\\rob\\prog\\graphics\\shpkolfl\\cptn_right.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpkolfl\\cptn_special": {
+      "file": "c:\\rob\\prog\\graphics\\shpkolfl\\cptn_special.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpkolfl\\cptn_thrust": {
+      "file": "c:\\rob\\prog\\graphics\\shpkolfl\\cptn_thrust.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpkolfl\\cptn_weapon": {
+      "file": "c:\\rob\\prog\\graphics\\shpkolfl\\cptn_weapon.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shpkolfl\\shpkolfl": {
+      "file": "c:\\rob\\prog\\graphics\\shpkolfl\\shpkolfl.png",
+      "h": 112,
+      "w": 112
+    },
+    "c:\\rob\\prog\\graphics\\shpkolfl\\shppanel": {
+      "file": "c:\\rob\\prog\\graphics\\shpkolfl\\shppanel.png",
+      "h": 100,
+      "w": 64
+    }
+  }
+}

@@ -1,0 +1,188 @@
+{
+  "sounds": [
+    "wave_a01",
+    "wave_b01"
+  ],
+  "sprites": {
+    "c:\\starcontroltimewarp\\myimages\\bukalnik\\bukalnikshot01": {
+      "file": "c:\\starcontroltimewarp\\myimages\\bukalnik\\bukalnikshot01.png",
+      "h": 36,
+      "w": 36
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribb_ssd": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribb_ssd.png",
+      "h": 100,
+      "w": 64
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead01": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead01.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead02": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead02.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead03": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead03.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead04": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead04.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead05": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead05.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead06": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead06.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead07": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead07.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead08": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead08.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead09": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead09.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead10": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead10.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead11": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead11.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead12": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead12.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead13": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead13.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead14": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead14.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead15": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead15.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead16": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagaribulkhead16.png",
+      "h": 96,
+      "w": 96
+    },
+    "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagarimissile": {
+      "file": "c:\\starcontroltimewarp\\myimages\\vezlagari\\vezlagarimissile.png",
+      "h": 32,
+      "w": 32
+    },
+    "d:\\temp\\tw_ship_edit\\vezlagaribattlebarge01": {
+      "file": "d:\\temp\\tw_ship_edit\\vezlagaribattlebarge01.png",
+      "h": 96,
+      "w": 96
+    },
+    "ship_p01": {
+      "file": "ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p02": {
+      "file": "ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p03": {
+      "file": "ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p04": {
+      "file": "ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p05": {
+      "file": "ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p06": {
+      "file": "ship_p06.png",
+      "h": 30,
+      "w": 55
+    },
+    "shot_b01_bmp": {
+      "file": "shot_b01_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b02_bmp": {
+      "file": "shot_b02_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b03_bmp": {
+      "file": "shot_b03_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b04_bmp": {
+      "file": "shot_b04_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b05_bmp": {
+      "file": "shot_b05_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b06_bmp": {
+      "file": "shot_b06_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b07_bmp": {
+      "file": "shot_b07_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b08_bmp": {
+      "file": "shot_b08_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b09_bmp": {
+      "file": "shot_b09_bmp.png",
+      "h": 80,
+      "w": 80
+    },
+    "shot_b10_bmp": {
+      "file": "shot_b10_bmp.png",
+      "h": 80,
+      "w": 80
+    }
+  }
+}

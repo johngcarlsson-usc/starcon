@@ -356,6 +356,9 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("neodr", include_str!("../assets/ships/neodr.ini"), include_str!("../assets/ships/neodr.txt")),
     ("iceco", include_str!("../assets/ships/iceco.ini"), include_str!("../assets/ships/iceco.txt")),
     ("leimu", include_str!("../assets/ships/leimu.ini"), include_str!("../assets/ships/leimu.txt")),
+    ("uxjba", include_str!("../assets/ships/uxjba.ini"), include_str!("../assets/ships/uxjba.txt")),
+    ("vioge", include_str!("../assets/ships/vioge.ini"), include_str!("../assets/ships/vioge.txt")),
+    ("hubde", include_str!("../assets/ships/hubde.ini"), include_str!("../assets/ships/hubde.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -513,7 +516,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 35] = [
+pub const ALL_CLASSES: [ShipClass; 38] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -552,6 +555,9 @@ pub const ALL_CLASSES: [ShipClass; 35] = [
     ShipClass::Neodr,
     ShipClass::Iceco,
     ShipClass::Leimu,
+    ShipClass::Uxjba,
+    ShipClass::Vioge,
+    ShipClass::Hubde,
 ];
 
 /// How rotation responds to forces.
@@ -710,6 +716,16 @@ pub enum ShipClass {
     /// shots; Special: a quad backward "REAL" volley. All its shots block
     /// incoming weapons (they shoot down enemy fire).
     Leimu,
+    /// Uxjoz Battleplatform (GeomanNL). Slow, heavy. Primary: a rapid mass
+    /// driver spraying a particle cloud. Special: two slow heavy homing
+    /// missiles from the flanks.
+    Uxjba,
+    /// Viogen Genesis (GeomanNL). Primary: two long-range homing missiles.
+    /// Special: a slow plasma cloud that eats incoming weapons.
+    Vioge,
+    /// Hellenian-Uberrace Devastator (GeomanNL). Primary: a heavy long-range
+    /// gun that slows the ship when fired. Special: a ring of mortar bursts.
+    Hubde,
 }
 
 impl ShipClass {
@@ -751,6 +767,9 @@ impl ShipClass {
             ShipClass::Neodr => "neodr",
             ShipClass::Iceco => "iceco",
             ShipClass::Leimu => "leimu",
+            ShipClass::Uxjba => "uxjba",
+            ShipClass::Vioge => "vioge",
+            ShipClass::Hubde => "hubde",
         }
     }
 }
@@ -2420,6 +2439,24 @@ pub struct LeimuState {
     pub special_cd_s: f32,
 }
 
+/// Uxjoz / Viogen / Hellenian runtime: primary + special cooldowns and a
+/// special held-edge. Shared shape; one per ship for clarity.
+#[derive(Component, Debug, Default)]
+pub struct UxjbaState {
+    pub weapon_cd_s: f32,
+    pub special_cd_s: f32,
+}
+#[derive(Component, Debug, Default)]
+pub struct ViogeState {
+    pub weapon_cd_s: f32,
+    pub special_cd_s: f32,
+}
+#[derive(Component, Debug, Default)]
+pub struct HubdeState {
+    pub weapon_cd_s: f32,
+    pub special_cd_s: f32,
+}
+
 /// A scramble stamped on a ship by an Iceci Confusion dart
 /// (`OverrideControlIceci`). For `remaining` seconds the victim's five
 /// control bits (left/right/thrust/fire/special) are remapped through the
@@ -2670,6 +2707,12 @@ impl Plugin for ShipPlugin {
                 tick_leimu_primary,
                 tick_leimu_special,
                 handle_blocking_shots.before(handle_projectile_hits),
+                tick_uxjba_primary,
+                tick_uxjba_special,
+                tick_vioge_primary,
+                tick_vioge_special,
+                tick_hubde_primary,
+                tick_hubde_special,
             )
                 .run_if(crate::netcode::role_is_authoritative),
         );
@@ -3366,6 +3409,15 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Leimu) {
         entity.insert(LeimuState::default());
+    }
+    if matches!(class, ShipClass::Uxjba) {
+        entity.insert(UxjbaState::default());
+    }
+    if matches!(class, ShipClass::Vioge) {
+        entity.insert(ViogeState::default());
+    }
+    if matches!(class, ShipClass::Hubde) {
+        entity.insert(HubdeState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -4750,6 +4802,36 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 0.0,
             },
         }),
+        ShipClass::Uxjba => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "uxjba-driver" },
+                cooldown_s: 0.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "uxjba-missiles" },
+                cooldown_s: 0.0,
+            },
+        }),
+        ShipClass::Vioge => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "vioge-missiles" },
+                cooldown_s: 0.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "vioge-plasma" },
+                cooldown_s: 0.0,
+            },
+        }),
+        ShipClass::Hubde => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "hubde-gun" },
+                cooldown_s: 0.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "hubde-mortar" },
+                cooldown_s: 0.0,
+            },
+        }),
     }
 }
 
@@ -4810,7 +4892,12 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
         // it at runtime) rather than 64 pre-baked frames — see
         // `single_sprite_ship`. We staged it as `ship_base.png`; one frame
         // is enough because `swap_rotation_frame` rotates it continuously.
-        ShipClass::Neodr | ShipClass::Iceco | ShipClass::Leimu => "ship_base.png".to_string(),
+        ShipClass::Neodr
+        | ShipClass::Iceco
+        | ShipClass::Leimu
+        | ShipClass::Uxjba
+        | ShipClass::Vioge
+        | ShipClass::Hubde => "ship_base.png".to_string(),
 
         // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
         _ => format!("ship_s{:02}.png", frame + 1),
@@ -4847,7 +4934,15 @@ fn load_rotation_frames(
 /// TW fan ships that ship a single hull sprite (rotated at runtime) rather
 /// than 64 pre-baked rotation frames.
 pub fn single_sprite_ship(class: ShipClass) -> bool {
-    matches!(class, ShipClass::Neodr | ShipClass::Iceco | ShipClass::Leimu)
+    matches!(
+        class,
+        ShipClass::Neodr
+            | ShipClass::Iceco
+            | ShipClass::Leimu
+            | ShipClass::Uxjba
+            | ShipClass::Vioge
+            | ShipClass::Hubde
+    )
 }
 
 /// Read keyboard for this peer's slot and command the ship's motion.
@@ -5422,6 +5517,9 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Zfpst
         | ShipClass::Neodr
         | ShipClass::Iceco => 14.0,
+        ShipClass::Vioge => 22.0,
+        ShipClass::Hubde => 24.0,
+        ShipClass::Uxjba => 30.0,
         ShipClass::Spael
         | ShipClass::Pkufu
         | ShipClass::Thrto
@@ -8471,6 +8569,240 @@ fn handle_blocking_shots(
                     ec.try_despawn();
                 }
             }
+        }
+    }
+}
+
+/// Uxjoz primary — `shpuxjba.cpp:activate_weapon`. A rapid mass-driver
+/// particle (WeaponRate 1) that builds a damaging cloud. Damage 1.
+fn tick_uxjba_primary(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut UxjbaState, &mut Battery)>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 90.0 * SC2_VEL_SCALE;
+    let range = 30.0 * SC2_RANGE_SCALE;
+    let lifetime = range / speed;
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 1 {
+            continue;
+        }
+        batt.current -= 1;
+        st.weapon_cd_s = 1.0 / 20.0;
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let muzzle = pos.0 + forward * 34.0;
+        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+        commands.spawn((
+            Projectile { owner: entity, damage: 1, lifetime },
+            Sprite::from_color(Color::srgb(1.0, 0.9, 0.5), Vec2::splat(5.0)),
+            Transform::from_translation(muzzle.extend(0.5)),
+            RigidBody::Dynamic, Collider::circle(3.0), Sensor, Mass(0.2),
+            Position(muzzle), Rotation::radians(init_angle),
+            LinearVelocity(lvel.0 + forward * speed),
+            AngularVelocity::ZERO, LinearDamping(0.0), AngularDamping(0.0), CollisionEventsEnabled,
+        ));
+    }
+}
+
+/// Uxjoz special — two slow heavy homing missiles from the flanks
+/// (Damage 6). SpecialRate 40, SpecialDrain 20.
+fn tick_uxjba_special(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut UxjbaState, &mut Battery)>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 60.0 * SC2_VEL_SCALE;
+    let range = 15.0 * SC2_RANGE_SCALE;
+    let lifetime = range / speed;
+    let turn_rate = sc2_turning(1.0);
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 20 {
+            continue;
+        }
+        batt.current -= 20;
+        st.special_cd_s = 40.0 / 20.0;
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let right = Vec2::new(rot.cos, rot.sin);
+        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+        for sgn in [-1.0_f32, 1.0] {
+            let muzzle = pos.0 + right * (sgn * 50.0);
+            commands.spawn((
+                Projectile { owner: entity, damage: 6, lifetime },
+                Homing { target: None, turn_rate },
+                Sprite::from_color(Color::srgb(1.0, 0.6, 0.3), Vec2::new(8.0, 16.0)),
+                Transform::from_translation(muzzle.extend(0.5)),
+                (
+                    RigidBody::Dynamic, Collider::circle(6.0), Sensor, Mass(0.6),
+                    Position(muzzle), Rotation::radians(init_angle),
+                    LinearVelocity(lvel.0 + forward * speed),
+                    AngularVelocity::ZERO, LinearDamping(0.0), AngularDamping(0.0), CollisionEventsEnabled,
+                ),
+            ));
+        }
+    }
+}
+
+/// Viogen primary — two long-range homing missiles from the sides
+/// (Damage 1). WeaponRate 10, WeaponDrain 5.
+fn tick_vioge_primary(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut ViogeState, &mut Battery)>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 70.0 * SC2_VEL_SCALE;
+    let range = 50.0 * SC2_RANGE_SCALE;
+    let lifetime = range / speed;
+    let turn_rate = sc2_turning(3.0);
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 5 {
+            continue;
+        }
+        batt.current -= 5;
+        st.weapon_cd_s = 10.0 / 20.0;
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let right = Vec2::new(rot.cos, rot.sin);
+        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+        for sgn in [-1.0_f32, 1.0] {
+            let muzzle = pos.0 + right * (sgn * 20.0) + forward * 16.0;
+            commands.spawn((
+                Projectile { owner: entity, damage: 1, lifetime },
+                Homing { target: None, turn_rate },
+                Sprite::from_color(Color::srgb(0.7, 0.5, 1.0), Vec2::new(6.0, 15.0)),
+                Transform::from_translation(muzzle.extend(0.5)),
+                (
+                    RigidBody::Dynamic, Collider::circle(5.0), Sensor, Mass(0.4),
+                    Position(muzzle), Rotation::radians(init_angle),
+                    LinearVelocity(lvel.0 + forward * speed),
+                    AngularVelocity::ZERO, LinearDamping(0.0), AngularDamping(0.0), CollisionEventsEnabled,
+                ),
+            ));
+        }
+    }
+}
+
+/// Viogen special — a slow plasma cloud that eats incoming weapons (it
+/// carries `BlockingShot`, so `handle_blocking_shots` pops enemy fire it
+/// touches) and deals contact damage. SpecialRate 5, SpecialDrain 10.
+fn tick_vioge_special(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut ViogeState, &mut Battery)>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 50.0 * SC2_VEL_SCALE;
+    let range = 45.0 * SC2_RANGE_SCALE; // Range 15 × (armour 2 + 1)
+    let lifetime = range / speed;
+    for (entity, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 10 {
+            continue;
+        }
+        batt.current -= 10;
+        st.special_cd_s = 5.0 / 20.0;
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let muzzle = pos.0 + forward * 28.0;
+        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+        commands.spawn((
+            Projectile { owner: entity, damage: 2, lifetime },
+            BlockingShot,
+            Sprite::from_color(Color::srgba(0.6, 1.0, 0.8, 0.8), Vec2::splat(22.0)),
+            Transform::from_translation(muzzle.extend(0.45)),
+            RigidBody::Dynamic, Collider::circle(12.0), Sensor, Mass(0.3),
+            Position(muzzle), Rotation::radians(init_angle),
+            LinearVelocity(lvel.0 + forward * speed),
+            AngularVelocity::ZERO, LinearDamping(0.0), AngularDamping(0.0), CollisionEventsEnabled,
+        ));
+    }
+}
+
+/// Hellenian primary — a heavy long-range gun (Damage 10) that halves the
+/// ship's velocity on each shot (canon recoil-slow). WeaponRate 10,
+/// WeaponDrain 15.
+fn tick_hubde_primary(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &mut LinearVelocity, &mut HubdeState, &mut Battery)>,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    let speed = 80.0 * SC2_VEL_SCALE;
+    let range = 30.0 * SC2_RANGE_SCALE;
+    let lifetime = range / speed;
+    for (entity, ship, pos, rot, mut lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 15 {
+            continue;
+        }
+        batt.current -= 15;
+        st.weapon_cd_s = 10.0 / 20.0;
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let muzzle = pos.0 + forward * 28.0;
+        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+        let shot_vel = lvel.0 + forward * speed;
+        lvel.0 *= 0.5; // firing slows you a lot
+        commands.spawn((
+            Projectile { owner: entity, damage: 10, lifetime },
+            Sprite::from_color(Color::srgb(1.0, 0.4, 1.0), Vec2::new(7.0, 20.0)),
+            Transform::from_translation(muzzle.extend(0.5)),
+            RigidBody::Dynamic, Collider::circle(5.0), Sensor, Mass(0.5),
+            Position(muzzle), Rotation::radians(init_angle),
+            LinearVelocity(shot_vel),
+            AngularVelocity::ZERO, LinearDamping(0.0), AngularDamping(0.0), CollisionEventsEnabled,
+        ));
+    }
+}
+
+/// Hellenian special — mortar fire: five short-lived blast mines in a ring
+/// around the hull (Damage 1), forming a protective shell. SpecialRate 1.5,
+/// SpecialDrain 2.
+fn tick_hubde_special(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut rng: ResMut<crate::rng::GameRng>,
+    mut ships: Query<(Entity, &Ship, &Position, &mut HubdeState, &mut Battery)>,
+) {
+    use std::f32::consts::TAU;
+    let dt = time.delta_secs();
+    let r1 = 3.0 * SC2_RANGE_SCALE;
+    let r2 = 10.0 * SC2_RANGE_SCALE;
+    for (entity, ship, pos, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 2 {
+            continue;
+        }
+        batt.current -= 2;
+        st.special_cd_s = 1.5 / 20.0;
+        let a0 = (rng.f32() - 0.5) * 0.1 * std::f32::consts::PI;
+        for i in 0..5 {
+            let a = a0 + i as f32 * TAU / 5.0;
+            let radius = r1 + rng.f32() * (r2 - r1);
+            let p = pos.0 + Vec2::new(a.cos(), a.sin()) * radius;
+            // A stationary, brief blast that damages any enemy overlapping it.
+            commands.spawn((
+                Projectile { owner: entity, damage: 1, lifetime: 0.4 },
+                Sprite::from_color(Color::srgba(1.0, 0.7, 0.3, 0.85), Vec2::splat(16.0)),
+                Transform::from_translation(p.extend(0.4)),
+                RigidBody::Dynamic, Collider::circle(9.0), Sensor, Mass(0.1),
+                Position(p), Rotation::radians(0.0),
+                LinearVelocity::ZERO,
+                AngularVelocity::ZERO, LinearDamping(0.0), AngularDamping(0.0), CollisionEventsEnabled,
+            ));
         }
     }
 }

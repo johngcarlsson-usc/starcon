@@ -1,0 +1,48 @@
+{
+  "sounds": [
+    "c:\\soundfiles\\photon_torp",
+    "wave_b01"
+  ],
+  "sprites": {
+    "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\roguepnl": {
+      "file": "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\roguepnl.png",
+      "h": 100,
+      "w": 64
+    },
+    "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\ship_p01": {
+      "file": "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\ship_p02": {
+      "file": "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\ship_p03": {
+      "file": "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\ship_p04": {
+      "file": "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\ship_p05": {
+      "file": "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\ship_p06": {
+      "file": "c:\\documents and settings\\rob\\bureaublad\\install\\timewarp\\dat_edit\\ship_p06.png",
+      "h": 30,
+      "w": 55
+    },
+    "c:\\rob\\prog\\graphics\\shprogsq\\shprogsq": {
+      "file": "c:\\rob\\prog\\graphics\\shprogsq\\shprogsq.png",
+      "h": 32,
+      "w": 32
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "sounds": [
+    "c:\\soundfiles\\photon_torp",
+    "wave_b01"
+  ],
+  "sprites": {
+    "c:\\rob\\prog\\graphics\\shpclofl\\shppanel": {
+      "file": "c:\\rob\\prog\\graphics\\shpclofl\\shppanel.png",
+      "h": 100,
+      "w": 64
+    },
+    "c:\\rob\\prog\\graphics\\shpiceco\\shpiceco03": {
+      "file": "c:\\rob\\prog\\graphics\\shpiceco\\shpiceco03.png",
+      "h": 16,
+      "w": 16
+    },
+    "ship_p01": {
+      "file": "ship_p01.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p02": {
+      "file": "ship_p02.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p03": {
+      "file": "ship_p03.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p04": {
+      "file": "ship_p04.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p05": {
+      "file": "ship_p05.png",
+      "h": 30,
+      "w": 55
+    },
+    "ship_p06": {
+      "file": "ship_p06.png",
+      "h": 30,
+      "w": 55
+    }
+  }
+}
