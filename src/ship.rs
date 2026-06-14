@@ -352,6 +352,7 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("tauem", include_str!("../assets/ships/tauem.ini"), include_str!("../assets/ships/tauem.txt")),
     ("taule", include_str!("../assets/ships/taule.ini"), include_str!("../assets/ships/taule.txt")),
     ("taumc", include_str!("../assets/ships/taumc.ini"), include_str!("../assets/ships/taumc.txt")),
+    ("taust", include_str!("../assets/ships/taust.ini"), include_str!("../assets/ships/taust.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -509,7 +510,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 31] = [
+pub const ALL_CLASSES: [ShipClass; 32] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -544,6 +545,7 @@ pub const ALL_CLASSES: [ShipClass; 31] = [
     ShipClass::Tauem,
     ShipClass::Taule,
     ShipClass::Taumc,
+    ShipClass::Taust,
 ];
 
 /// How rotation responds to forces.
@@ -683,6 +685,12 @@ pub enum ShipClass {
     /// hold aim on the target to lock). Special: a rapid burst of
     /// auto-tracking missiles drawn from a small ammo pool.
     Taumc,
+    /// Tau T-Storm (TW-Light fan ship, author "Tau"). Small, fast skirmisher
+    /// with two firing modes (primary = slow/long, special = fast/aggressive).
+    /// Both launch homing missiles that LATCH onto a hit ship and shove +
+    /// spin it with their engine thrust, then pop when their fuel runs out.
+    /// Firing recoils the ship backward.
+    Taust,
 }
 
 impl ShipClass {
@@ -720,6 +728,7 @@ impl ShipClass {
             ShipClass::Tauem => "tauem",
             ShipClass::Taule => "taule",
             ShipClass::Taumc => "taumc",
+            ShipClass::Taust => "taust",
         }
     }
 }
@@ -2358,6 +2367,39 @@ impl Default for TaumcState {
     }
 }
 
+/// Tau T-Storm runtime: the rolling 6-slot muzzle index and the two
+/// modes' per-shot cooldown / held-edge.
+#[derive(Component, Debug, Default)]
+pub struct TauStormState {
+    pub slot: u32,
+    pub weapon_cd_s: f32,
+    pub last_special_held: bool,
+}
+
+/// A T-Storm missile. Until it hits a ship it homes + accelerates toward
+/// the nearest enemy; on contact it LATCHES and rides the victim, shoving
+/// it along the missile's heading and spinning it with the engine thrust
+/// until the fuel runs out — then it pops for 1 damage. Self-managed (no
+/// `Projectile`) so the generic hit handler never despawns it on contact.
+#[derive(Component, Debug)]
+pub struct StormMissile {
+    pub owner_slot: usize,
+    pub fuel_s: f32,
+    pub accel: f32,
+    pub max_v: f32,
+    pub turn_rate: f32,
+    pub thrust: f32,
+    pub booster_speed: f32,
+    pub spin: f32,
+    pub latched: Option<Entity>,
+    /// World offset from the target at the latch instant.
+    pub rel: Vec2,
+    /// Shove direction (unit) at the latch instant.
+    pub shove_dir0: Vec2,
+    /// Target rotation (radians) at the latch instant.
+    pub theta0: f32,
+}
+
 /// A Tau MC homing torpedo: on detonation it also deals `blast` splash to
 /// enemy ships within `blast_range` (`handle_torpedo_blast`).
 #[derive(Component, Debug)]
@@ -2571,6 +2613,10 @@ impl Plugin for ShipPlugin {
                     tick_taumc_primary,
                     tick_taumc_special,
                     handle_torpedo_blast.before(handle_projectile_hits),
+                    tick_taust_primary,
+                    tick_taust_special,
+                    handle_storm_latch,
+                    tick_storm_missiles,
                 ),
                 tick_alary_turrets,
                 tick_shofixti_glory,
@@ -3215,6 +3261,9 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Taumc) {
         entity.insert(TaumcState::default());
+    }
+    if matches!(class, ShipClass::Taust) {
+        entity.insert(TauStormState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -4541,6 +4590,18 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
                 cooldown_s: 0.0,
             },
         }),
+        // T-Storm: two latching-missile modes (slow primary / fast special),
+        // both owned by dedicated systems.
+        ShipClass::Taust => Some(ShipAbilities {
+            primary: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "taust-slow" },
+                cooldown_s: 0.0,
+            },
+            special: AbilitySpec {
+                kind: AbilityKind::ManagedExternally { ident: "taust-fast" },
+                cooldown_s: 0.0,
+            },
+        }),
     }
 }
 
@@ -4593,6 +4654,9 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
 
         // taumc: 0-indexed `ship_sNN.png` (ship_s00 = north).
         ShipClass::Taumc => format!("ship_s{:02}.png", frame),
+
+        // taust: 0-indexed `ship_s_NN.png`, frame 0 = north.
+        ShipClass::Taust => format!("ship_s_{:02}.png", frame),
 
         // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
         _ => format!("ship_s{:02}.png", frame + 1),
@@ -5190,7 +5254,8 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Pkufu
         | ShipClass::Thrto
         | ShipClass::Taugl
-        | ShipClass::Tauem => 16.0,
+        | ShipClass::Tauem
+        | ShipClass::Taust => 16.0,
         ShipClass::Yehte
         | ShipClass::Earcr
         | ShipClass::Mycpo
@@ -7396,6 +7461,316 @@ fn handle_torpedo_blast(
             }
         }
         spawn_asteroid_explosion(&mut commands, &assets, tpos.0, 40.0);
+    }
+}
+
+/// Shared stat block for a T-Storm missile launch.
+#[derive(Clone, Copy)]
+struct StormParams {
+    speed: f32,
+    start: f32,
+    accel: f32,
+    max_v: f32,
+    turn_rate: f32,
+    thrust: f32,
+    booster_speed: f32,
+    spin: f32,
+    fuel_s: f32,
+    kick: f32,
+    kick_max: f32,
+    drain: i32,
+    color: Color,
+}
+
+/// Launch one T-Storm missile from the alternating muzzle + recoil the
+/// ship. Shared by the slow (primary) and fast (special) modes.
+fn fire_storm_missile(
+    commands: &mut Commands,
+    slot: usize,
+    pos: Vec2,
+    forward: Vec2,
+    right: Vec2,
+    ship_vel: &mut Vec2,
+    barrel: u32,
+    p: StormParams,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let mag = if barrel < 2 { 9.0 } else { 13.0 };
+    let rx = if barrel % 2 == 1 { -mag } else { mag };
+    let muzzle = pos + right * rx + forward * 10.0;
+    let mvel = forward * (p.speed * p.start) + *ship_vel;
+    let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
+    commands.spawn((
+        StormMissile {
+            owner_slot: slot,
+            fuel_s: p.fuel_s,
+            accel: p.accel,
+            max_v: p.max_v,
+            turn_rate: p.turn_rate,
+            thrust: p.thrust,
+            booster_speed: p.booster_speed,
+            spin: p.spin,
+            latched: None,
+            rel: Vec2::ZERO,
+            shove_dir0: Vec2::Y,
+            theta0: 0.0,
+        },
+        Sprite::from_color(p.color, Vec2::new(5.0, 14.0)),
+        Transform::from_translation(muzzle.extend(0.48)),
+        RigidBody::Kinematic,
+        Collider::circle(5.0),
+        Sensor,
+        Position(muzzle),
+        Rotation::radians(init_angle),
+        LinearVelocity(mvel),
+        AngularVelocity::ZERO,
+        CollisionEventsEnabled,
+    ));
+    // Recoil kick: shove the ship backward, capped at KickMaxspeed.
+    let mut nv = *ship_vel - forward * p.kick;
+    if nv.length() > p.kick_max {
+        nv = nv.normalize() * p.kick_max;
+    }
+    *ship_vel = nv;
+}
+
+/// Tau T-Storm primary (slow mode) — `shptaust.cpp:activate_weapon`. A
+/// long-range harassing latch-missile; WeaponRate 14 paces it, WeaponDrain
+/// 2 vs a 12 battery.
+fn tick_taust_primary(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        &Ship,
+        &Position,
+        &Rotation,
+        &mut LinearVelocity,
+        &mut TauStormState,
+        &mut Battery,
+    )>,
+) {
+    let dt = time.delta_secs();
+    let p = StormParams {
+        speed: 70.0 * SC2_VEL_SCALE,
+        start: 0.5,
+        accel: 12.0 * SC2_VEL_SCALE,
+        max_v: 70.0 * SC2_VEL_SCALE,
+        turn_rate: sc2_turning(2.0),
+        thrust: 40.0 * SC2_VEL_SCALE,
+        booster_speed: 40.0 * SC2_VEL_SCALE,
+        spin: 8.0_f32.to_radians() * 6.0, // Rotation 8° → strong spin
+        fuel_s: 2.5,                       // Fuel 2500 ms
+        kick: 3.0 * SC2_VEL_SCALE,
+        kick_max: 60.0 * SC2_VEL_SCALE,
+        drain: 2,
+        color: Color::srgb(0.7, 0.9, 1.0),
+    };
+    for (ship, pos, rot, mut vel, mut st, mut batt) in &mut ships {
+        if st.weapon_cd_s > 0.0 {
+            st.weapon_cd_s -= dt;
+        }
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        if !held || st.weapon_cd_s > 0.0 || batt.current < p.drain {
+            continue;
+        }
+        batt.current -= p.drain;
+        st.weapon_cd_s = 14.0 / 20.0; // WeaponRate 14 frames
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let right = Vec2::new(rot.cos, rot.sin);
+        let mut sv = vel.0;
+        fire_storm_missile(&mut commands, ship.player_slot, pos.0, forward, right, &mut sv, st.slot, p);
+        vel.0 = sv;
+        st.slot = (st.slot + 1) % 6;
+    }
+}
+
+/// Tau T-Storm special (fast mode) — `shptaust.cpp:activate_special`. A
+/// fast, hard-shoving latch-missile. SpecialRate 0 (only the SpecialDrain
+/// 2 vs a 12 battery limits the burst).
+fn tick_taust_special(
+    mut commands: Commands,
+    slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(
+        &Ship,
+        &Position,
+        &Rotation,
+        &mut LinearVelocity,
+        &mut TauStormState,
+        &mut Battery,
+    )>,
+) {
+    let p = StormParams {
+        speed: 82.0 * SC2_VEL_SCALE,
+        start: 1.0,
+        accel: 24.0 * SC2_VEL_SCALE,
+        max_v: 82.0 * SC2_VEL_SCALE,
+        turn_rate: sc2_turning(999.0),
+        thrust: 120.0 * SC2_VEL_SCALE,
+        booster_speed: 60.0 * SC2_VEL_SCALE,
+        spin: 1.0_f32.to_radians() * 6.0, // Rotation 1° → mild spin, big shove
+        fuel_s: 1.0,                       // Fuel 1000 ms
+        kick: 6.0 * SC2_VEL_SCALE,
+        kick_max: 80.0 * SC2_VEL_SCALE,
+        drain: 2,
+        color: Color::srgb(1.0, 0.8, 0.5),
+    };
+    for (ship, pos, rot, mut vel, mut st, mut batt) in &mut ships {
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
+        // SpecialRate 0: fire every tick held until the battery's dry.
+        if !held || batt.current < p.drain {
+            continue;
+        }
+        batt.current -= p.drain;
+        let forward = Vec2::new(-rot.sin, rot.cos);
+        let right = Vec2::new(rot.cos, rot.sin);
+        let mut sv = vel.0;
+        fire_storm_missile(&mut commands, ship.player_slot, pos.0, forward, right, &mut sv, st.slot, p);
+        vel.0 = sv;
+        st.slot = (st.slot + 1) % 6;
+    }
+}
+
+/// Latch a flying T-Storm missile onto the first enemy ship it touches
+/// (`TauStormMissile::inflict_damage`): record the relative offset, the
+/// shove heading, and the target's rotation so `tick_storm_missiles` can
+/// ride and shove it.
+fn handle_storm_latch(
+    mut reader: MessageReader<CollisionStart>,
+    mut missiles: Query<(&mut StormMissile, &Position, &LinearVelocity)>,
+    targets: Query<(&Ship, &Position, &Rotation)>,
+) {
+    for ev in reader.read() {
+        let (mis_e, other_e) = if missiles.get(ev.collider1).is_ok() {
+            (ev.collider1, ev.collider2)
+        } else if missiles.get(ev.collider2).is_ok() {
+            (ev.collider2, ev.collider1)
+        } else {
+            continue;
+        };
+        let Ok((tship, tpos, trot)) = targets.get(other_e) else { continue };
+        let Ok((mut sm, mpos, mvel)) = missiles.get_mut(mis_e) else { continue };
+        if sm.latched.is_some() || tship.player_slot == sm.owner_slot {
+            continue;
+        }
+        let rel = crate::physics::min_image(mpos.0 - tpos.0);
+        let dir = mvel.0.normalize_or_zero();
+        let dir = if dir == Vec2::ZERO { Vec2::Y } else { dir };
+        // Spin sign from which side it struck (rel × heading).
+        let sign = (rel.x * dir.y - rel.y * dir.x).signum();
+        sm.latched = Some(other_e);
+        sm.rel = rel;
+        sm.shove_dir0 = dir;
+        sm.theta0 = trot.as_radians();
+        sm.spin = sm.spin.abs() * if sign == 0.0 { 1.0 } else { sign };
+    }
+}
+
+/// Drive T-Storm missiles. Flying: steer toward the nearest enemy and
+/// accelerate up to cruise, burning fuel. Latched: ride the victim, shove
+/// it along the (rotated) launch heading and spin it, burning fuel; when
+/// the fuel runs out, deal 1 damage and detonate.
+fn tick_storm_missiles(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    assets: Res<AssetServer>,
+    mut missiles: Query<
+        (Entity, &mut StormMissile, &mut Position, &mut LinearVelocity, &mut Rotation),
+        Without<Ship>,
+    >,
+    mut targets: Query<
+        (&Ship, &mut Position, &mut LinearVelocity, &mut Rotation, &mut Crew),
+        With<Ship>,
+    >,
+) {
+    use std::f32::consts::FRAC_PI_2;
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    let rot2 = |v: Vec2, a: f32| {
+        let (s, c) = a.sin_cos();
+        Vec2::new(v.x * c - v.y * s, v.x * s + v.y * c)
+    };
+    // Read-only snapshot of candidate targets for flying-missile steering
+    // (taken from the same query we later write through).
+    let snapshot: Vec<(usize, Vec2)> =
+        targets.iter().map(|(s, p, _, _, _)| (s.player_slot, p.0)).collect();
+
+    for (me, mut sm, mut mpos, mut mvel, mut mrot) in &mut missiles {
+        sm.fuel_s -= dt;
+        if let Some(t) = sm.latched {
+            let Ok((_, mut tpos, mut tvel, mut trot, mut tcrew)) = targets.get_mut(t) else {
+                if let Ok(mut ec) = commands.get_entity(me) {
+                    ec.try_despawn();
+                }
+                continue;
+            };
+            let dtheta = trot.as_radians() - sm.theta0;
+            // Ride the victim.
+            mpos.0 = tpos.0 + rot2(sm.rel, dtheta);
+            mvel.0 = tvel.0;
+            // Shove it along the (rotated) launch heading, capped.
+            let shove = rot2(sm.shove_dir0, dtheta);
+            let mut nv = tvel.0 + shove * sm.thrust * dt;
+            if nv.length() > sm.booster_speed {
+                nv = nv.normalize() * sm.booster_speed;
+            }
+            tvel.0 = nv;
+            // Spin it.
+            *trot = Rotation::radians(trot.as_radians() + sm.spin * dt);
+            let _ = &mut tpos;
+            if sm.fuel_s <= 0.0 {
+                tcrew.current = (tcrew.current - 1).max(0);
+                spawn_asteroid_explosion(&mut commands, &assets, mpos.0, 22.0);
+                if let Ok(mut ec) = commands.get_entity(me) {
+                    ec.try_despawn();
+                }
+            }
+            continue;
+        }
+
+        // Flying.
+        if sm.fuel_s <= 0.0 {
+            spawn_asteroid_explosion(&mut commands, &assets, mpos.0, 16.0);
+            if let Ok(mut ec) = commands.get_entity(me) {
+                ec.try_despawn();
+            }
+            continue;
+        }
+        // Steer toward the nearest enemy.
+        let mut best: Option<(f32, Vec2)> = None;
+        for (slot, p) in &snapshot {
+            if *slot == sm.owner_slot {
+                continue;
+            }
+            let img = crate::physics::nearest_image(*p, mpos.0);
+            let d2 = img.distance_squared(mpos.0);
+            if best.map_or(true, |(bd, _)| d2 < bd) {
+                best = Some((d2, img));
+            }
+        }
+        let speed = mvel.0.length();
+        if speed > 0.0 {
+            if let Some((_, tgt)) = best {
+                let cur = mvel.0 / speed;
+                let to = (tgt - mpos.0).normalize_or_zero();
+                if to != Vec2::ZERO {
+                    let ang = cur.perp_dot(to).atan2(cur.dot(to));
+                    let step = ang.clamp(-sm.turn_rate * dt, sm.turn_rate * dt);
+                    mvel.0 = rot2(cur, step) * speed;
+                }
+            }
+        }
+        // Accelerate up to cruise.
+        let dir = mvel.0.normalize_or_zero();
+        let mut nv = mvel.0 + dir * sm.accel * dt;
+        if nv.length() > sm.max_v {
+            nv = nv.normalize() * sm.max_v;
+        }
+        mvel.0 = nv;
+        // Orient sprite to heading.
+        *mrot = Rotation::radians(mvel.0.y.atan2(mvel.0.x) - FRAC_PI_2);
     }
 }
 
