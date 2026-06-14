@@ -2350,6 +2350,10 @@ pub struct TaumcState {
     pub ammo_cd_s: f32,
     pub fire_cd_s: f32,
     pub current_barrel: u32,
+    /// Turret aim, in radians relative to the hull's facing. Steered by
+    /// SPECIAL+left/right (`tick_taumc_turret`); the overlay sprite and
+    /// the missile launch direction both read it.
+    pub turret_rad: f32,
 }
 
 impl Default for TaumcState {
@@ -2363,6 +2367,7 @@ impl Default for TaumcState {
             ammo_cd_s: 0.0,
             fire_cd_s: 0.0,
             current_barrel: 0,
+            turret_rad: 0.0,
         }
     }
 }
@@ -2574,6 +2579,7 @@ impl Plugin for ShipPlugin {
             FixedUpdate,
             (
                 tick_orz_turret.after(apply_player_input),
+                tick_taumc_turret.after(apply_player_input),
                 tick_slylandro_drift.after(apply_player_input),
                 tick_orz_marines_boarded,
             )
@@ -2611,7 +2617,6 @@ impl Plugin for ShipPlugin {
                     handle_leviathan_hits.before(handle_projectile_hits),
                     tick_leviathan_food,
                     tick_taumc_primary,
-                    tick_taumc_special,
                     handle_torpedo_blast.before(handle_projectile_hits),
                     tick_taust_primary,
                     tick_taust_special,
@@ -3321,6 +3326,19 @@ fn overlay_frames_for(class: ShipClass, assets: &AssetServer) -> Option<OverlayS
         ShipClass::Orzne => {
             let frames: Vec<_> = (0..64)
                 .map(|i| assets.load(format!("ships/orzne/sprites/shot_d_{:02}_tga.png", i)))
+                .collect();
+            Some(OverlaySpriteBuilder {
+                frames,
+                extra_angle: 0.0,
+                z_offset: 0.5,
+            })
+        }
+        // Tau Missile Cruiser — the swivelling turret on top of the hull.
+        // 64 rotation frames at shot_eNN.png (0-indexed, frame 0 = north).
+        // `tick_taumc_turret` drives `extra_angle` from SPECIAL+left/right.
+        ShipClass::Taumc => {
+            let frames: Vec<_> = (0..64)
+                .map(|i| assets.load(format!("ships/taumc/sprites/shot_e{:02}.png", i)))
                 .collect();
             Some(OverlaySpriteBuilder {
                 frames,
@@ -7285,8 +7303,11 @@ fn tick_taumc_primary(
         }
 
         let fire = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        let special = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
         st.last_fire_held = fire;
-        if !fire || st.lock_s < lock_time {
+        // Torpedo only fires from the hull when NOT in turret mode (SPECIAL
+        // held re-routes FIRE to the turret — see tick_taumc_turret).
+        if !fire || special || st.lock_s < lock_time {
             continue;
         }
         // Pick a ready tube (prefer the scheduled one).
@@ -7328,27 +7349,34 @@ fn tick_taumc_primary(
     }
 }
 
-/// Tau Missile Cruiser special — `shptaumc.cpp:activate_special`. A rapid
-/// burst of auto-tracking missiles (TrackAngle-coned homing) drawn from a
-/// small ammo pool that slowly refills. NOTE: the original aims a manually
-/// steerable turret (special+left/right) and requires fire held; that
-/// dual-control scheme doesn't map onto our one-button-per-action model,
-/// so here the missiles simply track the nearest target and fire on the
-/// special button.
-fn tick_taumc_special(
+/// Tau Missile Cruiser turret — `shptaumc.cpp:activate_special` +
+/// `calculate_turn_left/right`. Faithful to the original dual-control
+/// scheme (the same one the Orz Nemesis uses): holding SPECIAL puts the
+/// ship in TURRET MODE — left/right swivel the turret instead of the hull,
+/// and FIRE looses a rapid burst of tracking missiles along the turret's
+/// heading, drawn from a small ammo pool that refills over time. Runs
+/// after `apply_player_input` so it can clobber the hull's turn the same
+/// way the Orz turret does.
+#[allow(clippy::too_many_arguments)]
+fn tick_taumc_turret(
     mut commands: Commands,
     time: Res<Time<Physics>>,
     slot_inputs: Res<input::SlotInputs>,
     mut ships: Query<(
         Entity,
         &Ship,
+        &ShipClass,
         &Position,
         &Rotation,
         &LinearVelocity,
+        &mut AngularVelocity,
+        &mut ConstantTorque,
         &mut TaumcState,
+        &ShipPhysicsDerived,
     )>,
+    mut overlays: Query<&mut OverlaySprite>,
 ) {
-    use std::f32::consts::FRAC_PI_2;
+    use std::f32::consts::{FRAC_PI_2, PI, TAU};
     let dt = time.delta_secs();
     let speed = 90.0 * SC2_VEL_SCALE; // [Special] Velocity 90
     let range = 20.0 * SC2_RANGE_SCALE; // Range 20
@@ -7359,8 +7387,14 @@ fn tick_taumc_special(
     let ammo_max = 4;
     let ammo_recharge = 20.0 / 20.0; // [Special] Rate 20 frames → 1 s/ammo
     let fire_rate = 2.0 / 20.0; // [Ship] SpecialRate 2 frames
+    // [Extra] TurnRate 0.6 — the turret swivels slower than the hull.
+    let turret_omega_scale = 0.6;
 
-    for (entity, ship, pos, rot, lvel, mut st) in &mut ships {
+    for (entity, ship, class, pos, rot, lvel, mut ang_vel, mut torque, mut st, derived) in &mut ships {
+        if *class != ShipClass::Taumc {
+            continue;
+        }
+        // Ammo always trickles back.
         st.fire_cd_s = (st.fire_cd_s - dt).max(0.0);
         if st.ammo < ammo_max {
             st.ammo_cd_s -= dt;
@@ -7370,43 +7404,76 @@ fn tick_taumc_special(
             }
         }
 
-        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL);
-        if !held || st.fire_cd_s > 0.0 || st.ammo <= 0 {
-            continue;
-        }
-        st.ammo -= 1;
-        st.fire_cd_s = fire_rate;
+        let input = slot_inputs.held[ship.player_slot.min(3)];
+        let special = input.pressed(input::INPUT_SPECIAL);
+        let fire = input.pressed(input::INPUT_FIRE);
 
-        let forward = Vec2::new(-rot.sin, rot.cos);
-        let right = Vec2::new(rot.cos, rot.sin);
-        let init_angle = forward.y.atan2(forward.x) - FRAC_PI_2;
-        // Two missiles per activation, from the rolling barrel pair.
-        for k in 0..2 {
-            let off = (st.current_barrel as f32 + k as f32 * 2.0 - 1.5) * 6.0;
-            let muzzle = pos.0 + right * off + forward * 23.0;
-            let mvel = lvel.0 + forward * speed;
-            commands.spawn((
-                Projectile { owner: entity, damage, lifetime },
-                Homing { target: None, turn_rate },
-                HomingCone(cone),
-                Sprite::from_color(Color::srgb(0.6, 0.85, 1.0), Vec2::new(5.0, 13.0)),
-                Transform::from_translation(muzzle.extend(0.48)),
-                (
-                    RigidBody::Dynamic,
-                    Collider::circle(4.0),
-                    Sensor,
-                    Mass(0.3),
-                    Position(muzzle),
-                    Rotation::radians(init_angle),
-                    LinearVelocity(mvel),
-                    AngularVelocity::ZERO,
-                    LinearDamping(0.0),
-                    AngularDamping(0.0),
-                    CollisionEventsEnabled,
-                ),
-            ));
+        if special {
+            // Turret mode: lock the hull's spin (apply_player_input already
+            // wrote it from the turn keys) and swivel the turret instead.
+            ang_vel.0 = 0.0;
+            torque.0 = 0.0;
+            let dir = if input.pressed(input::INPUT_LEFT) {
+                1.0
+            } else if input.pressed(input::INPUT_RIGHT) {
+                -1.0
+            } else {
+                0.0
+            };
+            st.turret_rad += dir * derived.target_omega * turret_omega_scale * dt;
+            if st.turret_rad > PI {
+                st.turret_rad -= TAU;
+            } else if st.turret_rad < -PI {
+                st.turret_rad += TAU;
+            }
+
+            // SPECIAL + FIRE → burst of tracking missiles along the turret.
+            if fire && st.fire_cd_s <= 0.0 && st.ammo > 0 {
+                st.ammo -= 1;
+                st.fire_cd_s = fire_rate;
+                let forward = Vec2::new(-rot.sin, rot.cos);
+                // Turret heading = hull forward rotated by the turret offset.
+                let (ts, tc) = st.turret_rad.sin_cos();
+                let aim = Vec2::new(forward.x * tc - forward.y * ts, forward.x * ts + forward.y * tc);
+                let right = Vec2::new(aim.y, -aim.x);
+                let init_angle = aim.y.atan2(aim.x) - FRAC_PI_2;
+                for k in 0..2 {
+                    let off = (st.current_barrel as f32 + k as f32 * 2.0 - 1.5) * 6.0;
+                    let muzzle = pos.0 + right * off + aim * 23.0;
+                    let mvel = lvel.0 + aim * speed;
+                    commands.spawn((
+                        Projectile { owner: entity, damage, lifetime },
+                        Homing { target: None, turn_rate },
+                        HomingCone(cone),
+                        Sprite::from_color(Color::srgb(0.6, 0.85, 1.0), Vec2::new(5.0, 13.0)),
+                        Transform::from_translation(muzzle.extend(0.48)),
+                        (
+                            RigidBody::Dynamic,
+                            Collider::circle(4.0),
+                            Sensor,
+                            Mass(0.3),
+                            Position(muzzle),
+                            Rotation::radians(init_angle),
+                            LinearVelocity(mvel),
+                            AngularVelocity::ZERO,
+                            LinearDamping(0.0),
+                            AngularDamping(0.0),
+                            CollisionEventsEnabled,
+                        ),
+                    ));
+                }
+                st.current_barrel = (st.current_barrel + 1) % 4;
+            }
         }
-        st.current_barrel = (st.current_barrel + 1) % 4;
+
+        // Mirror the turret aim onto the overlay art every tick (whether or
+        // not it moved this frame).
+        let turret_rad = st.turret_rad;
+        for mut overlay in &mut overlays {
+            if overlay.parent == entity {
+                overlay.extra_angle = turret_rad;
+            }
+        }
     }
 }
 
