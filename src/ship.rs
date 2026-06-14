@@ -362,6 +362,9 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("neccr", include_str!("../assets/ships/neccr.ini"), include_str!("../assets/ships/neccr.txt")),
     ("yurpa", include_str!("../assets/ships/yurpa.ini"), include_str!("../assets/ships/yurpa.txt")),
     ("glacr", include_str!("../assets/ships/glacr.ini"), include_str!("../assets/ships/glacr.txt")),
+    ("lyrwa", include_str!("../assets/ships/lyrwa.ini"), include_str!("../assets/ships/lyrwa.txt")),
+    ("vezba", include_str!("../assets/ships/vezba.ini"), include_str!("../assets/ships/vezba.txt")),
+    ("koapa", include_str!("../assets/ships/koapa.ini"), include_str!("../assets/ships/koapa.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -519,7 +522,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 41] = [
+pub const ALL_CLASSES: [ShipClass; 44] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -564,6 +567,9 @@ pub const ALL_CLASSES: [ShipClass; 41] = [
     ShipClass::Neccr,
     ShipClass::Yurpa,
     ShipClass::Glacr,
+    ShipClass::Lyrwa,
+    ShipClass::Vezba,
+    ShipClass::Koapa,
 ];
 
 /// How rotation responds to forces.
@@ -741,6 +747,15 @@ pub enum ShipClass {
     /// Glavria Cruiser (Varith). Primary: a five-torpedo forward spread.
     /// Special: a single backward torpedo.
     Glacr,
+    /// Lyrmristu War Destroyer (Varith). Primary: a three-bolt spread.
+    /// Special: a force sphere (damage-soak shield).
+    Lyrwa,
+    /// Vezlagari Barge (Varith). Primary: two backward unguided missiles.
+    /// Special: reinforce the armour plate (damage-soak shield).
+    Vezba,
+    /// Koanua Patrol Ship (Varith). Primary: a backward delayed-thrust
+    /// missile. Special: an ionic turbocharger (speed burst).
+    Koapa,
 }
 
 impl ShipClass {
@@ -788,6 +803,9 @@ impl ShipClass {
             ShipClass::Neccr => "neccr",
             ShipClass::Yurpa => "yurpa",
             ShipClass::Glacr => "glacr",
+            ShipClass::Lyrwa => "lyrwa",
+            ShipClass::Vezba => "vezba",
+            ShipClass::Koapa => "koapa",
         }
     }
 }
@@ -2480,6 +2498,12 @@ pub struct NeccrState { pub weapon_cd_s: f32, pub special_cd_s: f32, pub last_sp
 pub struct YurpaState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 #[derive(Component, Debug, Default)]
 pub struct GlacrState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
+#[derive(Component, Debug, Default)]
+pub struct LyrwaState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
+#[derive(Component, Debug, Default)]
+pub struct VezbaState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
+#[derive(Component, Debug, Default)]
+pub struct KoapaState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 
 /// A scramble stamped on a ship by an Iceci Confusion dart
 /// (`OverrideControlIceci`). For `remaining` seconds the victim's five
@@ -2750,6 +2774,12 @@ impl Plugin for ShipPlugin {
                 tick_yurpa_special,
                 tick_glacr_primary,
                 tick_glacr_special,
+                tick_lyrwa_primary,
+                tick_lyrwa_special,
+                tick_vezba_primary,
+                tick_vezba_special,
+                tick_koapa_primary,
+                tick_koapa_special,
             )
                 .run_if(crate::netcode::role_is_authoritative),
         );
@@ -3464,6 +3494,15 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Glacr) {
         entity.insert(GlacrState::default());
+    }
+    if matches!(class, ShipClass::Lyrwa) {
+        entity.insert(LyrwaState::default());
+    }
+    if matches!(class, ShipClass::Vezba) {
+        entity.insert(VezbaState::default());
+    }
+    if matches!(class, ShipClass::Koapa) {
+        entity.insert(KoapaState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -4890,6 +4929,18 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "glacr-spread" }, cooldown_s: 0.0 },
             special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "glacr-back" }, cooldown_s: 0.0 },
         }),
+        ShipClass::Lyrwa => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "lyrwa-bolts" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "lyrwa-sphere" }, cooldown_s: 0.0 },
+        }),
+        ShipClass::Vezba => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "vezba-missiles" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "vezba-armor" }, cooldown_s: 0.0 },
+        }),
+        ShipClass::Koapa => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "koapa-missile" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "koapa-turbo" }, cooldown_s: 0.0 },
+        }),
     }
 }
 
@@ -4958,7 +5009,10 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
         | ShipClass::Hubde
         | ShipClass::Neccr
         | ShipClass::Yurpa
-        | ShipClass::Glacr => "ship_base.png".to_string(),
+        | ShipClass::Glacr
+        | ShipClass::Lyrwa
+        | ShipClass::Vezba
+        | ShipClass::Koapa => "ship_base.png".to_string(),
 
         // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
         _ => format!("ship_s{:02}.png", frame + 1),
@@ -5006,6 +5060,9 @@ pub fn single_sprite_ship(class: ShipClass) -> bool {
             | ShipClass::Neccr
             | ShipClass::Yurpa
             | ShipClass::Glacr
+            | ShipClass::Lyrwa
+            | ShipClass::Vezba
+            | ShipClass::Koapa
     )
 }
 
@@ -5581,7 +5638,9 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Zfpst
         | ShipClass::Neodr
         | ShipClass::Iceco => 14.0,
-        ShipClass::Vioge | ShipClass::Neccr | ShipClass::Yurpa | ShipClass::Glacr => 22.0,
+        ShipClass::Vioge | ShipClass::Neccr | ShipClass::Yurpa | ShipClass::Glacr | ShipClass::Vezba => 22.0,
+        ShipClass::Koapa => 16.0,
+        ShipClass::Lyrwa => 32.0,
         ShipClass::Hubde => 24.0,
         ShipClass::Uxjba => 30.0,
         ShipClass::Spael
@@ -8998,6 +9057,106 @@ fn tick_glacr_special(
         batt.current -= 4; st.special_cd_s = 1.0 / 20.0;
         let fwd = Vec2::new(-rot.sin, rot.cos); let back = -fwd;
         spawn_bolt(&mut commands, e, pos.0 + back * 18.0, back, 0.0, lvel.0, speed, 1, life, Vec2::new(6.0, 14.0), Color::srgb(0.5, 0.7, 1.0));
+    }
+}
+
+/// Lyrmristu primary — a three-bolt spread (centre + ±4°). WeaponRate 12.
+fn tick_lyrwa_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut LyrwaState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 105.0 * SC2_VEL_SCALE; let life = (28.0 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 3 { continue; }
+        batt.current -= 3; st.weapon_cd_s = 12.0 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos);
+        for a in [-4.0_f32, 0.0, 4.0] {
+            spawn_bolt(&mut commands, e, pos.0 + fwd * 16.0, fwd, a.to_radians(), lvel.0, speed, 1, life, Vec2::new(4.0, 12.0), Color::srgb(0.8, 1.0, 0.9));
+        }
+    }
+}
+
+/// Lyrmristu special — a force sphere: a few seconds of strong damage-soak
+/// shield. SpecialRate 20, SpecialDrain 8.
+fn tick_lyrwa_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &mut LyrwaState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    for (e, ship, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 8 { continue; }
+        batt.current -= 8; st.special_cd_s = 20.0 / 20.0;
+        commands.entity(e).try_insert(ShieldActive { remaining: 4.0, damage_factor: 0.3 });
+    }
+}
+
+/// Vezlagari primary — two backward unguided missiles (the barge's tubes
+/// point aft). WeaponRate 6, Damage 2.
+fn tick_vezba_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut VezbaState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 80.0 * SC2_VEL_SCALE; let life = (32.5 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 2 { continue; }
+        batt.current -= 2; st.weapon_cd_s = 6.0 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos); let back = -fwd; let right = Vec2::new(rot.cos, rot.sin);
+        for sgn in [-1.0_f32, 1.0] {
+            spawn_bolt(&mut commands, e, pos.0 + right * (sgn * 18.0) - fwd * 14.0, back, sgn * 3.0_f32.to_radians(), lvel.0, speed, 2, life, Vec2::new(5.0, 13.0), Color::srgb(1.0, 0.8, 0.6));
+        }
+    }
+}
+
+/// Vezlagari special — reinforce the armour plate: a few seconds of
+/// damage-soak. SpecialRate 12, SpecialDrain 12.
+fn tick_vezba_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &mut VezbaState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    for (e, ship, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 12 { continue; }
+        batt.current -= 12; st.special_cd_s = 12.0 / 20.0;
+        commands.entity(e).try_insert(ShieldActive { remaining: 5.0, damage_factor: 0.4 });
+    }
+}
+
+/// Koanua primary — a backward delayed-thrust missile (Damage 4). WeaponRate 3.
+fn tick_koapa_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut KoapaState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 60.0 * SC2_VEL_SCALE; let life = (30.0 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 1 { continue; }
+        batt.current -= 1; st.weapon_cd_s = 3.0 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos); let back = -fwd;
+        spawn_bolt(&mut commands, e, pos.0 + back * 16.0, back, 0.0, lvel.0, speed, 4, life, Vec2::new(5.0, 14.0), Color::srgb(0.7, 0.9, 1.0));
+    }
+}
+
+/// Koanua special — ionic turbocharger: a speed burst (reuses the nitrous
+/// cap-lift) that costs most of the battery. SpecialRate 240.
+fn tick_koapa_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Rotation, &mut LinearVelocity, &mut KoapaState, &mut Battery, &ShipPhysicsDerived)>,
+) {
+    let dt = time.delta_secs();
+    for (e, ship, rot, mut vel, mut st, mut batt, derived) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 4 { continue; }
+        batt.current = 1; st.special_cd_s = 240.0 / 20.0;
+        commands.entity(e).try_insert(NitrousActive { remaining: 2.5 });
+        let fwd = Vec2::new(-rot.sin, rot.cos);
+        vel.0 = fwd * (derived.speed_max.max(120.0) * NITROUS_CAP_MULT);
     }
 }
 
