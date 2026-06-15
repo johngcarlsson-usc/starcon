@@ -1298,6 +1298,14 @@ pub struct BossHealth {
     pub max: i32,
 }
 
+/// A little floating health bar pinned above a boss part, so you can see
+/// turret/core damage land. `part` is the boss entity it tracks; the bar
+/// despawns when that part is gone.
+#[derive(Component, Debug)]
+pub struct BossHpBar {
+    pub part: Entity,
+}
+
 /// The win target: the dreadnought's bridge at the prow.
 /// Destroy it and the co-op team wins.
 #[derive(Component, Debug)]
@@ -2167,6 +2175,42 @@ fn tick_core_aperture(
     }
 }
 
+/// Spawn a floating HP bar for each boss part the moment it appears.
+fn spawn_boss_hp_bars(mut commands: Commands, new_parts: Query<Entity, Added<BossHealth>>) {
+    for part in &new_parts {
+        commands.spawn((
+            BossHpBar { part },
+            // Width is rewritten each frame by `update_boss_hp_bars`.
+            Sprite::from_color(Color::srgb(0.25, 1.0, 0.35), Vec2::new(56.0, 6.0)),
+            Transform::from_translation(Vec3::new(0.0, 0.0, 0.6)),
+        ));
+    }
+}
+
+/// Pin each boss HP bar just above its part and size/colour it to the
+/// part's remaining health (green → red). Despawns when the part is gone.
+fn update_boss_hp_bars(
+    mut commands: Commands,
+    parts: Query<(&Position, &BossHealth)>,
+    mut bars: Query<(Entity, &BossHpBar, &mut Transform, &mut Sprite)>,
+) {
+    const BAR_W: f32 = 56.0;
+    for (bar_e, bar, mut xf, mut sprite) in &mut bars {
+        let Ok((pos, hp)) = parts.get(bar.part) else {
+            if let Ok(mut ec) = commands.get_entity(bar_e) {
+                ec.try_despawn();
+            }
+            continue;
+        };
+        let frac = if hp.max > 0 { (hp.hp as f32 / hp.max as f32).clamp(0.0, 1.0) } else { 0.0 };
+        // Float above the part.
+        xf.translation = (pos.0 + Vec2::new(0.0, 52.0)).extend(0.6);
+        sprite.custom_size = Some(Vec2::new(BAR_W * frac, 6.0));
+        // Green when healthy, red when low.
+        sprite.color = Color::srgb(1.0 - frac, 0.3 + 0.7 * frac, 0.3);
+    }
+}
+
 /// Owner-attached damage zone — same gameplay shape as `DamageZone`
 /// but its world position is recomputed each tick from the owner's
 /// `Position + Rotation`, so it sticks to the ship as it moves.
@@ -2727,6 +2771,7 @@ impl Plugin for ShipPlugin {
             .init_resource::<PowerUpSpawner>()
             .add_message::<PowerUpPicked>()
             .add_systems(Update, (class_picker_input, cycle_angular_override))
+            .add_systems(Update, (spawn_boss_hp_bars, update_boss_hp_bars))
             // EMP control-jam enforcement: clear the jammed bits right
             // after inputs are gathered and BEFORE `apply_player_input`
             // reads them, so the victim's thrust/turn are frozen this same
@@ -11187,6 +11232,8 @@ fn tick_beams(
     hypers: Query<&crate::ultimate::HyperActive>,
     camera: Query<&Transform, With<Camera2d>>,
     satellites_for_filter: Query<(Entity, &ChmmrSatellite)>,
+    mut boss_health: Query<(&mut BossHealth, Has<CapitalCore>, Option<&CoreAperture>)>,
+    hull_q: Query<Entity, With<CapitalShip>>,
     assets: Res<AssetServer>,
 ) {
     use avian2d::prelude::SpatialQueryFilter;
@@ -11246,6 +11293,11 @@ fn tick_beams(
                 excluded.push(sat_e);
             }
         }
+        // Beams pass THROUGH the boss hull wall (just like player
+        // projectiles) to reach the turrets/core mounted inside the wedge.
+        for hull_e in &hull_q {
+            excluded.push(hull_e);
+        }
         let filter = SpatialQueryFilter::default().with_excluded_entities(excluded);
         let hit = spatial.cast_ray(
             world_origin,
@@ -11289,6 +11341,23 @@ fn tick_beams(
                         let total = per_tick * damage_ticks;
                         if total > 0 {
                             crew.current = (crew.current - total).max(0);
+                        }
+                    }
+                }
+            } else if let Ok((mut bh, is_core, aperture)) = boss_health.get_mut(target) {
+                // Boss part (turret / core). The core only takes damage
+                // while its strike window is open; turrets always do.
+                let closed = aperture.is_some_and(|a| !a.open);
+                if !closed && damage_ticks > 0 {
+                    let dmg = (beam.damage_per_tick * damage_ticks).max(0);
+                    bh.hp = (bh.hp - dmg).max(0);
+                    let hit_pos = world_origin + world_dir * hit_t;
+                    spawn_asteroid_explosion(&mut commands, &assets, hit_pos, 8.0);
+                    if bh.hp <= 0 {
+                        spawn_asteroid_explosion(&mut commands, &assets, hit_pos, 48.0);
+                        commands.entity(target).try_despawn();
+                        if is_core {
+                            info!("boss: CORE DESTROYED (beam) — co-op victory");
                         }
                     }
                 }
