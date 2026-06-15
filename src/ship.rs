@@ -369,6 +369,9 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("ulzin", include_str!("../assets/ships/ulzin.ini"), include_str!("../assets/ships/ulzin.txt")),
     ("alhdr", include_str!("../assets/ships/alhdr.ini"), include_str!("../assets/ships/alhdr.txt")),
     ("gahmo", include_str!("../assets/ships/gahmo.ini"), include_str!("../assets/ships/gahmo.txt")),
+    ("hydcr", include_str!("../assets/ships/hydcr.ini"), include_str!("../assets/ships/hydcr.txt")),
+    ("rogsq", include_str!("../assets/ships/rogsq.ini"), include_str!("../assets/ships/rogsq.txt")),
+    ("dajem", include_str!("../assets/ships/dajem.ini"), include_str!("../assets/ships/dajem.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -526,7 +529,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 48] = [
+pub const ALL_CLASSES: [ShipClass; 51] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -578,6 +581,9 @@ pub const ALL_CLASSES: [ShipClass; 48] = [
     ShipClass::Ulzin,
     ShipClass::Alhdr,
     ShipClass::Gahmo,
+    ShipClass::Hydcr,
+    ShipClass::Rogsq,
+    ShipClass::Dajem,
 ];
 
 /// How rotation responds to forces.
@@ -777,6 +783,15 @@ pub enum ShipClass {
     /// fire to charge, release to launch — bigger charge hits harder).
     /// Special: dump the charge as a three-way plasma burst.
     Gahmo,
+    /// Hydra Cruiser (Varith). Primary: a five-beam fan. Special: launch a
+    /// station-keeping fighter that lasers nearby enemies.
+    Hydcr,
+    /// Rogue Squadron (GeomanNL). Primary: a pulse laser. Special: deploy
+    /// wingmen that fight alongside you.
+    Rogsq,
+    /// Dajielka Cruiser (Varith). Primary: a pulse blaster. Special: a
+    /// protective sanctuary (damage-soak shield).
+    Dajem,
 }
 
 impl ShipClass {
@@ -831,6 +846,9 @@ impl ShipClass {
             ShipClass::Ulzin => "ulzin",
             ShipClass::Alhdr => "alhdr",
             ShipClass::Gahmo => "gahmo",
+            ShipClass::Hydcr => "hydcr",
+            ShipClass::Rogsq => "rogsq",
+            ShipClass::Dajem => "dajem",
         }
     }
 }
@@ -2537,6 +2555,12 @@ pub struct UlzinState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 pub struct AlhdrState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 #[derive(Component, Debug, Default)]
 pub struct GahmoState { pub charge_s: f32, pub last_fire_held: bool, pub special_cd_s: f32 }
+#[derive(Component, Debug, Default)]
+pub struct HydcrState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
+#[derive(Component, Debug, Default)]
+pub struct RogsqState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
+#[derive(Component, Debug, Default)]
+pub struct DajemState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 
 /// A scramble stamped on a ship by an Iceci Confusion dart
 /// (`OverrideControlIceci`). For `remaining` seconds the victim's five
@@ -2817,10 +2841,23 @@ impl Plugin for ShipPlugin {
                 tick_sclfr_special,
                 tick_ulzin_primary,
                 tick_ulzin_special,
+            )
+                .run_if(crate::netcode::role_is_authoritative),
+        );
+        // Varith/GeomanNL fan-ship weapons, batch 2 (host-authoritative).
+        app.add_systems(
+            FixedUpdate,
+            (
                 tick_alhdr_primary,
                 tick_alhdr_special,
                 tick_gahmo_primary,
                 tick_gahmo_special,
+                tick_hydcr_primary,
+                tick_hydcr_special,
+                tick_rogsq_primary,
+                tick_rogsq_special,
+                tick_dajem_primary,
+                tick_dajem_special,
             )
                 .run_if(crate::netcode::role_is_authoritative),
         );
@@ -3556,6 +3593,15 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Gahmo) {
         entity.insert(GahmoState::default());
+    }
+    if matches!(class, ShipClass::Hydcr) {
+        entity.insert(HydcrState::default());
+    }
+    if matches!(class, ShipClass::Rogsq) {
+        entity.insert(RogsqState::default());
+    }
+    if matches!(class, ShipClass::Dajem) {
+        entity.insert(DajemState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -5010,6 +5056,18 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "gahmo-charge" }, cooldown_s: 0.0 },
             special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "gahmo-burst" }, cooldown_s: 0.0 },
         }),
+        ShipClass::Hydcr => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "hydcr-beams" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "hydcr-fighter" }, cooldown_s: 0.0 },
+        }),
+        ShipClass::Rogsq => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "rogsq-pulse" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "rogsq-wingmen" }, cooldown_s: 0.0 },
+        }),
+        ShipClass::Dajem => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "dajem-pulse" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "dajem-sanctuary" }, cooldown_s: 0.0 },
+        }),
     }
 }
 
@@ -5085,7 +5143,10 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
         | ShipClass::Sclfr
         | ShipClass::Ulzin
         | ShipClass::Alhdr
-        | ShipClass::Gahmo => "ship_base.png".to_string(),
+        | ShipClass::Gahmo
+        | ShipClass::Rogsq => "ship_base.png".to_string(),
+        ShipClass::Hydcr => format!("ship_s_{:04}.png", frame),
+        ShipClass::Dajem => format!("ship_s5_{:04}.png", frame),
 
         // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
         _ => format!("ship_s{:02}.png", frame + 1),
@@ -5140,6 +5201,7 @@ pub fn single_sprite_ship(class: ShipClass) -> bool {
             | ShipClass::Ulzin
             | ShipClass::Alhdr
             | ShipClass::Gahmo
+            | ShipClass::Rogsq
     )
 }
 
@@ -5718,7 +5780,8 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         ShipClass::Vioge | ShipClass::Neccr | ShipClass::Yurpa | ShipClass::Glacr | ShipClass::Vezba => 22.0,
         ShipClass::Koapa | ShipClass::Ulzin => 16.0,
         ShipClass::Sclfr | ShipClass::Alhdr => 26.0,
-        ShipClass::Gahmo => 30.0,
+        ShipClass::Gahmo | ShipClass::Hydcr | ShipClass::Dajem => 26.0,
+        ShipClass::Rogsq => 14.0,
         ShipClass::Lyrwa => 32.0,
         ShipClass::Hubde => 24.0,
         ShipClass::Uxjba => 30.0,
@@ -9402,6 +9465,112 @@ fn tick_gahmo_special(
         for a in [-18.0_f32, 0.0, 18.0] {
             spawn_bolt(&mut commands, e, pos.0 + fwd * 20.0, fwd, a.to_radians(), lvel.0, speed, 3, life, Vec2::splat(8.0), Color::srgb(0.5, 1.0, 0.6));
         }
+    }
+}
+
+/// Hydra primary — a five-beam fan (centre + ±0.53 + ±1.6 rad). WeaponRate 50.
+fn tick_hydcr_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &mut HydcrState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let col = Color::srgb(0.5, 1.0, 0.9);
+    let beams = [(0.0_f32, 12.0, 12), (-0.53, 8.0, 10), (0.53, 8.0, 10), (-1.6, 4.0, 8), (1.6, 4.0, 8)];
+    for (e, ship, pos, rot, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 12 { continue; }
+        batt.current -= 12; st.weapon_cd_s = 50.0 / 20.0;
+        for (a, r, dmg) in beams {
+            let local_dir = Vec2::new(-a.sin(), a.cos());
+            spawn_beam(&mut commands, e, pos.0, rot, Vec2::ZERO, local_dir, r * SC2_RANGE_SCALE, dmg, col, false, 0.5, 3.0);
+        }
+    }
+}
+
+/// Hydra special — launch a station-keeping fighter that lasers nearby
+/// enemies (reuses the KzerZaFighter sub-entity AI). SpecialRate 10.
+fn tick_hydcr_special(
+    mut commands: Commands, time: Res<Time<Physics>>, assets: Res<AssetServer>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &mut HydcrState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    for (e, ship, pos, rot, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 8 { continue; }
+        batt.current -= 8; st.special_cd_s = 10.0 / 20.0;
+        spawn_sub_entity(
+            &mut commands, &assets, e, pos.0, rot, Vec2::new(0.0, 22.0), 0.0, 35.0 * SC2_VEL_SCALE,
+            None, 14.0, Color::srgb(0.6, 1.0, 0.9), 5, 14.0,
+            SubEntityAi::KzerZaFighter { target: None, turn_rate: sc2_turning(4.0), speed: 35.0 * SC2_VEL_SCALE, laser_range: 160.0, laser_damage: 1, recharge_s: 0.5, laser_cooldown_s: 0.0, air_grace_s: 0.3 },
+        );
+    }
+}
+
+/// Rogue Squadron primary — a forward pulse laser (Damage 1). WeaponRate 5.
+fn tick_rogsq_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut RogsqState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 100.0 * SC2_VEL_SCALE; let life = (40.0 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 4 { continue; }
+        batt.current -= 4; st.weapon_cd_s = 5.0 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos);
+        spawn_bolt(&mut commands, e, pos.0 + fwd * 14.0, fwd, 0.0, lvel.0, speed, 1, life, Vec2::new(3.0, 14.0), Color::srgb(1.0, 0.4, 0.3));
+    }
+}
+
+/// Rogue Squadron special — deploy two wingmen that fight alongside you
+/// (KzerZaFighter sub-entities). SpecialRate 10, SpecialDrain 1.
+fn tick_rogsq_special(
+    mut commands: Commands, time: Res<Time<Physics>>, assets: Res<AssetServer>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &mut RogsqState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    for (e, ship, pos, rot, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 1 { continue; }
+        batt.current -= 1; st.special_cd_s = 10.0 / 20.0;
+        for sgn in [-1.0_f32, 1.0] {
+            spawn_sub_entity(
+                &mut commands, &assets, e, pos.0, rot, Vec2::new(sgn * 30.0, 0.0), 0.0, 40.0 * SC2_VEL_SCALE,
+                None, 12.0, Color::srgb(1.0, 0.7, 0.4), 4, 18.0,
+                SubEntityAi::KzerZaFighter { target: None, turn_rate: sc2_turning(4.0), speed: 40.0 * SC2_VEL_SCALE, laser_range: 150.0, laser_damage: 1, recharge_s: 0.6, laser_cooldown_s: 0.0, air_grace_s: 0.3 },
+            );
+        }
+    }
+}
+
+/// Dajielka primary — a forward pulse blaster (Damage 1). WeaponRate 1.6.
+fn tick_dajem_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut DajemState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 90.0 * SC2_VEL_SCALE; let life = (22.5 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 1 { continue; }
+        batt.current -= 1; st.weapon_cd_s = 1.6 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos);
+        spawn_bolt(&mut commands, e, pos.0 + fwd * 16.0, fwd, 0.0, lvel.0, speed, 1, life, Vec2::new(4.0, 11.0), Color::srgb(0.8, 0.9, 1.0));
+    }
+}
+
+/// Dajielka special — deploy the protective sanctuary: a few seconds of
+/// strong damage-soak. Gated to ~1s.
+fn tick_dajem_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &mut DajemState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    for (e, ship, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 4 { continue; }
+        batt.current -= 4; st.special_cd_s = 1.0;
+        commands.entity(e).try_insert(ShieldActive { remaining: 4.0, damage_factor: 0.3 });
     }
 }
 
