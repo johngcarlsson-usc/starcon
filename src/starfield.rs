@@ -18,6 +18,7 @@
 //! non-physics system: background visuals).
 
 use avian2d::prelude::Position;
+use bevy::ecs::schedule::common_conditions::not;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 
@@ -166,7 +167,8 @@ impl Plugin for StarfieldPlugin {
                 Update,
                 (
                     toggle_camera_follow_mode,
-                    follow_ships_with_camera,
+                    follow_ships_with_camera
+                        .run_if(not(crate::splitscreen::split_active)),
                     handle_zoom_input,
                     handle_pinch_zoom,
                     smooth_zoom_scale,
@@ -181,10 +183,16 @@ impl Plugin for StarfieldPlugin {
             // its say, and before Bevy propagates GlobalTransforms.
             // That ordering is what keeps bodies glued to whichever
             // camera is in charge this frame.
+            //
+            // Suspended while a split is active: it images every body
+            // around the single primary camera, which would yank them
+            // away from the (multiple) pane cameras. Panes render at
+            // canonical coords until the torus-tiling stage lands.
             .add_systems(
                 PostUpdate,
                 apply_toroidal_render_offset
-                    .before(bevy::transform::TransformSystems::Propagate),
+                    .before(bevy::transform::TransformSystems::Propagate)
+                    .run_if(not(crate::splitscreen::split_active)),
             );
     }
 }

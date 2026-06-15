@@ -17,6 +17,7 @@ mod physics;
 mod rng;
 mod settings_menu;
 mod ship;
+mod splitscreen;
 mod mobile_controls;
 mod starfield;
 mod timeflow;
@@ -125,6 +126,7 @@ fn main() {
             audio::AudioPlugin,
             lobby::LobbyPlugin,
             netcode::NetcodePlugin,
+            splitscreen::SplitScreenPlugin,
         ))
         .init_resource::<ship::PreloadedAssets>()
         .add_systems(Startup, (setup_camera, ship::preload_all_assets))
