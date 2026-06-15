@@ -367,6 +367,8 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("koapa", include_str!("../assets/ships/koapa.ini"), include_str!("../assets/ships/koapa.txt")),
     ("sclfr", include_str!("../assets/ships/sclfr.ini"), include_str!("../assets/ships/sclfr.txt")),
     ("ulzin", include_str!("../assets/ships/ulzin.ini"), include_str!("../assets/ships/ulzin.txt")),
+    ("alhdr", include_str!("../assets/ships/alhdr.ini"), include_str!("../assets/ships/alhdr.txt")),
+    ("gahmo", include_str!("../assets/ships/gahmo.ini"), include_str!("../assets/ships/gahmo.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -524,7 +526,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 46] = [
+pub const ALL_CLASSES: [ShipClass; 48] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -574,6 +576,8 @@ pub const ALL_CLASSES: [ShipClass; 46] = [
     ShipClass::Koapa,
     ShipClass::Sclfr,
     ShipClass::Ulzin,
+    ShipClass::Alhdr,
+    ShipClass::Gahmo,
 ];
 
 /// How rotation responds to forces.
@@ -766,6 +770,13 @@ pub enum ShipClass {
     /// Ulzrak Interceptor (Varith). Primary: a fast forward missile.
     /// Special: zoom drive — a ramming speed dash.
     Ulzin,
+    /// Alhordian Dreadnought (Varith). Primary: a long-range torpedo.
+    /// Special: a sweep of two side lasers.
+    Alhdr,
+    /// Gahmur Monitor (Varith). Primary: a charge-up homing plasma (hold
+    /// fire to charge, release to launch — bigger charge hits harder).
+    /// Special: dump the charge as a three-way plasma burst.
+    Gahmo,
 }
 
 impl ShipClass {
@@ -818,6 +829,8 @@ impl ShipClass {
             ShipClass::Koapa => "koapa",
             ShipClass::Sclfr => "sclfr",
             ShipClass::Ulzin => "ulzin",
+            ShipClass::Alhdr => "alhdr",
+            ShipClass::Gahmo => "gahmo",
         }
     }
 }
@@ -2520,6 +2533,10 @@ pub struct KoapaState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 pub struct SclfrState { pub weapon_cd_s: f32, pub special_cd_s: f32, pub side: f32 }
 #[derive(Component, Debug, Default)]
 pub struct UlzinState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
+#[derive(Component, Debug, Default)]
+pub struct AlhdrState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
+#[derive(Component, Debug, Default)]
+pub struct GahmoState { pub charge_s: f32, pub last_fire_held: bool, pub special_cd_s: f32 }
 
 /// A scramble stamped on a ship by an Iceci Confusion dart
 /// (`OverrideControlIceci`). For `remaining` seconds the victim's five
@@ -2800,6 +2817,10 @@ impl Plugin for ShipPlugin {
                 tick_sclfr_special,
                 tick_ulzin_primary,
                 tick_ulzin_special,
+                tick_alhdr_primary,
+                tick_alhdr_special,
+                tick_gahmo_primary,
+                tick_gahmo_special,
             )
                 .run_if(crate::netcode::role_is_authoritative),
         );
@@ -3529,6 +3550,12 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Ulzin) {
         entity.insert(UlzinState::default());
+    }
+    if matches!(class, ShipClass::Alhdr) {
+        entity.insert(AlhdrState::default());
+    }
+    if matches!(class, ShipClass::Gahmo) {
+        entity.insert(GahmoState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -4975,6 +5002,14 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "ulzin-missile" }, cooldown_s: 0.0 },
             special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "ulzin-zoom" }, cooldown_s: 0.0 },
         }),
+        ShipClass::Alhdr => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "alhdr-torpedo" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "alhdr-lasers" }, cooldown_s: 0.0 },
+        }),
+        ShipClass::Gahmo => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "gahmo-charge" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "gahmo-burst" }, cooldown_s: 0.0 },
+        }),
     }
 }
 
@@ -5048,7 +5083,9 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
         | ShipClass::Vezba
         | ShipClass::Koapa
         | ShipClass::Sclfr
-        | ShipClass::Ulzin => "ship_base.png".to_string(),
+        | ShipClass::Ulzin
+        | ShipClass::Alhdr
+        | ShipClass::Gahmo => "ship_base.png".to_string(),
 
         // Everyone else: 1-indexed `ship_sNN.png` where ship_s01 = north.
         _ => format!("ship_s{:02}.png", frame + 1),
@@ -5101,6 +5138,8 @@ pub fn single_sprite_ship(class: ShipClass) -> bool {
             | ShipClass::Koapa
             | ShipClass::Sclfr
             | ShipClass::Ulzin
+            | ShipClass::Alhdr
+            | ShipClass::Gahmo
     )
 }
 
@@ -5678,7 +5717,8 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         | ShipClass::Iceco => 14.0,
         ShipClass::Vioge | ShipClass::Neccr | ShipClass::Yurpa | ShipClass::Glacr | ShipClass::Vezba => 22.0,
         ShipClass::Koapa | ShipClass::Ulzin => 16.0,
-        ShipClass::Sclfr => 20.0,
+        ShipClass::Sclfr | ShipClass::Alhdr => 26.0,
+        ShipClass::Gahmo => 30.0,
         ShipClass::Lyrwa => 32.0,
         ShipClass::Hubde => 24.0,
         ShipClass::Uxjba => 30.0,
@@ -9267,6 +9307,101 @@ fn tick_ulzin_special(
         commands.entity(e).try_insert(NitrousActive { remaining: 1.6 });
         let fwd = Vec2::new(-rot.sin, rot.cos);
         vel.0 = fwd * (derived.speed_max.max(120.0) * NITROUS_CAP_MULT);
+    }
+}
+
+/// Alhordian primary — a long-range torpedo (Damage 3). WeaponRate 5.
+fn tick_alhdr_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut AlhdrState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 102.5 * SC2_VEL_SCALE; let life = 3.0;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 8 { continue; }
+        batt.current -= 8; st.weapon_cd_s = 5.0 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos);
+        spawn_bolt(&mut commands, e, pos.0 + fwd * 22.0, fwd, 0.0, lvel.0, speed, 3, life, Vec2::new(7.0, 20.0), Color::srgb(0.7, 0.9, 1.0));
+    }
+}
+
+/// Alhordian special — a sweep of two side lasers (perpendicular bolt
+/// bursts). SpecialRate 0 (rapid), SpecialDrain 1.
+fn tick_alhdr_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut AlhdrState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 220.0 * SC2_VEL_SCALE; let life = (8.0 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 1 { continue; }
+        batt.current -= 1; st.special_cd_s = 2.0 / 20.0;
+        let right = Vec2::new(rot.cos, rot.sin); let left = -right;
+        spawn_bolt(&mut commands, e, pos.0 + right * 18.0, right, 0.0, lvel.0, speed, 1, life, Vec2::new(3.0, 10.0), Color::srgb(1.0, 0.5, 0.4));
+        spawn_bolt(&mut commands, e, pos.0 + left * 18.0, left, 0.0, lvel.0, speed, 1, life, Vec2::new(3.0, 10.0), Color::srgb(1.0, 0.5, 0.4));
+    }
+}
+
+/// Gahmur primary — a charge-up homing plasma. Hold fire to charge
+/// (0.2–2.0s); release to launch a plasma whose damage/range/speed scale
+/// with the charge (Damage 3→16). `shpgahmo.cpp` (charge in calculate()).
+fn tick_gahmo_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut GahmoState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        let held = slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE);
+        let was = st.last_fire_held; st.last_fire_held = held;
+        if held && batt.current > 0 {
+            st.charge_s = (st.charge_s + dt).min(2.0);
+        }
+        if was && !held {
+            let c = st.charge_s; st.charge_s = 0.0;
+            if c < 0.2 { continue; }
+            let frac = ((c - 0.2) / 1.8).clamp(0.0, 1.0);
+            let cost = (2 + (frac * 6.0) as i32).min(batt.current.max(0));
+            batt.current -= cost;
+            let damage = (3.0 + frac * 13.0).round() as i32;
+            let speed = (25.0 + frac * 40.0) * SC2_VEL_SCALE;
+            let range = (10.0 + frac * 75.0) * SC2_RANGE_SCALE;
+            let life = range / speed;
+            let fwd = Vec2::new(-rot.sin, rot.cos);
+            let sz = 6.0 + frac * 10.0;
+            commands.spawn((
+                Projectile { owner: e, damage, lifetime: life },
+                Homing { target: None, turn_rate: sc2_turning(2.0) },
+                Sprite::from_color(Color::srgb(0.6, 1.0, 0.7), Vec2::splat(sz)),
+                Transform::from_translation((pos.0 + fwd * 20.0).extend(0.5)),
+                (
+                    RigidBody::Dynamic, Collider::circle(sz * 0.5), Sensor, Mass(0.4),
+                    Position(pos.0 + fwd * 20.0),
+                    Rotation::radians(fwd.y.atan2(fwd.x) - std::f32::consts::FRAC_PI_2),
+                    LinearVelocity(lvel.0 + fwd * speed),
+                    AngularVelocity::ZERO, LinearDamping(0.0), AngularDamping(0.0), CollisionEventsEnabled,
+                ),
+            ));
+        }
+    }
+}
+
+/// Gahmur special — dump the current charge as a three-way plasma burst.
+fn tick_gahmo_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut GahmoState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 55.0 * SC2_VEL_SCALE; let life = (40.0 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 4 { continue; }
+        batt.current -= 4; st.special_cd_s = 6.0 / 20.0; st.charge_s = 0.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos);
+        for a in [-18.0_f32, 0.0, 18.0] {
+            spawn_bolt(&mut commands, e, pos.0 + fwd * 20.0, fwd, a.to_radians(), lvel.0, speed, 3, life, Vec2::splat(8.0), Color::srgb(0.5, 1.0, 0.6));
+        }
     }
 }
 
