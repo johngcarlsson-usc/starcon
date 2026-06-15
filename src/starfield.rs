@@ -60,6 +60,12 @@ pub struct ZoomStar {
 #[derive(Resource)]
 pub struct ZoomState {
     pub target_scale: f32,
+    /// Persistent user zoom multiplier applied on top of the auto-follow
+    /// fit. Scroll wheel / pinch nudge this; the follow camera keeps
+    /// centring + tracking the ships but at `autofit × user_zoom`. 1.0 =
+    /// the default fit; <1 zoomed in, >1 zoomed out. This replaces the old
+    /// "scroll flips to a frozen Manual mode" behaviour.
+    pub user_zoom: f32,
     pub last_scroll_dir: f32,
     /// Pinch baseline: distance between the two active touches on
     /// the previous frame, in screen-pixel units. `None` when fewer
@@ -107,6 +113,7 @@ impl Default for ZoomState {
     fn default() -> Self {
         Self {
             target_scale: 1.0,
+            user_zoom: 1.0,
             last_scroll_dir: 0.0,
             last_pinch_dist: None,
             pivot: None,
@@ -256,11 +263,17 @@ fn wrap_to_tile(v: Vec2, tile: f32) -> Vec2 {
 const ZOOM_STEP: f32 = 1.05;
 const SCALE_MIN: f32 = 0.15;
 const SCALE_MAX: f32 = 6.0;
+/// Bounds on the persistent user zoom multiplier (applied over the
+/// auto-follow fit). <1 = zoomed in tighter than the fit, >1 = pulled out.
+const USER_ZOOM_MIN: f32 = 0.25;
+const USER_ZOOM_MAX: f32 = 4.0;
 /// How many seconds of zoom-input silence before the camera
 /// auto-reverts from Manual back to Auto follow. The follow's
 /// existing lerp then gradually slides the framing back to the
 /// bounding box — no jarring snap.
-const MANUAL_REVERT_DELAY_S: f32 = 3.5;
+// (Scroll/pinch no longer flip to a timed Manual mode — they adjust the
+// persistent `user_zoom` and keep following. `C` still toggles a permanent
+// free-pan Manual mode.)
 /// Higher = snappier tween (1/seconds). At 8.0 the actual scale
 /// reaches ~95% of target in ~0.4 s — smooth but not laggy.
 const SMOOTHING_RATE: f32 = 8.0;
@@ -290,47 +303,25 @@ fn handle_zoom_input(
         return;
     }
 
-    // Wheel input switches the camera to Manual mode briefly so
-    // the auto-follow doesn't immediately undo the zoom — but
-    // schedule a revert to Auto after REVERT_DELAY_S of stillness
-    // so the player isn't permanently locked out of bbox-follow.
-    *follow_mode = CameraFollowMode::Manual;
-    zoom_state.manual_revert_at = time.elapsed_secs() + MANUAL_REVERT_DELAY_S;
+    // Scroll no longer freezes the camera. Instead it nudges a persistent
+    // `user_zoom` multiplier; `follow_ships_with_camera` keeps centring +
+    // tracking the ships but multiplies its auto-fit by this, so the view
+    // holds the chosen zoom AND keeps following. (Cursor-pivot zoom is
+    // dropped here — it can't be honoured while the camera is recentring
+    // on the ships every frame.)
+    let _ = (&time, &windows, &cameras, &mut follow_mode);
+    zoom_state.pivot = None;
 
     let zoom_dir = delta_total.signum();
     zoom_state.last_scroll_dir = zoom_dir;
 
-    // Capture the mouse-pivot *before* changing the target scale.
-    // `smooth_zoom_scale` uses it each frame to keep the world point
-    // under the cursor pinned during the tween.
-    if let (Ok(window), Ok((cam_xf, projection))) = (windows.single(), cameras.single())
-    {
-        if let Some(cursor) = window.cursor_position() {
-            let scale = match projection {
-                Projection::Orthographic(o) => o.scale,
-                _ => 1.0,
-            };
-            // Pixel offset from window centre. Bevy window Y points
-            // down; flip so +Y matches world up.
-            let offset_px = Vec2::new(
-                cursor.x - window.width() * 0.5,
-                -(cursor.y - window.height() * 0.5),
-            );
-            let world = cam_xf.translation.truncate() + offset_px * scale;
-            zoom_state.pivot = Some(ZoomPivot { offset_px, world });
-        }
-    }
-
-    // Adjust the target scale only. Small step per scroll notch
-    // (5%) keeps each "tick" feeling like one smooth nudge rather
-    // than a big jump. The visible animation comes from the tween.
     let factor = ZOOM_STEP.powf(delta_total.abs());
     if delta_total > 0.0 {
-        zoom_state.target_scale /= factor; // zoom in
+        zoom_state.user_zoom /= factor; // zoom in
     } else {
-        zoom_state.target_scale *= factor; // zoom out
+        zoom_state.user_zoom *= factor; // zoom out
     }
-    zoom_state.target_scale = zoom_state.target_scale.clamp(SCALE_MIN, SCALE_MAX);
+    zoom_state.user_zoom = zoom_state.user_zoom.clamp(USER_ZOOM_MIN, USER_ZOOM_MAX);
 
     // Spawn a handful of zoom-burst stars. Count scales with the
     // scroll magnitude — a single notch gets 4 stars; a fling gets
@@ -464,23 +455,11 @@ fn tick_zoom_stars(
 /// `ZoomState.target_scale`, so the existing `smooth_zoom_scale`
 /// tween picks up the change automatically.
 fn handle_pinch_zoom(
-    time: Res<Time<Real>>,
     touches: Res<Touches>,
     touch_visible: Res<crate::mobile_controls::TouchButtonsVisible>,
+    windows: Query<&Window>,
     mut zoom_state: ResMut<ZoomState>,
-    mut follow_mode: ResMut<CameraFollowMode>,
 ) {
-    // While the on-screen controls are up, the player's two fingers are
-    // the virtual stick + a fire/special button — NOT a pinch. Treating
-    // them as one used to flip the camera to Manual (it stopped following,
-    // the opponent slid off-screen) until the revert timer snapped it
-    // back. Auto-follow frames the fight during touch play anyway; a real
-    // pinch-zoom is still available once the controls are hidden (the `+`
-    // toggle).
-    if touch_visible.0 {
-        zoom_state.last_pinch_dist = None;
-        return;
-    }
     // Collect up to two active touches. If there's a third we still
     // pinch on the first two — common mobile-browser idiom and
     // tolerates accidental third-finger taps.
@@ -489,6 +468,22 @@ fn handle_pinch_zoom(
         zoom_state.last_pinch_dist = None;
         return;
     };
+    // When the on-screen controls are up, the bottom of the screen is the
+    // virtual stick + fire/special buttons — two fingers down there are
+    // NOT a pinch. So while controls are visible, only treat it as a pinch
+    // if BOTH fingers are in the upper play area (clear of the controls).
+    // (This used to disable pinch entirely; safe to re-enable now that
+    // zoom adjusts a `user_zoom` multiplier and keeps following instead of
+    // freezing the camera in Manual mode.)
+    if touch_visible.0 {
+        if let Ok(win) = windows.single() {
+            let control_top = win.height() * 0.55; // bottom 45% = controls
+            if t0.position().y > control_top || t1.position().y > control_top {
+                zoom_state.last_pinch_dist = None;
+                return;
+            }
+        }
+    }
     let dist = t0.position().distance(t1.position());
     if dist < 1.0 {
         return;
@@ -501,19 +496,14 @@ fn handle_pinch_zoom(
     };
     let ratio = dist / prev;
     if (ratio - 1.0).abs() < 0.0005 {
-        // Sub-pixel jitter; ignore so the scale doesn't drift while
+        // Sub-pixel jitter; ignore so the zoom doesn't drift while
         // fingers are still.
         zoom_state.last_pinch_dist = Some(dist);
         return;
     }
-    // Active pinch implies intentional zooming — switch to Manual
-    // briefly, but schedule a revert so the user isn't locked out
-    // of the bbox follow forever.
-    *follow_mode = CameraFollowMode::Manual;
-    zoom_state.manual_revert_at = time.elapsed_secs() + MANUAL_REVERT_DELAY_S;
-    // Spread fingers (ratio>1) = zoom in = smaller ortho scale.
-    let new_scale = (zoom_state.target_scale / ratio).clamp(SCALE_MIN, SCALE_MAX);
-    zoom_state.target_scale = new_scale;
+    // Spread fingers (ratio>1) = zoom in = smaller user_zoom. The camera
+    // keeps following at the new zoom (no Manual freeze).
+    zoom_state.user_zoom = (zoom_state.user_zoom / ratio).clamp(USER_ZOOM_MIN, USER_ZOOM_MAX);
     zoom_state.last_pinch_dist = Some(dist);
 }
 
@@ -752,7 +742,11 @@ fn follow_ships_with_camera(
     // separation still leaves breathing room around the pair.
     let pad = (span.max_element() * 0.35).max(150.0);
     let needed = span + Vec2::splat(pad * 2.0);
-    let raw_scale = (needed.x / win.x).max(needed.y / win.y).clamp(SCALE_MIN, SCALE_MAX);
+    // Persistent user zoom rides on top of the auto-fit: the camera still
+    // follows + frames the ships, but at the zoom level the player dialled
+    // in with the wheel/pinch (so zooming never freezes the follow).
+    let uz = zoom_state.user_zoom;
+    let raw_scale = ((needed.x / win.x).max(needed.y / win.y) * uz).clamp(SCALE_MIN, SCALE_MAX);
 
     // `snap` was determined up top (it gates the focus re-anchor).
     // Consume the flags now.
@@ -764,8 +758,7 @@ fn follow_ships_with_camera(
     let snap_scale = {
         let pad = (span.max_element() * 0.25).max(120.0);
         let needed_tight = span + Vec2::splat(pad * 2.0);
-        (needed_tight.x / win.x)
-            .max(needed_tight.y / win.y)
+        ((needed_tight.x / win.x).max(needed_tight.y / win.y) * uz)
             .clamp(SCALE_MIN, SCALE_MAX)
     };
 
