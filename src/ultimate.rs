@@ -1301,6 +1301,8 @@ fn variant_for_class(class: ShipClass) -> UltimateVariant {
         ShipClass::Hydcr => UltimateVariant::Arilou,
         ShipClass::Rogsq => UltimateVariant::Arilou,
         ShipClass::Dajem => UltimateVariant::Arilou,
+        ShipClass::Arkpi => UltimateVariant::Arilou,
+        ShipClass::Kolfl => UltimateVariant::Arilou,
     }
 }
 

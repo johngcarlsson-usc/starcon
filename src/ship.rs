@@ -372,6 +372,8 @@ const SHIP_INIS: &[(&str, &str, &str)] = &[
     ("hydcr", include_str!("../assets/ships/hydcr.ini"), include_str!("../assets/ships/hydcr.txt")),
     ("rogsq", include_str!("../assets/ships/rogsq.ini"), include_str!("../assets/ships/rogsq.txt")),
     ("dajem", include_str!("../assets/ships/dajem.ini"), include_str!("../assets/ships/dajem.txt")),
+    ("arkpi", include_str!("../assets/ships/arkpi.ini"), include_str!("../assets/ships/arkpi.txt")),
+    ("kolfl", include_str!("../assets/ships/kolfl.ini"), include_str!("../assets/ships/kolfl.txt")),
 ];
 
 #[derive(Resource, Debug, Default)]
@@ -529,7 +531,7 @@ impl Default for MatchConfig {
 /// Stable order — picker keys (Digit1..0 for P1, F1..F10 for P2) map to
 /// `ALL_CLASSES[i]` by index. Don't reorder existing entries without
 /// updating the README key table.
-pub const ALL_CLASSES: [ShipClass; 51] = [
+pub const ALL_CLASSES: [ShipClass; 53] = [
     // bank 1 (unmodified picker keys)
     ShipClass::Earcr,
     ShipClass::Spael,
@@ -584,6 +586,8 @@ pub const ALL_CLASSES: [ShipClass; 51] = [
     ShipClass::Hydcr,
     ShipClass::Rogsq,
     ShipClass::Dajem,
+    ShipClass::Arkpi,
+    ShipClass::Kolfl,
 ];
 
 /// How rotation responds to forces.
@@ -792,6 +796,12 @@ pub enum ShipClass {
     /// Dajielka Cruiser (Varith). Primary: a pulse blaster. Special: a
     /// protective sanctuary (damage-soak shield).
     Dajem,
+    /// Arkanoid Pincer (Varith). Primary: a short-range pincer crush.
+    /// Special: scuttle mode (damage-soak shield).
+    Arkpi,
+    /// Kolory Flamer (GeomanNL). Primary: twin flame beams (fore + aft).
+    /// Special: a tractor field that drags/disrupts nearby ships.
+    Kolfl,
 }
 
 impl ShipClass {
@@ -849,6 +859,8 @@ impl ShipClass {
             ShipClass::Hydcr => "hydcr",
             ShipClass::Rogsq => "rogsq",
             ShipClass::Dajem => "dajem",
+            ShipClass::Arkpi => "arkpi",
+            ShipClass::Kolfl => "kolfl",
         }
     }
 }
@@ -2561,6 +2573,10 @@ pub struct HydcrState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 pub struct RogsqState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 #[derive(Component, Debug, Default)]
 pub struct DajemState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
+#[derive(Component, Debug, Default)]
+pub struct ArkpiState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
+#[derive(Component, Debug, Default)]
+pub struct KolflState { pub weapon_cd_s: f32, pub special_cd_s: f32 }
 
 /// A scramble stamped on a ship by an Iceci Confusion dart
 /// (`OverrideControlIceci`). For `remaining` seconds the victim's five
@@ -2858,6 +2874,10 @@ impl Plugin for ShipPlugin {
                 tick_rogsq_special,
                 tick_dajem_primary,
                 tick_dajem_special,
+                tick_arkpi_primary,
+                tick_arkpi_special,
+                tick_kolfl_primary,
+                tick_kolfl_special,
             )
                 .run_if(crate::netcode::role_is_authoritative),
         );
@@ -3602,6 +3622,12 @@ fn spawn_ship(
     }
     if matches!(class, ShipClass::Dajem) {
         entity.insert(DajemState::default());
+    }
+    if matches!(class, ShipClass::Arkpi) {
+        entity.insert(ArkpiState::default());
+    }
+    if matches!(class, ShipClass::Kolfl) {
+        entity.insert(KolflState::default());
     }
     if matches!(class, ShipClass::Chmav) {
         // Spawned ship needs its three orbiting satellites. We
@@ -5068,6 +5094,14 @@ fn abilities_for(class: ShipClass) -> Option<crate::ability::ShipAbilities> {
             primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "dajem-pulse" }, cooldown_s: 0.0 },
             special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "dajem-sanctuary" }, cooldown_s: 0.0 },
         }),
+        ShipClass::Arkpi => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "arkpi-pincer" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "arkpi-scuttle" }, cooldown_s: 0.0 },
+        }),
+        ShipClass::Kolfl => Some(ShipAbilities {
+            primary: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "kolfl-flames" }, cooldown_s: 0.0 },
+            special: AbilitySpec { kind: AbilityKind::ManagedExternally { ident: "kolfl-slow" }, cooldown_s: 0.0 },
+        }),
     }
 }
 
@@ -5144,7 +5178,9 @@ pub fn rotation_frame_filename(class: ShipClass, frame: usize) -> String {
         | ShipClass::Ulzin
         | ShipClass::Alhdr
         | ShipClass::Gahmo
-        | ShipClass::Rogsq => "ship_base.png".to_string(),
+        | ShipClass::Rogsq
+        | ShipClass::Arkpi
+        | ShipClass::Kolfl => "ship_base.png".to_string(),
         ShipClass::Hydcr => format!("ship_s_{:04}.png", frame),
         ShipClass::Dajem => format!("ship_s5_{:04}.png", frame),
 
@@ -5202,6 +5238,8 @@ pub fn single_sprite_ship(class: ShipClass) -> bool {
             | ShipClass::Alhdr
             | ShipClass::Gahmo
             | ShipClass::Rogsq
+            | ShipClass::Arkpi
+            | ShipClass::Kolfl
     )
 }
 
@@ -5782,6 +5820,8 @@ fn physics_spec(class: ShipClass) -> PhysicsSpec {
         ShipClass::Sclfr | ShipClass::Alhdr => 26.0,
         ShipClass::Gahmo | ShipClass::Hydcr | ShipClass::Dajem => 26.0,
         ShipClass::Rogsq => 14.0,
+        ShipClass::Arkpi => 26.0,
+        ShipClass::Kolfl => 30.0,
         ShipClass::Lyrwa => 32.0,
         ShipClass::Hubde => 24.0,
         ShipClass::Uxjba => 30.0,
@@ -9571,6 +9611,70 @@ fn tick_dajem_special(
         if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 4 { continue; }
         batt.current -= 4; st.special_cd_s = 1.0;
         commands.entity(e).try_insert(ShieldActive { remaining: 4.0, damage_factor: 0.3 });
+    }
+}
+
+/// Arkanoid primary — a short-range pincer crush (high damage, no energy).
+fn tick_arkpi_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &LinearVelocity, &mut ArkpiState)>,
+) {
+    let dt = time.delta_secs();
+    let speed = 60.0 * SC2_VEL_SCALE; let life = (3.0 * SC2_RANGE_SCALE) / speed;
+    for (e, ship, pos, rot, lvel, mut st) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 { continue; }
+        st.weapon_cd_s = 5.0 / 20.0;
+        let fwd = Vec2::new(-rot.sin, rot.cos); let right = Vec2::new(rot.cos, rot.sin);
+        for sgn in [-1.0_f32, 1.0] {
+            spawn_bolt(&mut commands, e, pos.0 + right * (sgn * 20.0) + fwd * 24.0, fwd, -sgn * 12.0_f32.to_radians(), lvel.0, speed, 8, life, Vec2::splat(10.0), Color::srgb(0.9, 0.9, 0.95));
+        }
+    }
+}
+
+/// Arkanoid special — scuttle mode: a few seconds of strong damage-soak.
+fn tick_arkpi_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &mut ArkpiState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    for (e, ship, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 2 { continue; }
+        batt.current -= 2; st.special_cd_s = 1.0;
+        commands.entity(e).try_insert(ShieldActive { remaining: 3.0, damage_factor: 0.25 });
+    }
+}
+
+/// Kolory primary — twin flame beams, one forward, one aft (Damage 6). WeaponRate 6.
+fn tick_kolfl_primary(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &mut KolflState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    let col = Color::srgb(1.0, 0.6, 0.2);
+    for (e, ship, pos, rot, mut st, mut batt) in &mut ships {
+        st.weapon_cd_s = (st.weapon_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_FIRE) || st.weapon_cd_s > 0.0 || batt.current < 6 { continue; }
+        batt.current -= 6; st.weapon_cd_s = 6.0 / 20.0;
+        let r = 45.0 * SC2_RANGE_SCALE;
+        spawn_beam(&mut commands, e, pos.0, rot, Vec2::ZERO, Vec2::new(0.0, 1.0), r, 6, col, false, 0.4, 5.0);
+        spawn_beam(&mut commands, e, pos.0, rot, Vec2::ZERO, Vec2::new(0.0, -1.0), r, 6, col, false, 0.4, 5.0);
+    }
+}
+
+/// Kolory special — a tractor field that drags/disrupts nearby ships
+/// (stand-in for the canon hyperspace slow-field). SpecialRate 5.
+fn tick_kolfl_special(
+    mut commands: Commands, time: Res<Time<Physics>>, slot_inputs: Res<input::SlotInputs>,
+    mut ships: Query<(Entity, &Ship, &Position, &Rotation, &mut KolflState, &mut Battery)>,
+) {
+    let dt = time.delta_secs();
+    for (e, ship, pos, rot, mut st, mut batt) in &mut ships {
+        st.special_cd_s = (st.special_cd_s - dt).max(0.0);
+        if !slot_inputs.pressed(ship.player_slot, input::INPUT_SPECIAL) || st.special_cd_s > 0.0 || batt.current < 1 { continue; }
+        batt.current -= 1; st.special_cd_s = 5.0 / 20.0;
+        spawn_tractor(&mut commands, e, pos.0, rot, Vec2::ZERO, 22.0 * SC2_RANGE_SCALE, 40.0, Color::srgba(0.5, 0.4, 1.0, 0.4), 6.0, 0.4);
     }
 }
 
