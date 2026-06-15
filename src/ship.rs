@@ -1366,6 +1366,22 @@ pub(crate) fn boss_part_layers() -> CollisionLayers {
     )
 }
 
+/// The HULL blocks ships (they bounce off the wall) but is TRANSPARENT to
+/// projectiles — player fire passes through it to strike the turrets and
+/// core mounted on/inside the wedge. Without this, the solid hull collider
+/// intercepts every shot before it can reach the parts sitting inside the
+/// triangle, making the turrets (and most of the core) impossible to hit.
+pub(crate) fn boss_hull_layers() -> CollisionLayers {
+    // Player projectiles are members of bits 5..=8 (one per slot); boss
+    // bolts are BOSS_PROJ_LAYER_BIT. Exclude all of those from the hull's
+    // filter so no projectile collides with the wall — only ships do.
+    let player_proj_bits = 0b1111u32 << 5;
+    CollisionLayers::from_bits(
+        BOSS_LAYER_BIT,
+        0xffff_ffffu32 & !BOSS_PROJ_LAYER_BIT & !BOSS_LAYER_BIT & !player_proj_bits,
+    )
+}
+
 /// Boss bolts collide with ships but never with boss parts or each other.
 pub(crate) fn boss_projectile_layers() -> CollisionLayers {
     CollisionLayers::from_bits(
@@ -1418,7 +1434,7 @@ pub fn spawn_capital_ship(
             Transform::from_translation(pos.extend(-1.0)),
             RigidBody::Static,
             Collider::triangle(tip, bl, br),
-            boss_part_layers(),
+            boss_hull_layers(),
             Position(pos),
             Rotation::radians(0.0),
         ))
