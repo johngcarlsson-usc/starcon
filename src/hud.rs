@@ -92,7 +92,7 @@ impl Plugin for HudPlugin {
             // also break the post-match Ready toggle).
             .add_systems(
                 FixedUpdate,
-                (destroy_zero_crew_ships, detect_winner, detect_boss_outcome)
+                (keep_invuln_topped_up, destroy_zero_crew_ships, detect_winner, detect_boss_outcome)
                     .chain()
                     .run_if(in_state(crate::AppState::InMatch)),
             )
@@ -473,6 +473,24 @@ fn detect_winner(
         info!("DRAW (scores {:?})", &outcome.wins[..active_slots]);
     }
     *phase = MatchPhase::PostMatch;
+}
+
+/// Test mode: pin player ships' crew + battery to max each tick so they
+/// can't die or run out of energy. Honoured only in boss mode (the
+/// "invincible Chmmr" test option). Runs BEFORE `destroy_zero_crew_ships`
+/// in the chain, so a would-be-lethal hit is undone before the death
+/// check sees it.
+fn keep_invuln_topped_up(
+    config: Res<crate::ship::MatchConfig>,
+    mut q: Query<(&mut crate::ship::Crew, &mut crate::ship::Battery), With<crate::ship::Ship>>,
+) {
+    if !(config.invuln && config.boss) {
+        return;
+    }
+    for (mut crew, mut batt) in &mut q {
+        crew.current = crew.max;
+        batt.current = batt.max;
+    }
 }
 
 /// Boss co-op win/lose. Win when the dreadnought's core is gone; lose

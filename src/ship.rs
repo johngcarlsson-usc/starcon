@@ -462,6 +462,10 @@ pub struct MatchConfig {
     /// Spawns the `CapitalShip` and suppresses the normal player-vs-player
     /// winner logic.
     pub boss: bool,
+    /// Debug/test: player ships can't die or run out of battery (crew +
+    /// battery topped up every tick). Used by the "invincible" boss test
+    /// option to verify the fight is winnable. Only honoured in boss mode.
+    pub invuln: bool,
 }
 
 impl MatchConfig {
@@ -472,6 +476,7 @@ impl MatchConfig {
             slots: vec![SlotConfig::human(p1), SlotConfig::human(p2)],
             melee: false,
             boss: false,
+            invuln: false,
         }
     }
     pub fn slot_count(&self) -> usize {

@@ -46,6 +46,9 @@ enum MenuAction {
     MeleeLocal,
     /// Local co-op boss: players team up against the capital ship.
     BossLocal,
+    /// Boss test: a single INVINCIBLE Chmmr (can't die / infinite battery)
+    /// for verifying the fight is winnable.
+    BossTest,
     SoloVsOneAi,
     SoloVsThreeAi,
     Online,
@@ -112,6 +115,7 @@ fn spawn_menu(mut commands: Commands, windows: Query<&Window>) {
             spawn_button(root, MenuAction::LocalFour, "Local 4-Player (hotseat)", s);
             spawn_button(root, MenuAction::MeleeLocal, "Melee 2P (build fleets)", s);
             spawn_button(root, MenuAction::BossLocal, "Boss Co-op (local)", s);
+            spawn_button(root, MenuAction::BossTest, "Boss Test (invincible Chmmr)", s);
             spawn_button(root, MenuAction::SoloVsOneAi, "Solo vs 1 AI", s);
             spawn_button(root, MenuAction::SoloVsThreeAi, "Solo vs 3 AI", s);
             spawn_button(root, MenuAction::Online, "Online (2-4 players)", s);
@@ -287,6 +291,17 @@ fn handle_menu_buttons(
                 ];
                 config.melee = false;
                 config.boss = true;
+                config.invuln = false;
+                next.set(AppState::InMatch);
+            }
+            MenuAction::BossTest => {
+                // Solo INVINCIBLE Chmmr vs the capital ship — for verifying
+                // the fight is winnable (shoot the turrets, work the core's
+                // strike windows) without dying.
+                config.slots = vec![SlotConfig::human(ShipClass::Chmav)];
+                config.melee = false;
+                config.boss = true;
+                config.invuln = true;
                 next.set(AppState::InMatch);
             }
             MenuAction::SoloVsOneAi => {
