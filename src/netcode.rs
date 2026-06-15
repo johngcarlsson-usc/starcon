@@ -803,7 +803,7 @@ fn extrapolate_mirrors(time: Res<Time>, mut q: Query<(&mut Transform, &MirrorVel
 /// frame with no fresh snapshot is stable.
 #[allow(clippy::type_complexity)]
 fn wrap_guest_mirrors(
-    camera: Query<&Transform, With<Camera2d>>,
+    camera: Query<&Transform, With<crate::starfield::PrimaryCamera>>,
     mut mirrors: Query<
         &mut Transform,
         (

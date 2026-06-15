@@ -52,6 +52,13 @@ pub struct ZoomStar {
     pub peak_alpha: f32,
 }
 
+/// Marks the single camera that the world-rendering systems (toroidal
+/// re-image, starfield, follow/zoom, indicators, minimap, beams) treat as
+/// "the" view. Split-screen panes (added later) are extra `Camera2d`s
+/// WITHOUT this marker, so those systems keep targeting exactly one camera.
+#[derive(Component, Debug)]
+pub struct PrimaryCamera;
+
 /// Scratch state for the zoom system. Tracks the player's desired
 /// scale (`target_scale`) separately from the camera's actual
 /// rendered scale — `smooth_zoom_scale` tweens between them each
@@ -225,7 +232,7 @@ fn setup_starfield(mut commands: Commands) {
 /// stationary on screen. The remaining stars slide at intermediate
 /// rates → classic multi-layer parallax.
 fn tick_starfield_parallax(
-    cameras: Query<&Transform, (With<Camera2d>, Without<BackgroundStar>)>,
+    cameras: Query<&Transform, (With<crate::starfield::PrimaryCamera>, Without<BackgroundStar>)>,
     mut stars: Query<(&BackgroundStar, &mut Transform), Without<Camera2d>>,
 ) {
     let Ok(cam) = cameras.single() else { return };
@@ -289,7 +296,7 @@ fn handle_zoom_input(
     mut zoom_state: ResMut<ZoomState>,
     mut follow_mode: ResMut<CameraFollowMode>,
     windows: Query<&Window>,
-    cameras: Query<(&Transform, &Projection), With<Camera2d>>,
+    cameras: Query<(&Transform, &Projection), With<crate::starfield::PrimaryCamera>>,
 ) {
     let mut delta_total = 0.0_f32;
     for ev in scroll.read() {
@@ -373,7 +380,7 @@ fn handle_zoom_input(
 fn smooth_zoom_scale(
     time: Res<Time>,
     mut zoom_state: ResMut<ZoomState>,
-    mut camera_q: Query<(&mut Projection, &mut Transform), With<Camera2d>>,
+    mut camera_q: Query<(&mut Projection, &mut Transform), With<crate::starfield::PrimaryCamera>>,
 ) {
     let dt = time.delta_secs();
     let blend = (SMOOTHING_RATE * dt).min(1.0);
@@ -411,7 +418,7 @@ fn smooth_zoom_scale(
 fn tick_zoom_stars(
     mut commands: Commands,
     time: Res<Time>,
-    cameras: Query<&Transform, (With<Camera2d>, Without<ZoomStar>)>,
+    cameras: Query<&Transform, (With<crate::starfield::PrimaryCamera>, Without<ZoomStar>)>,
     mut q: Query<(Entity, &mut ZoomStar, &mut Transform, &mut Sprite)>,
 ) {
     let dt = time.delta_secs();
@@ -565,7 +572,7 @@ fn follow_ships_with_camera(
     ships: Query<(Entity, &Position), With<Ship>>,
     windows: Query<&Window>,
     config: Res<crate::ship::MatchConfig>,
-    mut cameras: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
+    mut cameras: Query<(&mut Transform, &mut Projection), With<crate::starfield::PrimaryCamera>>,
 ) {
     if *mode != CameraFollowMode::Auto {
         return;
@@ -813,7 +820,7 @@ fn follow_ships_with_camera(
 /// `hyper_trigger`), so this keeps the ship and its effects framed
 /// correctly there too.
 fn apply_toroidal_render_offset(
-    camera: Query<&Transform, With<Camera2d>>,
+    camera: Query<&Transform, With<crate::starfield::PrimaryCamera>>,
     mut bodies: Query<(&Position, &mut Transform), Without<Camera2d>>,
 ) {
     let Ok(cam) = camera.single() else { return };

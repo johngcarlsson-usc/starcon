@@ -10316,7 +10316,7 @@ fn tick_alary_turrets(
 fn draw_shield_rings(
     time: Res<Time>,
     mut gizmos: Gizmos,
-    camera: Query<&Transform, With<Camera2d>>,
+    camera: Query<&Transform, With<crate::starfield::PrimaryCamera>>,
     colliders: Res<crate::collider::ShipColliders>,
     ships: Query<(&Position, &Rotation, &ShipClass), (With<Ship>, With<ShieldActive>)>,
 ) {
@@ -10365,7 +10365,7 @@ fn draw_shield_rings(
 fn draw_gravity_field(
     time: Res<Time>,
     mut gizmos: Gizmos,
-    camera: Query<&Transform, With<Camera2d>>,
+    camera: Query<&Transform, With<crate::starfield::PrimaryCamera>>,
     planets: Query<(&Position, &Planet)>,
 ) {
     let focus = camera.single().ok().map(|t| t.translation.truncate());
@@ -11024,7 +11024,7 @@ fn tick_point_defense(
     time: Res<Time<Physics>>,
     assets: Res<AssetServer>,
     spatial: avian2d::prelude::SpatialQuery,
-    camera: Query<&Transform, With<Camera2d>>,
+    camera: Query<&Transform, With<crate::starfield::PrimaryCamera>>,
     mut firers: Query<(Entity, &Ship, &Position, &mut PointDefenseActive)>,
     positions: Query<&Position>,
     projectiles: Query<&Projectile>,
@@ -11230,7 +11230,7 @@ fn tick_beams(
     shields: Query<&ShieldActive>,
     ship_class_of: Query<&Ship>,
     hypers: Query<&crate::ultimate::HyperActive>,
-    camera: Query<&Transform, With<Camera2d>>,
+    camera: Query<&Transform, With<crate::starfield::PrimaryCamera>>,
     satellites_for_filter: Query<(Entity, &ChmmrSatellite)>,
     mut boss_health: Query<(&mut BossHealth, Has<CapitalCore>, Option<&CoreAperture>)>,
     hull_q: Query<Entity, With<CapitalShip>>,
@@ -11402,7 +11402,7 @@ fn tick_tractors(
     owners: Query<(&Ship, &Position, &Rotation)>,
     ships_for_filter: Query<&Ship, Without<Invisible>>,
     mut ship_state: Query<(&Position, &mut LinearVelocity, &Mass), With<Ship>>,
-    camera: Query<&Transform, With<Camera2d>>,
+    camera: Query<&Transform, With<crate::starfield::PrimaryCamera>>,
 ) {
     use avian2d::prelude::SpatialQueryFilter;
     let dt = time.delta_secs();
@@ -13322,7 +13322,7 @@ pub fn spawn_asteroid_explosion(
 fn replenish_asteroids(
     mut commands: Commands,
     assets: Res<AssetServer>,
-    cameras: Query<(&Transform, &Projection), With<Camera2d>>,
+    cameras: Query<(&Transform, &Projection), With<crate::starfield::PrimaryCamera>>,
     windows: Query<&Window>,
     asteroids: Query<(), With<Asteroid>>,
     mut rng: ResMut<crate::rng::GameRng>,

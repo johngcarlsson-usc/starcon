@@ -328,7 +328,7 @@ fn draw_debug_gizmos(
     debug_on: Res<DebugCollider>,
     mut gizmos: Gizmos,
     ships: Query<(&Position, &Rotation, &ShipClass)>,
-    camera: Query<&Transform, With<Camera2d>>,
+    camera: Query<&Transform, With<crate::starfield::PrimaryCamera>>,
     colliders: Res<ShipColliders>,
 ) {
     if !debug_on.0 {

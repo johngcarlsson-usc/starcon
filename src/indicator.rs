@@ -80,7 +80,7 @@ fn spawn_indicators(mut commands: Commands) {
 
 fn update_indicators(
     windows: Query<&Window>,
-    cameras: Query<(&Transform, &Projection), With<Camera2d>>,
+    cameras: Query<(&Transform, &Projection), With<crate::starfield::PrimaryCamera>>,
     ships: Query<(&Position, &Ship)>,
     mut indicators: Query<(&OffscreenIndicator, &mut Node, &mut Visibility, &Children)>,
     mut texts: Query<&mut Text>,

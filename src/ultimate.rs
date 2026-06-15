@@ -1322,7 +1322,7 @@ const BLADE_MESH_HANDLE: Handle<Mesh> = uuid_handle!("ec3a8f1e-7e8b-4f1b-9b3c-43
 fn hyper_trigger(
     slot_inputs: Res<crate::input::SlotInputs>,
     mut state: ResMut<UltimateState>,
-    mut cameras: Query<(&mut Transform, &Projection), With<Camera2d>>,
+    mut cameras: Query<(&mut Transform, &Projection), With<crate::starfield::PrimaryCamera>>,
     ships: Query<(Entity, &Ship, &ShipClass, &Transform), Without<Camera2d>>,
     ship_pose: Query<(&Position, &Rotation), With<Ship>>,
     catalog: Res<crate::ship::ShipCatalog>,
@@ -2178,7 +2178,7 @@ fn drive_camera_during_ultimate(
     mut cameras: Query<
         (&mut Transform, &mut Projection),
         (
-            With<Camera2d>,
+            With<crate::starfield::PrimaryCamera>,
             Without<UltimatePortraitTag>,
             Without<UltimateBeam>,
             Without<BeamTrail>,
