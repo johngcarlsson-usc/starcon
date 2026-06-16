@@ -1323,7 +1323,10 @@ fn hyper_trigger(
     slot_inputs: Res<crate::input::SlotInputs>,
     mut state: ResMut<UltimateState>,
     mut cameras: Query<(&mut Transform, &Projection), With<crate::starfield::PrimaryCamera>>,
-    ships: Query<(Entity, &Ship, &ShipClass, &Transform), Without<Camera2d>>,
+    ships: Query<
+        (Entity, &Ship, &ShipClass, &Transform),
+        (Without<Camera2d>, Without<crate::starfield::PrimaryCamera>),
+    >,
     ship_pose: Query<(&Position, &Rotation), With<Ship>>,
     catalog: Res<crate::ship::ShipCatalog>,
     ship_colliders: Res<crate::collider::ShipColliders>,
@@ -5648,5 +5651,19 @@ pub fn tick_alary_grow(
             ec.try_insert(avian2d::prelude::Collider::circle(80.0));
         }
         info!("Alary doubled in size (permanent)");
+    }
+}
+
+#[cfg(test)]
+mod split_conflict_tests {
+    use super::*;
+    // B0001 probe for the cinematic-trigger camera/ship system after the
+    // PrimaryCamera repoint. See starfield::split_conflict_tests.
+    #[test]
+    fn hyper_trigger_has_no_query_conflict() {
+        let mut world = World::new();
+        let mut sched = Schedule::default();
+        sched.add_systems(hyper_trigger);
+        let _ = sched.initialize(&mut world);
     }
 }

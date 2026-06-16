@@ -808,6 +808,7 @@ fn wrap_guest_mirrors(
         &mut Transform,
         (
             Without<Camera2d>,
+            Without<crate::starfield::PrimaryCamera>,
             Or<(
                 With<ProjectileMirror>,
                 With<BeamMirror>,
@@ -2494,4 +2495,18 @@ fn spawn_cinematic_visual_mirror(
         Transform::from_translation(Vec3::new(v.pos_x, v.pos_y, z))
             .with_rotation(Quat::from_rotation_z(angle)),
     ));
+}
+
+#[cfg(test)]
+mod split_conflict_tests {
+    use super::*;
+    // B0001 probe for the guest mirror-wrap system after the PrimaryCamera
+    // repoint. See starfield::split_conflict_tests.
+    #[test]
+    fn wrap_guest_mirrors_has_no_query_conflict() {
+        let mut world = World::new();
+        let mut sched = Schedule::default();
+        sched.add_systems(wrap_guest_mirrors);
+        let _ = sched.initialize(&mut world);
+    }
 }

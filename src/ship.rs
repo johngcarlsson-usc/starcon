@@ -11222,7 +11222,10 @@ fn tick_beams(
     mut commands: Commands,
     time: Res<Time<Physics>>,
     spatial: avian2d::prelude::SpatialQuery,
-    mut beams: Query<(Entity, &mut Beam, &mut Transform, &mut Sprite), Without<Camera2d>>,
+    mut beams: Query<
+        (Entity, &mut Beam, &mut Transform, &mut Sprite),
+        (Without<Camera2d>, Without<crate::starfield::PrimaryCamera>),
+    >,
     owners: Query<(&Ship, &Position, &Rotation)>,
     ship_pos: Query<(Entity, &Ship, &Position), Without<Invisible>>,
     asteroid_pos: Query<&Position, With<Asteroid>>,
@@ -11398,7 +11401,10 @@ fn tick_tractors(
     time: Res<Time<Physics>>,
     assets: Res<AssetServer>,
     spatial: avian2d::prelude::SpatialQuery,
-    mut tractors: Query<(Entity, &mut TractorBeam, &mut Transform, &mut Sprite), Without<Camera2d>>,
+    mut tractors: Query<
+        (Entity, &mut TractorBeam, &mut Transform, &mut Sprite),
+        (Without<Camera2d>, Without<crate::starfield::PrimaryCamera>),
+    >,
     owners: Query<(&Ship, &Position, &Rotation)>,
     ships_for_filter: Query<&Ship, Without<Invisible>>,
     mut ship_state: Query<(&Position, &mut LinearVelocity, &Mass), With<Ship>>,
@@ -13415,4 +13421,18 @@ fn replenish_asteroids(
             as_static: false,
         },
     );
+}
+
+#[cfg(test)]
+mod split_conflict_tests {
+    use super::*;
+    // B0001 probe for the beam/tractor systems (camera read vs body
+    // &mut Transform) after the PrimaryCamera repoint.
+    #[test]
+    fn beam_tractor_have_no_query_conflict() {
+        let mut world = World::new();
+        let mut sched = Schedule::default();
+        sched.add_systems((tick_beams, tick_tractors));
+        let _ = sched.initialize(&mut world);
+    }
 }

@@ -829,7 +829,7 @@ fn follow_ships_with_camera(
 /// correctly there too.
 fn apply_toroidal_render_offset(
     camera: Query<&Transform, With<crate::starfield::PrimaryCamera>>,
-    mut bodies: Query<(&Position, &mut Transform), Without<Camera2d>>,
+    mut bodies: Query<(&Position, &mut Transform), (Without<Camera2d>, Without<PrimaryCamera>)>,
 ) {
     let Ok(cam) = camera.single() else { return };
     let focus = cam.translation.truncate();
@@ -852,4 +852,23 @@ pub fn reset_for_new_match(mut zoom_state: ResMut<ZoomState>) {
     zoom_state.last_ship_count = 0;
     zoom_state.manual_revert_at = 0.0;
     zoom_state.pending_initial_snap = true;
+}
+
+#[cfg(test)]
+mod split_conflict_tests {
+    use super::*;
+
+    // Directly exercises Bevy's B0001 access-compatibility check (the one
+    // that panics at schedule-init) for the world-render systems whose
+    // disjointness used to come from `Without<Camera2d>` and now must come
+    // from `Without<PrimaryCamera>` after the PrimaryCamera repoint.
+    // `Schedule::initialize` calls each system's `initialize`, which runs
+    // the assert — no window, GPU, or resources required.
+    #[test]
+    fn render_systems_have_no_query_conflicts() {
+        let mut world = World::new();
+        let mut sched = Schedule::default();
+        sched.add_systems((apply_toroidal_render_offset, tick_starfield_parallax));
+        let _ = sched.initialize(&mut world);
+    }
 }
