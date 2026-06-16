@@ -18,8 +18,9 @@
 //! 2-player seamless merge.
 
 use avian2d::prelude::Position;
-use bevy::prelude::*;
+use bevy::camera::visibility::RenderLayers;
 use bevy::camera::Viewport;
+use bevy::prelude::*;
 
 use crate::ship::{MatchConfig, PlayerKind, Ship};
 use crate::starfield::PrimaryCamera;
@@ -37,9 +38,21 @@ pub struct PaneCamera {
     pub slot: usize,
 }
 
+/// Full-window camera that renders nothing but clears the window white,
+/// sitting *behind* the pane cameras so the gutters between/around their
+/// (inset) viewports read as a thin white border. Spawned only while a
+/// split is active.
+#[derive(Component, Debug)]
+pub struct SplitBackdrop;
+
 /// Fixed orthographic scale each pane renders at (world-units per pixel-
 /// ish). Tunable; smaller = more zoomed in.
 const PANE_SCALE: f32 = 1.3;
+
+/// Half-width (px) of the white border drawn around every pane. Each pane
+/// viewport is inset by this on all sides, so the line *between* two panes
+/// is twice this wide.
+const GUTTER: u32 = 2;
 
 pub struct SplitScreenPlugin;
 
@@ -57,10 +70,16 @@ impl Plugin for SplitScreenPlugin {
     }
 }
 
-/// True while a split is actually being rendered (toggle on + a local
-/// hotseat with ≥2 human slots). Other systems gate on this.
-pub fn split_active(split: Res<SplitScreen>, config: Res<MatchConfig>) -> bool {
-    split.enabled && hotseat_human_slots(&config) >= 2
+/// True while a split is actually being rendered: the toggle is on, it's a
+/// local couch match (no network session — online 1v1 stays single-camera),
+/// and there are ≥2 human slots sharing the screen. Other systems gate on
+/// this.
+pub fn split_active(
+    split: Res<SplitScreen>,
+    config: Res<MatchConfig>,
+    session: Option<Res<crate::netcode::NetSocket>>,
+) -> bool {
+    split.enabled && session.is_none() && hotseat_human_slots(&config) >= 2
 }
 
 /// Number of local human-controlled slots (couch hotseat). Online and
@@ -107,6 +126,14 @@ fn pane_viewport(index: usize, n: usize, win: UVec2) -> Viewport {
             (UVec2::new(px, py), UVec2::new(sw, sh))
         }
     };
+    // Inset by the gutter on every side so the white backdrop shows
+    // through as a thin border. Skip the inset when there's only one pane.
+    let (pos, size) = if n <= 1 {
+        (pos, size)
+    } else {
+        let g = UVec2::splat(GUTTER);
+        (pos + g, size.saturating_sub(g * 2))
+    };
     Viewport {
         physical_position: pos,
         physical_size: size.max(UVec2::splat(1)),
@@ -120,15 +147,20 @@ fn manage_split_cameras(
     mut commands: Commands,
     split: Res<SplitScreen>,
     config: Res<MatchConfig>,
+    session: Option<Res<crate::netcode::NetSocket>>,
     windows: Query<&Window>,
     mut primary: Query<&mut Camera, (With<PrimaryCamera>, Without<PaneCamera>)>,
     panes: Query<(Entity, &PaneCamera)>,
+    backdrop: Query<Entity, With<SplitBackdrop>>,
 ) {
-    let active = split.enabled && hotseat_human_slots(&config) >= 2;
+    let active = split.enabled && session.is_none() && hotseat_human_slots(&config) >= 2;
 
     if !active {
-        // Tear down any panes and re-activate the single camera.
+        // Tear down any panes + backdrop and re-activate the single camera.
         for (e, _) in &panes {
+            commands.entity(e).despawn();
+        }
+        for e in &backdrop {
             commands.entity(e).despawn();
         }
         if let Ok(mut cam) = primary.single_mut() {
@@ -140,6 +172,21 @@ fn manage_split_cameras(
     // Split is on: the primary steps aside.
     if let Ok(mut cam) = primary.single_mut() {
         cam.is_active = false;
+    }
+
+    // White backdrop behind the panes (renders nothing — empty layer — but
+    // clears the whole window, so the inset gutters read as a border).
+    if backdrop.is_empty() {
+        commands.spawn((
+            Camera2d,
+            Camera {
+                order: 0,
+                clear_color: ClearColorConfig::Custom(Color::WHITE),
+                ..default()
+            },
+            RenderLayers::none(),
+            SplitBackdrop,
+        ));
     }
 
     let n = hotseat_human_slots(&config).min(4);
@@ -211,5 +258,19 @@ fn follow_pane_cameras(
             xf.translation.x = pos.0.x;
             xf.translation.y = pos.0.y;
         }
+    }
+}
+
+#[cfg(test)]
+mod split_conflict_tests {
+    use super::*;
+    // B0001 probe: the split systems touch Camera/Transform across several
+    // queries; make sure they're mutually disjoint at schedule-init.
+    #[test]
+    fn split_systems_have_no_query_conflict() {
+        let mut world = World::new();
+        let mut sched = Schedule::default();
+        sched.add_systems((manage_split_cameras, follow_pane_cameras));
+        let _ = sched.initialize(&mut world);
     }
 }
