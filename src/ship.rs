@@ -1332,7 +1332,12 @@ impl Default for CoreAperture {
     fn default() -> Self {
         // Opens after the first closed spell, so the run-in up the
         // flanks isn't instantly winnable.
-        Self { open: false, timer: 5.0, closed_s: 5.0, open_s: 3.5 }
+        Self {
+            open: false,
+            timer: boss_tuning::CORE_FIRST_CLOSED_S,
+            closed_s: boss_tuning::CORE_CLOSED_S,
+            open_s: boss_tuning::CORE_OPEN_S,
+        }
     }
 }
 
@@ -1401,6 +1406,49 @@ pub(crate) fn boss_projectile_layers() -> CollisionLayers {
         BOSS_PROJ_LAYER_BIT,
         0xffff_ffffu32 & !BOSS_PROJ_LAYER_BIT & !BOSS_LAYER_BIT,
     )
+}
+
+/// ===================================================================
+/// Boss encounter tuning knobs
+/// ===================================================================
+/// All the numbers that decide how the dreadnought fight *feels*, in one
+/// place so co-op balance can be dialled without spelunking. Reference
+/// scale: player ships carry 4–42 crew (HP), median ~20, and player
+/// weapons land 1–10 damage per shot.
+///
+/// To make the fight…
+///   • easier to survive  → lower `BOLT_DAMAGE` / raise `TURRET_INTERVAL`
+///   • a shorter gauntlet → lower `TURRET_HP`
+///   • a faster kill      → lower `CORE_HP` or raise the open window
+///   • a tenser rhythm    → shorten `CORE_CLOSED_S` / `CORE_OPEN_S`
+mod boss_tuning {
+    /// HP of each destructible flank turret. At 1–10 dmg/shot that's
+    /// roughly 8–80 hits — a few seconds of focused fire to silence one.
+    pub const TURRET_HP: i32 = 80;
+    /// Seconds between a turret's shots once it's tracking a target.
+    pub const TURRET_INTERVAL: f32 = 1.8;
+    /// Initial per-turret cooldown so the opening volley is staggered,
+    /// not a simultaneous wall of fire on the run-in.
+    pub const TURRET_COOLDOWN_START: f32 = 0.8;
+    /// How far a turret can see/shoot (world units).
+    pub const TURRET_RANGE: f32 = 1600.0;
+    /// Damage per turret bolt. Kept well under a small ship's crew so a
+    /// single hit stings without instantly gibbing a 4–8 crew scout;
+    /// sustained focus is still lethal, which is the gauntlet's point.
+    pub const BOLT_DAMAGE: i32 = 6;
+    /// Bolt travel speed — slow enough to weave through with good flying.
+    pub const BOLT_SPEED: f32 = 560.0;
+    /// Core (bridge) HP. Only ticks down during open strike windows, so
+    /// this is "damage that must land inside the windows", not raw DPS.
+    pub const CORE_HP: i32 = 400;
+    /// Aperture rhythm: how long the bridge stays armoured-shut between
+    /// strike windows, and how long each window lasts. Shorter closed =
+    /// less waiting; longer open = easier to capitalise.
+    pub const CORE_CLOSED_S: f32 = 4.0;
+    pub const CORE_OPEN_S: f32 = 3.5;
+    /// Run-in grace before the first window opens, so the fleet can't
+    /// instantly nuke the nose on the opening rush.
+    pub const CORE_FIRST_CLOSED_S: f32 = 5.0;
 }
 
 /// Spawn the boss hull on entering a boss match. An elongated arrowhead
@@ -1512,11 +1560,11 @@ pub fn spawn_capital_ship(
         commands
             .spawn((
                 BossPart,
-                BossHealth { hp: 80, max: 80 },
+                BossHealth { hp: boss_tuning::TURRET_HP, max: boss_tuning::TURRET_HP },
                 Turret {
-                    cooldown_s: 0.8,
-                    interval: 1.6,
-                    range: 1600.0,
+                    cooldown_s: boss_tuning::TURRET_COOLDOWN_START,
+                    interval: boss_tuning::TURRET_INTERVAL,
+                    range: boss_tuning::TURRET_RANGE,
                 },
                 Mesh2d(ring_mesh.clone()),
                 MeshMaterial2d(ring_mat.clone()),
@@ -1568,7 +1616,7 @@ pub fn spawn_capital_ship(
             BossPart,
             CapitalCore,
             CoreAperture::default(),
-            BossHealth { hp: 400, max: 400 },
+            BossHealth { hp: boss_tuning::CORE_HP, max: boss_tuning::CORE_HP },
             Mesh2d(meshes.add(Circle::new(42.0))),
             // Starts closed → dim steel; `tick_core_aperture` recolours it.
             MeshMaterial2d(materials.add(ColorMaterial::from(CORE_CLOSED_COLOR))),
@@ -1661,12 +1709,12 @@ fn tick_boss_turrets(
             continue;
         }
         turret.cooldown_s = turret.interval;
-        const BOLT_SPEED: f32 = 560.0;
+        use boss_tuning::BOLT_SPEED;
         let muzzle = tpos.0 + dir * 34.0;
         commands.spawn((
             Projectile {
                 owner: Entity::PLACEHOLDER,
-                damage: 8,
+                damage: boss_tuning::BOLT_DAMAGE,
                 lifetime: 4.0,
             },
             BossProjectile,
