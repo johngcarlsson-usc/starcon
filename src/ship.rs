@@ -1351,6 +1351,19 @@ pub struct CoreHalo;
 #[derive(Component, Debug)]
 pub struct TurretBarrel;
 
+/// Tags every top-level boss body (hull, turrets, core) with the world
+/// position it was spawned at. `drift_capital_ship` re-derives each
+/// part's live `Position` as `base + shared_offset(t)` every tick, so
+/// the whole dreadnought wallows along its patrol as one rigid group
+/// without any of the parts being parented to the hull. Storing the
+/// base (rather than integrating velocity) keeps the parts perfectly
+/// locked together and makes the motion identical on host and guest —
+/// it's a pure function of elapsed time, like the aperture pulse.
+#[derive(Component, Debug)]
+pub struct BossDrift {
+    pub base: Vec2,
+}
+
 /// A power-up's pulsing glow-ring child (`tick_powerup_visuals` breathes
 /// its alpha). Carries its own material so each pickup glows independently.
 #[derive(Component, Debug)]
@@ -1449,6 +1462,17 @@ mod boss_tuning {
     /// Run-in grace before the first window opens, so the fleet can't
     /// instantly nuke the nose on the opening rush.
     pub const CORE_FIRST_CLOSED_S: f32 = 5.0;
+
+    /// Lumbering drift: the whole dreadnought wallows along a slow
+    /// Lissajous patrol around the arena centre so it reads as a moving
+    /// battleship, not a turret platform. Amplitudes are world units of
+    /// sway from origin; periods are seconds for a full sweep on each
+    /// axis (deliberately mismatched so it traces a slow figure-eight).
+    /// Keep speeds tiny — this is "ponderous", not "drifting asteroid".
+    pub const DRIFT_AMP_X: f32 = 900.0;
+    pub const DRIFT_AMP_Y: f32 = 550.0;
+    pub const DRIFT_PERIOD_X: f32 = 70.0;
+    pub const DRIFT_PERIOD_Y: f32 = 47.0;
 }
 
 /// Spawn the boss hull on entering a boss match. An elongated arrowhead
@@ -1489,6 +1513,7 @@ pub fn spawn_capital_ship(
         .spawn((
             CapitalShip,
             BossPart,
+            BossDrift { base: pos },
             Mesh2d(mesh),
             MeshMaterial2d(mat),
             // Behind the fighters.
@@ -1560,6 +1585,7 @@ pub fn spawn_capital_ship(
         commands
             .spawn((
                 BossPart,
+                BossDrift { base: tp },
                 BossHealth { hp: boss_tuning::TURRET_HP, max: boss_tuning::TURRET_HP },
                 Turret {
                     cooldown_s: boss_tuning::TURRET_COOLDOWN_START,
@@ -1615,6 +1641,7 @@ pub fn spawn_capital_ship(
         .spawn((
             BossPart,
             CapitalCore,
+            BossDrift { base: core_pos },
             CoreAperture::default(),
             BossHealth { hp: boss_tuning::CORE_HP, max: boss_tuning::CORE_HP },
             Mesh2d(meshes.add(Circle::new(42.0))),
@@ -2174,6 +2201,26 @@ fn tick_powerup_visuals(
 pub(crate) const CORE_CLOSED_COLOR: Color = Color::srgb(0.26, 0.31, 0.44);
 /// Core colour at the peak of an open strike window (hot red).
 pub(crate) const CORE_OPEN_COLOR: Color = Color::srgb(1.0, 0.30, 0.26);
+
+/// Lumbering boss drift. Re-derive every boss body's `Position` from
+/// the position it spawned at plus one shared, slowly-swaying offset, so
+/// the hull, turrets, and core wallow around the arena locked together
+/// as a single rigid battleship — even though they're independent bodies
+/// that were never parented. The offset is a pure function of elapsed
+/// time (a slow Lissajous), so it produces identical motion on host and
+/// guest without any replication, exactly like the aperture pulse. Runs
+/// on both peers; the host stays authoritative for collisions/damage.
+fn drift_capital_ship(time: Res<Time<Physics>>, mut parts: Query<(&BossDrift, &mut Position)>) {
+    use boss_tuning::*;
+    let t = time.elapsed_secs();
+    let offset = Vec2::new(
+        DRIFT_AMP_X * (std::f32::consts::TAU * t / DRIFT_PERIOD_X).sin(),
+        DRIFT_AMP_Y * (std::f32::consts::TAU * t / DRIFT_PERIOD_Y).sin(),
+    );
+    for (drift, mut pos) in &mut parts {
+        pos.0 = drift.base + offset;
+    }
+}
 
 /// Drive the core's recessed-aperture rhythm: flip between a closed
 /// (invulnerable) spell and an open strike window, and recolour /
@@ -3082,6 +3129,9 @@ impl Plugin for ShipPlugin {
                 tick_invisible_visual,
                 draw_shield_rings,
                 draw_gravity_field,
+                // Both peers: deterministic time-based boss drift so the
+                // guest's mirror lumbers in step with the host's.
+                drift_capital_ship,
             ),
         );
     }

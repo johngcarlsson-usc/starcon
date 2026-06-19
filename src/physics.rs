@@ -13,7 +13,13 @@ use bevy::prelude::*;
 /// Must comfortably exceed the spawn distance (±900 in `spawn_match`) so
 /// that ships don't immediately wrap on the very first physics step and
 /// end up on the wrong side of the arena facing outward.
-pub const ARENA_HALF_EXTENT: f32 = 1500.0;
+///
+/// Sized at twice the original 1500 so the torus wraps over a longer
+/// distance — duels (and the lumbering capital-ship boss) get room to
+/// manoeuvre without the world flipping under you too quickly. The
+/// camera auto-fits and the starfield/minimap key off this, so nothing
+/// else needs hand-tuning when it changes.
+pub const ARENA_HALF_EXTENT: f32 = 3000.0;
 
 /// Full wrap period on each axis — the arena is a torus of this size.
 pub const ARENA_SIZE: f32 = ARENA_HALF_EXTENT * 2.0;
