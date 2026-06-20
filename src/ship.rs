@@ -1311,34 +1311,15 @@ pub struct BossHpBar {
 #[derive(Component, Debug)]
 pub struct CapitalCore;
 
-/// The core's recessed-aperture rhythm. The bridge is armoured shut most
-/// of the time (shots pop harmlessly) and only cracks open for a brief
-/// `strike window` — that's when it takes damage. Players have to time
-/// their burst (and their power-ups) to the opening, which gives the
-/// kill a real apex instead of a flat HP grind.
-#[derive(Component, Debug)]
+/// The core's vulnerability gate. The bridge is armoured shut (shots pop
+/// harmlessly) except while it's `open` — that's when it takes damage.
+/// `tick_core_shield` opens it only when the laser shield is breached AND
+/// a ship is down inside the bay, so the kill is a real trench-run apex
+/// rather than a flat HP grind.
+#[derive(Component, Debug, Default)]
 pub struct CoreAperture {
     /// True while the bridge is open and vulnerable.
     pub open: bool,
-    /// Seconds left in the current phase.
-    pub timer: f32,
-    /// How long the shutters stay closed between windows.
-    pub closed_s: f32,
-    /// How long each strike window lasts.
-    pub open_s: f32,
-}
-
-impl Default for CoreAperture {
-    fn default() -> Self {
-        // Opens after the first closed spell, so the run-in up the
-        // flanks isn't instantly winnable.
-        Self {
-            open: false,
-            timer: boss_tuning::CORE_FIRST_CLOSED_S,
-            closed_s: boss_tuning::CORE_CLOSED_S,
-            open_s: boss_tuning::CORE_OPEN_S,
-        }
-    }
 }
 
 /// A translucent glow disc parented behind the core; `tick_core_aperture`
@@ -1362,6 +1343,27 @@ pub struct TurretBarrel;
 #[derive(Component, Debug)]
 pub struct BossDrift {
     pub base: Vec2,
+}
+
+/// The laser shield sealing the trench mouth in front of the core.
+/// `Up` it's a solid, fire-soaking barrier (its `BossHealth` is the bar
+/// the fleet must deplete) that also physically blocks ships from
+/// entering the bay. Shot to 0 HP it drops to `Down` for a timed window
+/// — collider goes `Sensor` so a small ship can dive through the breach,
+/// and the core becomes vulnerable while a ship is inside — then it
+/// slams back `Up`, refilled, forcing another run. Unlike turrets/core
+/// it never despawns at 0 HP; `tick_core_shield` owns the state machine.
+#[derive(Component, Debug)]
+pub struct CoreShield {
+    pub state: ShieldState,
+    /// Seconds left in the current `Down` window (unused while `Up`).
+    pub timer: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShieldState {
+    Up,
+    Down,
 }
 
 /// A power-up's pulsing glow-ring child (`tick_powerup_visuals` breathes
@@ -1451,17 +1453,10 @@ mod boss_tuning {
     pub const BOLT_DAMAGE: i32 = 6;
     /// Bolt travel speed — slow enough to weave through with good flying.
     pub const BOLT_SPEED: f32 = 560.0;
-    /// Core (bridge) HP. Only ticks down during open strike windows, so
-    /// this is "damage that must land inside the windows", not raw DPS.
+    /// Core (bridge) HP. Only ticks down while the breach is open and a
+    /// ship is inside the bay, so this is "damage that must land during
+    /// the trench runs", not raw DPS.
     pub const CORE_HP: i32 = 400;
-    /// Aperture rhythm: how long the bridge stays armoured-shut between
-    /// strike windows, and how long each window lasts. Shorter closed =
-    /// less waiting; longer open = easier to capitalise.
-    pub const CORE_CLOSED_S: f32 = 4.0;
-    pub const CORE_OPEN_S: f32 = 3.5;
-    /// Run-in grace before the first window opens, so the fleet can't
-    /// instantly nuke the nose on the opening rush.
-    pub const CORE_FIRST_CLOSED_S: f32 = 5.0;
 
     /// Lumbering drift: the whole dreadnought wallows along a slow
     /// Lissajous patrol around the arena centre so it reads as a moving
@@ -1473,6 +1468,26 @@ mod boss_tuning {
     pub const DRIFT_AMP_Y: f32 = 550.0;
     pub const DRIFT_PERIOD_X: f32 = 70.0;
     pub const DRIFT_PERIOD_Y: f32 = 47.0;
+
+    // --- Laser shield + trench run (breached-nose bay) ---
+    /// HP of the laser shield sealing the trench mouth. The fleet pounds
+    /// this down with massed fire to crack the breach open.
+    pub const SHIELD_HP: i32 = 240;
+    /// How long the breach stays open after the shield is shot down,
+    /// before it slams back up and refills. The dive-bomber has this long
+    /// to get inside and hurt the core.
+    pub const SHIELD_DOWN_S: f32 = 7.0;
+    /// Tail of the open window during which the shield flickers as a
+    /// "it's coming back!" telegraph so a pilot inside knows to bug out.
+    pub const SHIELD_REFORM_TELEGRAPH_S: f32 = 1.5;
+    /// Half-width of the trench slot. Sized so only small, agile hulls
+    /// (collider radius ≲ 20) physically fit down it — big tanks bonk on
+    /// the prongs, so they crack the shield while the scout makes the run.
+    pub const TRENCH_HALF_WIDTH: f32 = 23.0;
+    /// A friendly ship must be within this distance of the core (i.e.
+    /// actually down inside the bay, not loitering at the mouth) for the
+    /// core to be vulnerable. Paired with the breach being open.
+    pub const BAY_ZONE_RADIUS: f32 = 145.0;
 }
 
 /// Spawn the boss hull on entering a boss match. An elongated arrowhead
@@ -1488,11 +1503,29 @@ pub fn spawn_capital_ship(
     if !config.boss {
         return;
     }
-    // Hull-local outline, tip toward +y (north).
-    let tip = Vec2::new(0.0, 850.0);
+    // Hull-local outline, prow toward +y (north). The prow is FORKED:
+    // two prongs flank a narrow trench slot down the centreline leading
+    // to the recessed core and sealed at the mouth by a laser shield.
+    // The slot is just wide enough for a small ship to thread — the run.
     let bl = Vec2::new(-360.0, -700.0);
     let br = Vec2::new(360.0, -700.0);
-    let mesh = meshes.add(Triangle2d::new(tip, bl, br));
+    let hw = boss_tuning::TRENCH_HALF_WIDTH; // trench slot half-width
+    let floor_y = 560.0_f32; // bay floor / top of the solid hull body
+    let prow_y = 845.0_f32; // prong tips (trench mouth)
+    let body_hw = 67.0_f32; // hull half-width where the fork begins
+    let body_l = Vec2::new(-body_hw, floor_y);
+    let body_r = Vec2::new(body_hw, floor_y);
+    let notch_l = Vec2::new(-hw, floor_y);
+    let notch_r = Vec2::new(hw, floor_y);
+    let prong_lt = Vec2::new(-hw, prow_y);
+    let prong_rt = Vec2::new(hw, prow_y);
+    // The wedge minus its central slot, as four convex triangles: two for
+    // the solid stern body, one per prow prong. Mesh and collider share
+    // the exact same pieces, so there are no invisible walls or gaps.
+    let body1 = [bl, br, body_r];
+    let body2 = [bl, body_r, body_l];
+    let lprong = [body_l, notch_l, prong_lt];
+    let rprong = [body_r, notch_r, prong_rt];
     let mat = materials.add(ColorMaterial::from(Color::srgb(0.16, 0.18, 0.24)));
     let pos = Vec2::ZERO;
     // Detailing handles, built once and shared by the child decals below.
@@ -1500,13 +1533,17 @@ pub fn spawn_capital_ship(
     let stripe_mat = materials.add(ColorMaterial::from(Color::srgb(0.34, 0.40, 0.52)));
     let spine_mat = materials.add(ColorMaterial::from(Color::srgb(0.45, 0.55, 0.72)));
     let glow_mat = materials.add(ColorMaterial::from(Color::srgba(0.35, 0.7, 1.0, 0.5)));
-    // A slightly inset, lighter wedge so the hull reads as plated, not flat.
+    let trench_mat = materials.add(ColorMaterial::from(Color::srgb(0.05, 0.06, 0.09)));
+    // A slightly inset, lighter wedge so the hull reads as plated, not
+    // flat. Tip pulled below the bay so it doesn't bridge the trench.
     let panel_mesh = meshes.add(Triangle2d::new(
-        Vec2::new(0.0, 760.0),
+        Vec2::new(0.0, 540.0),
         Vec2::new(-300.0, -640.0),
         Vec2::new(300.0, -640.0),
     ));
-    // Two long thin stripes lying along the wedge edges (left/right flanks).
+    // Flank stripes lie along the original wedge edge (prow at the old
+    // single tip) — cosmetic detailing on the broad sides only.
+    let tip = Vec2::new(0.0, 850.0);
     let edge_len = (tip - bl).length();
     let edge_angle = (tip - bl).y.atan2((tip - bl).x) - std::f32::consts::FRAC_PI_2;
     commands
@@ -1514,28 +1551,49 @@ pub fn spawn_capital_ship(
             CapitalShip,
             BossPart,
             BossDrift { base: pos },
-            Mesh2d(mesh),
-            MeshMaterial2d(mat),
+            Mesh2d(meshes.add(Triangle2d::new(body1[0], body1[1], body1[2]))),
+            MeshMaterial2d(mat.clone()),
             // Behind the fighters.
             Transform::from_translation(pos.extend(-1.0)),
             RigidBody::Static,
-            Collider::triangle(tip, bl, br),
+            Collider::compound(vec![
+                (Vec2::ZERO, 0.0_f32, Collider::triangle(body1[0], body1[1], body1[2])),
+                (Vec2::ZERO, 0.0_f32, Collider::triangle(body2[0], body2[1], body2[2])),
+                (Vec2::ZERO, 0.0_f32, Collider::triangle(lprong[0], lprong[1], lprong[2])),
+                (Vec2::ZERO, 0.0_f32, Collider::triangle(rprong[0], rprong[1], rprong[2])),
+            ]),
             boss_hull_layers(),
             Position(pos),
             Rotation::radians(0.0),
         ))
         .with_children(|hull| {
+            // The other three hull triangles (body half + the two prongs).
+            for tri in [body2, lprong, rprong] {
+                hull.spawn((
+                    Mesh2d(meshes.add(Triangle2d::new(tri[0], tri[1], tri[2]))),
+                    MeshMaterial2d(mat.clone()),
+                    Transform::from_translation(Vec3::ZERO),
+                ));
+            }
+            // Dark recessed trench floor so the slot reads as a channel
+            // gouged into the hull, not a hole punched clean through it.
+            hull.spawn((
+                Mesh2d(meshes.add(Rectangle::new(2.0 * hw, prow_y - floor_y))),
+                MeshMaterial2d(trench_mat.clone()),
+                Transform::from_translation(Vec3::new(0.0, (floor_y + prow_y) * 0.5, 0.03)),
+            ));
             // Inset plating.
             hull.spawn((
                 Mesh2d(panel_mesh.clone()),
                 MeshMaterial2d(panel_mat.clone()),
                 Transform::from_translation(Vec3::new(0.0, 0.0, 0.05)),
             ));
-            // Central spine running prow-to-stern.
+            // Central spine — runs from the stern up to the bay, stopping
+            // below the trench so it doesn't bridge the slot.
             hull.spawn((
-                Mesh2d(meshes.add(Rectangle::new(16.0, 1450.0))),
+                Mesh2d(meshes.add(Rectangle::new(16.0, 1190.0))),
                 MeshMaterial2d(spine_mat.clone()),
-                Transform::from_translation(Vec3::new(0.0, 75.0, 0.07)),
+                Transform::from_translation(Vec3::new(0.0, -55.0, 0.07)),
             ));
             // Left + right flank stripes, rotated to lie on the wedge edges.
             for sign in [-1.0_f32, 1.0] {
@@ -1632,10 +1690,12 @@ pub fn spawn_capital_ship(
             });
     }
 
-    // The recessed bridge at the prow — the win target. Sits at the very
-    // tip of the wedge, so the fleet has to fight its way up the flanks
-    // (under turret fire) and strike the nose during a strike window.
-    let core_pos = Vec2::new(0.0, 800.0);
+    // The reactor core — the win target — now sits RECESSED in the bay
+    // at the bottom of the trench, not exposed on the nose. The only way
+    // to hurt it is to crack the laser shield and fly a small ship down
+    // the slot to it. `tick_core_shield` opens its aperture while the
+    // breach is down and a friendly ship is inside the bay.
+    let core_pos = Vec2::new(0.0, 600.0);
     let halo_mat = materials.add(ColorMaterial::from(Color::srgba(1.0, 0.3, 0.26, 0.0)));
     commands
         .spawn((
@@ -1644,13 +1704,13 @@ pub fn spawn_capital_ship(
             BossDrift { base: core_pos },
             CoreAperture::default(),
             BossHealth { hp: boss_tuning::CORE_HP, max: boss_tuning::CORE_HP },
-            Mesh2d(meshes.add(Circle::new(42.0))),
-            // Starts closed → dim steel; `tick_core_aperture` recolours it.
+            Mesh2d(meshes.add(Circle::new(32.0))),
+            // Starts shut → dim steel; `tick_core_aperture` recolours it.
             MeshMaterial2d(materials.add(ColorMaterial::from(CORE_CLOSED_COLOR))),
             // Drawn above the hull so the glowing weak point reads.
             Transform::from_translation(core_pos.extend(0.5)),
             RigidBody::Static,
-            Collider::circle(42.0),
+            Collider::circle(30.0),
             boss_part_layers(),
             Position(core_pos),
             Rotation::radians(0.0),
@@ -1660,19 +1720,42 @@ pub fn spawn_capital_ship(
             // window (driven by tick_core_aperture).
             core.spawn((
                 CoreHalo,
-                Mesh2d(meshes.add(Circle::new(86.0))),
+                Mesh2d(meshes.add(Circle::new(64.0))),
                 MeshMaterial2d(halo_mat),
                 Transform::from_translation(Vec3::new(0.0, 0.0, -0.05)),
             ));
             // A bright inner pip so the bridge has a focal point.
             core.spawn((
-                Mesh2d(meshes.add(Circle::new(16.0))),
+                Mesh2d(meshes.add(Circle::new(12.0))),
                 MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(1.0, 0.92, 0.85)))),
                 Transform::from_translation(Vec3::new(0.0, 0.0, 0.02)),
             ));
         });
 
-    info!("boss: capital ship hull + 4 turrets + core spawned");
+    // The laser shield sealing the trench mouth. A glowing bar spanning
+    // the slot: a solid, destructible barrier while up (blocks ships AND
+    // soaks fire), a passable breach while down. `tick_core_shield` runs
+    // its up/down/regen cycle.
+    let shield_pos = Vec2::new(0.0, 805.0);
+    let shield_mat = materials.add(ColorMaterial::from(Color::srgba(0.45, 0.95, 1.0, 0.85)));
+    commands.spawn((
+        BossPart,
+        CoreShield { state: ShieldState::Up, timer: 0.0 },
+        BossDrift { base: shield_pos },
+        BossHealth { hp: boss_tuning::SHIELD_HP, max: boss_tuning::SHIELD_HP },
+        Mesh2d(meshes.add(Rectangle::new(2.0 * hw + 18.0, 14.0))),
+        MeshMaterial2d(shield_mat),
+        Transform::from_translation(shield_pos.extend(0.45)),
+        RigidBody::Static,
+        // Seals the slot a touch wider than the gap so nothing squeezes by.
+        Collider::rectangle(2.0 * hw + 8.0, 16.0),
+        boss_part_layers(),
+        Position(shield_pos),
+        Rotation::radians(0.0),
+        Visibility::Visible,
+    ));
+
+    info!("boss: capital ship hull + 4 turrets + shielded core bay spawned");
 }
 
 /// Boss auto-cannons: each `interval` seconds, every turret fires a bolt
@@ -2222,26 +2305,110 @@ fn drift_capital_ship(time: Res<Time<Physics>>, mut parts: Query<(&BossDrift, &m
     }
 }
 
-/// Drive the core's recessed-aperture rhythm: flip between a closed
-/// (invulnerable) spell and an open strike window, and recolour /
-/// pulse the bridge so the window reads at a glance. Damage gating
-/// lives in `handle_projectile_hits` (it skips the core while closed).
+/// Run the laser shield's up → down → regenerate cycle and gate the
+/// core's vulnerability on it. While up the shield is a destructible
+/// barrier (its `BossHealth` is depleted by fire in the hit handlers).
+/// At 0 HP it drops to `Down` for `SHIELD_DOWN_S`: the collider goes
+/// `Sensor` so a small ship can thread the breach, and the core opens
+/// while a ship is inside the bay. The window's tail flickers as a
+/// reform warning, then the shield slams back up and refills, forcing
+/// another run. Host-authoritative, like the turrets and aperture.
+fn tick_core_shield(
+    mut commands: Commands,
+    time: Res<Time<Physics>>,
+    mut shields: Query<
+        (
+            Entity,
+            &mut CoreShield,
+            &mut BossHealth,
+            &MeshMaterial2d<ColorMaterial>,
+            &mut Visibility,
+        ),
+        Without<CapitalCore>,
+    >,
+    mut cores: Query<(&Position, &mut CoreAperture), With<CapitalCore>>,
+    players: Query<&Position, With<Ship>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    let dt = time.delta_secs();
+    let now = time.elapsed_secs();
+    // Where's the bay? Track the (drifting) core so "inside" stays honest.
+    let core_pos = cores.iter().next().map(|(p, _)| p.0);
+    let ship_in_bay = core_pos.is_some_and(|c| {
+        players
+            .iter()
+            .any(|p| crate::physics::nearest_image(p.0, c).distance(c) < boss_tuning::BAY_ZONE_RADIUS)
+    });
+
+    let mut breach_open = false;
+    for (ent, mut shield, mut hp, mat_handle, mut vis) in &mut shields {
+        match shield.state {
+            ShieldState::Up => {
+                if hp.hp <= 0 {
+                    // Cracked! Drop the barrier and start the open window.
+                    shield.state = ShieldState::Down;
+                    shield.timer = boss_tuning::SHIELD_DOWN_S;
+                    *vis = Visibility::Hidden;
+                    commands.entity(ent).insert(Sensor);
+                } else {
+                    *vis = Visibility::Visible;
+                    // Brighter when healthy, thinning as it nears a crack.
+                    let frac = (hp.hp as f32 / hp.max as f32).clamp(0.0, 1.0);
+                    let pulse = 0.65 + 0.35 * (now * 6.0).sin().abs();
+                    if let Some(m) = materials.get_mut(&mat_handle.0) {
+                        m.color = Color::srgba(0.45, 0.95, 1.0, (0.35 + 0.5 * frac) * pulse);
+                    }
+                }
+            }
+            ShieldState::Down => {
+                breach_open = true;
+                shield.timer -= dt;
+                if shield.timer <= 0.0 {
+                    // Slam shut and refill — back to a full barrier.
+                    shield.state = ShieldState::Up;
+                    hp.hp = hp.max;
+                    *vis = Visibility::Visible;
+                    commands.entity(ent).remove::<Sensor>();
+                } else if shield.timer <= boss_tuning::SHIELD_REFORM_TELEGRAPH_S {
+                    // Reform warning: flicker the bar back into view.
+                    let on = (now * 22.0).sin() > 0.0;
+                    *vis = if on { Visibility::Visible } else { Visibility::Hidden };
+                    if let Some(m) = materials.get_mut(&mat_handle.0) {
+                        m.color = Color::srgba(1.0, 0.55, 0.2, 0.7);
+                    }
+                } else {
+                    *vis = Visibility::Hidden;
+                }
+            }
+        }
+    }
+
+    // The core is vulnerable only while the breach is open AND a ship is
+    // down inside the bay. This drives both the damage gate (the hit
+    // handlers read `aperture.open`) and the red-pulse visual.
+    let open = breach_open && ship_in_bay;
+    for (_, mut ap) in &mut cores {
+        ap.open = open;
+    }
+}
+
+/// Drive the core's recessed-aperture rhythm: render the bridge's open
+/// (vulnerable) vs shut state — recolour / pulse so the window reads at
+/// a glance. `tick_core_shield` owns when it's open; damage gating lives
+/// in `handle_projectile_hits` (it skips the core while shut).
 fn tick_core_aperture(
     time: Res<Time<Physics>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut cores: Query<
-        (&mut CoreAperture, &MeshMaterial2d<ColorMaterial>, &mut Transform, &Children),
+        (&CoreAperture, &MeshMaterial2d<ColorMaterial>, &mut Transform, &Children),
         Without<CoreHalo>,
     >,
     halos: Query<&MeshMaterial2d<ColorMaterial>, With<CoreHalo>>,
 ) {
-    let dt = time.delta_secs();
-    for (mut ap, mat_handle, mut xf, children) in &mut cores {
-        ap.timer -= dt;
-        if ap.timer <= 0.0 {
-            ap.open = !ap.open;
-            ap.timer = if ap.open { ap.open_s } else { ap.closed_s };
-        }
+    for (ap, mat_handle, mut xf, children) in &mut cores {
+        // `ap.open` is no longer self-timed: `tick_core_shield` sets it
+        // true only while the breach is down AND a ship is inside the
+        // bay. This system just renders whatever state it's left in.
         // Visual state. Open: hot red with a fast brightness pulse and a
         // slight bulge so the bridge looks like it's flaring out of its
         // housing. Closed: steady dim steel, sitting flush.
@@ -3090,6 +3257,7 @@ impl Plugin for ShipPlugin {
                     handle_powerup_pickup,
                     tick_bazooka,
                     tick_powerup_buffs,
+                    tick_core_shield,
                     tick_core_aperture,
                     tick_powerup_visuals,
                 ),
@@ -10743,7 +10911,12 @@ fn handle_projectile_hits(
     mut batteries: Query<&mut Battery>,
     mut velocities: Query<&mut LinearVelocity>,
     mut deriveds: Query<&mut ShipPhysicsDerived>,
-    mut boss_health: Query<(&mut BossHealth, Has<CapitalCore>, Option<&CoreAperture>)>,
+    mut boss_health: Query<(
+        &mut BossHealth,
+        Has<CapitalCore>,
+        Option<&CoreAperture>,
+        Option<&CoreShield>,
+    )>,
     assets: Res<AssetServer>,
 ) {
     // Boss co-op turns OFF friendly fire between the player fighters —
@@ -10803,8 +10976,16 @@ fn handle_projectile_hits(
         // damages the boss — a boss bolt that somehow clips a part
         // passes through. The hull carries no `BossHealth`, so it's
         // an indestructible wall: shots just pop against it.
-        if let Ok((mut bh, is_core, aperture)) = boss_health.get_mut(other_entity) {
+        if let Ok((mut bh, is_core, aperture, shield)) = boss_health.get_mut(other_entity) {
             if is_boss_proj {
+                continue;
+            }
+            // Laser shield: while it's down (breached) shots fly straight
+            // through into the bay; while up it's a destructible barrier
+            // that soaks fire but never "dies" — `tick_core_shield` flips
+            // it down at 0 HP and regenerates it, so we skip the despawn.
+            let is_shield = shield.is_some();
+            if shield.is_some_and(|s| s.state == ShieldState::Down) {
                 continue;
             }
             // Recessed core: while the bridge is shut, shots pop off the
@@ -10829,7 +11010,8 @@ fn handle_projectile_hits(
                     ec.try_despawn();
                 }
             }
-            if bh.hp <= 0 {
+            // Shields are downed (not destroyed) by `tick_core_shield`.
+            if bh.hp <= 0 && !is_shield {
                 if let Ok(part_pos) = proj_positions.get(proj_entity) {
                     spawn_asteroid_explosion(&mut commands, &assets, part_pos.0, 48.0);
                 }
@@ -11333,7 +11515,12 @@ fn tick_beams(
     hypers: Query<&crate::ultimate::HyperActive>,
     camera: Query<&Transform, With<crate::starfield::PrimaryCamera>>,
     satellites_for_filter: Query<(Entity, &ChmmrSatellite)>,
-    mut boss_health: Query<(&mut BossHealth, Has<CapitalCore>, Option<&CoreAperture>)>,
+    mut boss_health: Query<(
+        &mut BossHealth,
+        Has<CapitalCore>,
+        Option<&CoreAperture>,
+        Option<&CoreShield>,
+    )>,
     hull_q: Query<Entity, With<CapitalShip>>,
     assets: Res<AssetServer>,
 ) {
@@ -11445,16 +11632,20 @@ fn tick_beams(
                         }
                     }
                 }
-            } else if let Ok((mut bh, is_core, aperture)) = boss_health.get_mut(target) {
-                // Boss part (turret / core). The core only takes damage
-                // while its strike window is open; turrets always do.
+            } else if let Ok((mut bh, is_core, aperture, shield)) = boss_health.get_mut(target) {
+                // Boss part (shield / turret / core). A downed shield lets
+                // the beam pass; an up shield soaks it but is never
+                // destroyed here (tick_core_shield owns that). The core
+                // only takes damage while its strike window is open.
+                let is_shield = shield.is_some();
+                let passthrough = shield.is_some_and(|s| s.state == ShieldState::Down);
                 let closed = aperture.is_some_and(|a| !a.open);
-                if !closed && damage_ticks > 0 {
+                if !passthrough && !closed && damage_ticks > 0 {
                     let dmg = (beam.damage_per_tick * damage_ticks).max(0);
                     bh.hp = (bh.hp - dmg).max(0);
                     let hit_pos = world_origin + world_dir * hit_t;
                     spawn_asteroid_explosion(&mut commands, &assets, hit_pos, 8.0);
-                    if bh.hp <= 0 {
+                    if bh.hp <= 0 && !is_shield {
                         spawn_asteroid_explosion(&mut commands, &assets, hit_pos, 48.0);
                         commands.entity(target).try_despawn();
                         if is_core {
