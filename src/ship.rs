@@ -639,6 +639,12 @@ impl Default for AngularControlOverride {
 pub struct Ship {
     pub stats: ShipStats,
     pub player_slot: usize,
+    /// Manually-selected homing-missile lock (cycled with the target key).
+    /// `None` = let missiles auto-acquire the nearest candidate. Set
+    /// host-authoritatively by `cycle_homing_targets`; read by
+    /// `steer_homing_projectiles` when a fresh missile picks its target.
+    /// Points at an enemy ship OR a boss part (any `BossHealth` entity).
+    pub target: Option<Entity>,
 }
 
 /// Identifies the ship class for behaviour dispatch. Stat sheets live in
@@ -3082,6 +3088,7 @@ impl Plugin for ShipPlugin {
                 tick_kohma_blade,
                 tick_kohma_passive_blades,
                 tick_projectile_lifetime,
+                cycle_homing_targets,
                 steer_homing_projectiles,
                 tick_andro_bubbles,
                 tick_damage_zones,
@@ -3295,6 +3302,7 @@ impl Plugin for ShipPlugin {
                 swap_rotation_frame,
                 update_overlay_sprites,
                 tick_invisible_visual,
+                draw_homing_reticles,
                 draw_shield_rings,
                 draw_gravity_field,
                 // Both peers: deterministic time-based boss drift so the
@@ -3761,6 +3769,7 @@ fn spawn_ship(
         Ship {
             stats: stats.clone(),
             player_slot: slot,
+            target: None,
         },
         class,
         Crew {
@@ -10575,6 +10584,42 @@ fn tick_alary_turrets(
     }
 }
 
+/// Draw a spinning targeting reticle on each ship's manual homing lock
+/// (`Ship.target`) so the pilot can see what their missiles will chase.
+/// Drawn in the camera's wrapped frame like the other gizmos. Runs on
+/// every peer, but `Ship.target` is only set host-authoritatively, so in
+/// online play the reticle shows on the host/solo screen (a guest's lock
+/// is honoured for homing but not yet mirrored back for its own reticle).
+fn draw_homing_reticles(
+    time: Res<Time>,
+    mut gizmos: Gizmos,
+    camera: Query<&Transform, With<crate::starfield::PrimaryCamera>>,
+    ships: Query<&Ship>,
+    positions: Query<&Position>,
+) {
+    let focus = camera.single().ok().map(|t| t.translation.truncate());
+    let t = time.elapsed_secs();
+    let spin = t * 1.5;
+    let color = Color::srgba(1.0, 0.75, 0.2, 0.9);
+    for ship in &ships {
+        let Some(target) = ship.target else {
+            continue;
+        };
+        let Ok(tpos) = positions.get(target) else {
+            continue;
+        };
+        let c = focus.map_or(tpos.0, |f| crate::physics::nearest_image(tpos.0, f));
+        let r = 30.0 + 3.0 * (t * 5.0).sin();
+        gizmos.circle_2d(c, r, color);
+        // Four spinning corner ticks so the lock reads as "acquired".
+        for k in 0..4 {
+            let a = spin + k as f32 * std::f32::consts::FRAC_PI_2;
+            let dir = Vec2::new(a.cos(), a.sin());
+            gizmos.line_2d(c + dir * r, c + dir * (r + 10.0), color);
+        }
+    }
+}
+
 /// Draw a pulsing energy ring around any ship that currently has a
 /// `ShieldActive` (Yehat force field, Alary absorbance shield, …) so
 /// the shield is actually visible. Drawn as a gizmo in the camera's
@@ -10697,6 +10742,65 @@ fn tick_shofixti_glory(
     }
 }
 
+/// Advance a ship's manual homing lock when its pilot taps the target
+/// key. The candidate list is every enemy ship plus every boss part
+/// (turret / shield / core), sorted by distance so cycling sweeps
+/// nearest-outward. Each tap steps to the next candidate, wrapping; if
+/// the current lock has died (or there was none) it snaps to the
+/// nearest. Host-authoritative: it reads `SlotInputs` (which carries
+/// every slot's input, local and remote), so a guest's tap — relayed to
+/// the host — cycles their own ship's lock. `steer_homing_projectiles`
+/// then honours `Ship.target` when a fresh missile picks its mark.
+fn cycle_homing_targets(
+    slot_inputs: Res<crate::input::SlotInputs>,
+    mut ships: Query<(Entity, &mut Ship, &Position)>,
+    boss_parts: Query<(Entity, &Position), (With<BossHealth>, Without<Ship>)>,
+) {
+    // Snapshot all ship positions/slots first (immutable), so the
+    // mutable pass below can borrow `&mut Ship` freely.
+    let ship_list: Vec<(Entity, usize, Vec2)> = ships
+        .iter()
+        .map(|(e, s, p)| (e, s.player_slot, p.0))
+        .collect();
+    let boss_list: Vec<(Entity, Vec2)> = boss_parts.iter().map(|(e, p)| (e, p.0)).collect();
+    if ship_list.is_empty() {
+        return;
+    }
+    for (me, mut ship, pos) in &mut ships {
+        let slot = ship.player_slot.min(3);
+        if !slot_inputs.just_pressed[slot].flag(crate::input::FLAG_TARGET_NEXT) {
+            continue;
+        }
+        // Candidates: enemy ships (different slot) + all boss parts,
+        // sorted by wrap-aware distance so the cycle order is stable and
+        // intuitive (nearest first).
+        let mut cands: Vec<Entity> = Vec::new();
+        let mut keyed: Vec<(Entity, f32)> = Vec::new();
+        for (e, s, p) in &ship_list {
+            if *e == me || *s == ship.player_slot {
+                continue;
+            }
+            keyed.push((*e, crate::physics::min_image(*p - pos.0).length_squared()));
+        }
+        for (e, p) in &boss_list {
+            keyed.push((*e, crate::physics::min_image(*p - pos.0).length_squared()));
+        }
+        keyed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        cands.extend(keyed.into_iter().map(|(e, _)| e));
+        if cands.is_empty() {
+            ship.target = None;
+            continue;
+        }
+        // Step to the next candidate after the current lock (wrapping),
+        // or to the nearest if the lock is unset / no longer a candidate.
+        let next = match ship.target.and_then(|t| cands.iter().position(|&e| e == t)) {
+            Some(i) => cands[(i + 1) % cands.len()],
+            None => cands[0],
+        };
+        ship.target = Some(next);
+    }
+}
+
 /// Steer each `Homing` projectile toward the nearest enemy ship (an
 /// enemy is "ship whose `player_slot` ≠ projectile owner's slot").
 ///
@@ -10713,40 +10817,61 @@ fn steer_homing_projectiles(
     // `Without<Invisible>` so a cloaked Ilwrath drops missile locks
     // (canonical: isInvisible() filters target acquisition).
     ships: Query<(Entity, &Ship, &Position), (Without<Projectile>, Without<Invisible>)>,
+    // Boss parts (turrets / shield / core) are also lockable targets —
+    // they carry `BossHealth` but aren't `Ship`s, so they live in their
+    // own query. Treated as enemy to everyone (no slot).
+    boss_parts: Query<(Entity, &Position), (With<BossHealth>, Without<Projectile>)>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
     }
+    // A candidate is reachable if it's still in either query.
+    let alive = |e: Entity| ships.get(e).is_ok() || boss_parts.get(e).is_ok();
     for (proj, proj_pos, mut vel, mut homing, cone) in &mut projectiles {
-        // Owner's slot tells us which side is friendly (skip in target search).
-        let owner_slot = ships.get(proj.owner).ok().map(|(_, s, _)| s.player_slot);
+        // Owner's slot tells us which side is friendly (skip in target
+        // search); its manual lock, if any, takes priority for a fresh
+        // missile over auto-acquiring the nearest.
+        let owner = ships.get(proj.owner).ok();
+        let owner_slot = owner.map(|(_, s, _)| s.player_slot);
+        let manual = owner.and_then(|(_, s, _)| s.target);
 
-        // Acquire / re-acquire target.
-        let target_lost = homing
-            .target
-            .map(|t| ships.get(t).is_err())
-            .unwrap_or(true);
+        // Acquire / re-acquire target when we have none or it's gone.
+        let target_lost = homing.target.map(|t| !alive(t)).unwrap_or(true);
         if target_lost {
-            let mut best: Option<(Entity, f32)> = None;
-            for (e, s, p) in &ships {
-                if Some(s.player_slot) == owner_slot {
-                    continue;
+            // Honour the pilot's manual pick first (if still reachable);
+            // otherwise auto-lock the nearest enemy ship or boss part.
+            homing.target = manual.filter(|m| alive(*m)).or_else(|| {
+                let mut best: Option<(Entity, f32)> = None;
+                let mut consider = |e: Entity, p: Vec2| {
+                    let d2 = crate::physics::min_image(p - proj_pos.0).length_squared();
+                    if best.map(|(_, bd)| d2 < bd).unwrap_or(true) {
+                        best = Some((e, d2));
+                    }
+                };
+                for (e, s, p) in &ships {
+                    if Some(s.player_slot) == owner_slot {
+                        continue;
+                    }
+                    consider(e, p.0);
                 }
-                // Toroidal distance — the target may be nearer the
-                // wrapped way, so pick by minimum-image, not raw.
-                let d2 = crate::physics::min_image(p.0 - proj_pos.0).length_squared();
-                if best.map(|(_, bd)| d2 < bd).unwrap_or(true) {
-                    best = Some((e, d2));
+                for (e, p) in &boss_parts {
+                    consider(e, p.0);
                 }
-            }
-            homing.target = best.map(|(e, _)| e);
+                best.map(|(e, _)| e)
+            });
         }
 
         let Some(target) = homing.target else {
             continue;
         };
-        let Ok((_, _, target_pos)) = ships.get(target) else {
+        // Target position from whichever query holds it.
+        let Some(target_pos) = ships
+            .get(target)
+            .map(|(_, _, p)| p.0)
+            .or_else(|_| boss_parts.get(target).map(|(_, p)| p.0))
+            .ok()
+        else {
             continue;
         };
 
@@ -10754,7 +10879,7 @@ fn steer_homing_projectiles(
         // the wrap seam is reached by heading off the near edge, not the
         // long way around. Without min_image the missile flew away from
         // an opponent that was actually adjacent through the wrap.
-        let to_target = crate::physics::min_image(target_pos.0 - proj_pos.0);
+        let to_target = crate::physics::min_image(target_pos - proj_pos.0);
         let speed = vel.0.length();
         if speed <= 0.0 || to_target.length_squared() == 0.0 {
             continue;

@@ -42,6 +42,22 @@ pub const FLAG_REMATCH: u8 = 1 << 0;
 /// toggle is on KeyR (same key as the legacy rematch — netplay shows
 /// "Ready" semantics, hotseat keeps the instant rematch).
 pub const FLAG_READY: u8 = 1 << 1;
+/// Player tapped "cycle homing target" — advance their ship's manual
+/// missile lock to the next candidate (enemy ship or boss part). Lives
+/// on `flags` (not `buttons`, which is full) because it's a per-slot
+/// edge event that needs to ride the GGRS channel and edge-detect like
+/// the other votes. Consumed by `cycle_homing_targets`.
+pub const FLAG_TARGET_NEXT: u8 = 1 << 2;
+
+/// Per-slot "cycle homing target" key. Hardcoded (not remappable in v1,
+/// like the inert BACKWARD chord key) and chosen to sit near each slot's
+/// movement cluster without clashing: P1 `,`, P2 `E`, P3 `O`, P4 Numpad5.
+const TARGET_NEXT_KEYS: [KeyCode; 4] = [
+    KeyCode::Comma,
+    KeyCode::KeyE,
+    KeyCode::KeyO,
+    KeyCode::Numpad5,
+];
 
 /// Holding turn-left + turn-right + backward together fires the
 /// ultimate. Deliberately NOT fire/special — pressing those would
@@ -197,6 +213,10 @@ pub struct VirtualInput {
     /// rides `FLAG_REMATCH` to `request_rematch`; in netplay the lobby
     /// ready-toggle reads it to vote for a rematch.
     pub rematch_just_pressed: bool,
+    /// Edge-triggered: true the tick the on-screen "cycle target" button
+    /// is hit. Stands in for the per-slot target key on touch (P1 only).
+    /// OR'd into slot 0's `FLAG_TARGET_NEXT` edge.
+    pub target_next_just_pressed: bool,
     /// Analog turn from the on-screen stick, in `[-1.0, 1.0]` (+1 =
     /// full left, −1 = full right). OR'd into player 1's input as the
     /// analog turn axis. `0.0` when the stick is centred or absent.
@@ -354,7 +374,14 @@ pub fn read_local_input(keys: &ButtonInput<KeyCode>, slot: usize) -> PlayerInput
     // space) so it survives the GGRS network round-trip and triggers
     // `AppState::Resetting` on BOTH peers simultaneously. R is global
     // — pressing it on any slot's keyboard counts.
-    let flags = if keys.pressed(KeyCode::KeyR) { FLAG_REMATCH } else { 0 };
+    // Rematch is global (any slot's R); target-cycle is per-slot. Both
+    // ride `flags` as HELD state so online edge-detection (cur & !prev)
+    // works — the consumer reads the rising edge, so holding the key
+    // won't re-fire the cycle.
+    let mut flags = if keys.pressed(KeyCode::KeyR) { FLAG_REMATCH } else { 0 };
+    if keys.pressed(TARGET_NEXT_KEYS[slot.min(3)]) {
+        flags |= FLAG_TARGET_NEXT;
+    }
     PlayerInput { buttons, turn, aim_x: 0, aim_y: 0, flags, class: 0 }
 }
 
@@ -404,7 +431,10 @@ pub fn read_local_just_pressed(keys: &ButtonInput<KeyCode>, slot: usize) -> Play
             buttons |= mask;
         }
     });
-    let flags = if keys.just_pressed(KeyCode::KeyR) { FLAG_REMATCH } else { 0 };
+    let mut flags = if keys.just_pressed(KeyCode::KeyR) { FLAG_REMATCH } else { 0 };
+    if keys.just_pressed(TARGET_NEXT_KEYS[slot.min(3)]) {
+        flags |= FLAG_TARGET_NEXT;
+    }
     PlayerInput { buttons, turn: 0, aim_x: 0, aim_y: 0, flags, class: 0 }
 }
 
@@ -423,6 +453,9 @@ pub fn read_local_just_pressed_with_virtual(
             // virtual edge to drive the Ready vote instead).
             if v.rematch_just_pressed {
                 input.flags |= FLAG_REMATCH;
+            }
+            if v.target_next_just_pressed {
+                input.flags |= FLAG_TARGET_NEXT;
             }
         }
     }

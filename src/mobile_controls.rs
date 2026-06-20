@@ -35,6 +35,9 @@ pub enum TouchAction {
     /// rematch reset (handled by `class_picker_input` in ship.rs).
     CyclePrev,
     CycleNext,
+    /// Cycle P1's homing-missile lock to the next target (enemy ship or
+    /// boss part). Raises `VirtualInput.target_next_just_pressed`.
+    Target,
     /// Toggle visibility of every other touch button. Marker
     /// remains visible; used to show/hide the mobile-only buttons
     /// (default is hidden so the play area isn't covered).
@@ -52,6 +55,7 @@ impl TouchAction {
             TouchAction::Ultimate => Some(INPUT_ULTIMATE),
             TouchAction::CyclePrev
             | TouchAction::CycleNext
+            | TouchAction::Target
             | TouchAction::ToggleButtons
             | TouchAction::Rematch => None,
         }
@@ -63,6 +67,7 @@ impl TouchAction {
             TouchAction::Ultimate => "ULT",
             TouchAction::CyclePrev => "<<",
             TouchAction::CycleNext => ">>",
+            TouchAction::Target => "TGT",
             // Tiny knob — the user taps this to reveal/hide the
             // rest of the touch UI. Shorter than a word; reads as
             // a controller-y icon on small phone screens.
@@ -410,6 +415,36 @@ fn spawn_touch_controls(mut commands: Commands, assets: Res<AssetServer>) {
             );
         });
 
+    // ---- TARGET button: sits just above the face cluster ----
+    // Cycles P1's homing lock. Marked `TouchButtonCluster` so it hides
+    // with the rest of the controls until the `+` knob reveals them.
+    commands
+        .spawn((
+            TouchButtonCluster,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(BTN_MARGIN + face_h + 14.0),
+                right: Val::Px(200.0 + (face_w - FACE_BTN) * 0.5),
+                width: Val::Px(FACE_BTN),
+                height: Val::Px(FACE_BTN),
+                ..default()
+            },
+        ))
+        .with_children(|root| {
+            spawn_gamepad_btn(
+                root,
+                TouchAction::Target,
+                cycle_color,
+                FACE_BTN,
+                FACE_BTN * 0.5,
+                Val::Px(0.0),
+                Val::Px(0.0),
+                Val::Auto,
+                Val::Auto,
+                15.0,
+            );
+        });
+
     // ---- Top-center: class-cycle chips (Tab / Shift+Tab) ----
     let chip_w = CHIP_BTN * 2.0 + PAD_GAP;
     commands
@@ -619,6 +654,7 @@ fn drive_virtual_input(
     let mut cycle_next_edge = false;
     let mut cycle_prev_edge = false;
     let mut rematch_edge = false;
+    let mut target_edge = false;
 
     for (interaction, action, mut last) in &mut buttons {
         let is_active = matches!(interaction, Interaction::Pressed);
@@ -640,6 +676,7 @@ fn drive_virtual_input(
             TouchAction::CycleNext if edge_press => cycle_next_edge = true,
             TouchAction::CyclePrev if edge_press => cycle_prev_edge = true,
             TouchAction::Rematch if edge_press => rematch_edge = true,
+            TouchAction::Target if edge_press => target_edge = true,
             TouchAction::ToggleButtons if edge_press => {
                 visible.0 = !visible.0;
                 info!("touch buttons: {}", if visible.0 { "shown" } else { "hidden" });
@@ -723,6 +760,7 @@ fn drive_virtual_input(
     virt.cycle_next_just_pressed = cycle_next_edge;
     virt.cycle_prev_just_pressed = cycle_prev_edge;
     virt.rematch_just_pressed = rematch_edge;
+    virt.target_next_just_pressed = target_edge;
 }
 
 /// Sync each cluster's Visibility with `TouchButtonsVisible`. The
